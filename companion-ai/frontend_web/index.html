@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Companion AI — 配置中心</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- Toast Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Mobile Toggle -->
+  <button id="mobile-toggle" class="mobile-toggle">☰</button>
+
+  <!-- Sidebar Overlay (mobile) -->
+  <div class="sidebar-overlay"></div>
+
+  <div class="app-container">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <div class="logo-icon">🤖</div>
+          <div>
+            <div class="logo-text">Companion AI</div>
+            <div class="logo-sub">可视化配置中心</div>
+          </div>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <div class="nav-item active" data-section="api-keys">
+          <span class="nav-icon">🔑</span>
+          <span>API Key 配置</span>
+        </div>
+        <div class="nav-item" data-section="models">
+          <span class="nav-icon">🧠</span>
+          <span>模型选择</span>
+        </div>
+        <div class="nav-item" data-section="features">
+          <span class="nav-icon">⚙️</span>
+          <span>功能开关</span>
+        </div>
+        <div class="nav-item" data-section="test">
+          <span class="nav-icon">🔌</span>
+          <span>连接测试</span>
+        </div>
+        <div class="nav-item" data-section="export">
+          <span class="nav-icon">💾</span>
+          <span>保存 / 导出</span>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        Companion AI v1.0<br>
+        本地开发配置工具
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <header class="page-header">
+        <h1 id="page-title">API Key 配置</h1>
+        <p id="page-desc">配置各服务的 API Key，至少填写一个 LLM 提供商的 Key</p>
+      </header>
+
+      <!-- Lite Mode Banner -->
+      <div id="lite-banner" class="lite-mode-banner" style="display:none;">
+        <span class="banner-icon">⚡</span>
+        <span>Lite Mode 已启用 — 无需 Docker / Redis / PostgreSQL / Neo4j，使用内存/SQLite 替代</span>
+      </div>
+
+      <!-- Section: API Keys -->
+      <section id="section-api-keys" class="content-section">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon">🔑</div>
+            <h2>API Key 配置</h2>
+            <span class="card-desc">云端服务认证信息</span>
+          </div>
+          <div id="api-keys-content"></div>
+        </div>
+      </section>
+
+      <!-- Section: Models -->
+      <section id="section-models" class="content-section" style="display:none;">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon">🧠</div>
+            <h2>模型选择</h2>
+            <span class="card-desc">LLM 与语音模型配置</span>
+          </div>
+          <div id="model-content"></div>
+        </div>
+      </section>
+
+      <!-- Section: Features -->
+      <section id="section-features" class="content-section" style="display:none;">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon">⚙️</div>
+            <h2>功能开关</h2>
+            <span class="card-desc">启用或禁用各功能模块</span>
+          </div>
+          <div id="feature-content"></div>
+        </div>
+
+        <!-- Server-side config (hidden in lite mode) -->
+        <div id="section-server" class="card">
+          <div class="card-header">
+            <div class="card-icon">🖥️</div>
+            <h2>服务端配置</h2>
+            <span class="card-desc">非 Lite 模式下需要配置</span>
+          </div>
+          <div style="padding:12px;background:var(--bg-input);border-radius:var(--radius-sm);font-size:0.85rem;color:var(--text-secondary);line-height:2;">
+            <p>请确保以下服务已启动：</p>
+            <ul style="margin-left:20px;margin-top:8px;">
+              <li>Redis — 事件总线与短期缓存（默认 localhost:6379）</li>
+              <li>PostgreSQL + pgvector — 向量数据库（默认 localhost:5432）</li>
+              <li>Neo4j — 知识图谱（默认 localhost:7687）</li>
+              <li>MQTT Broker — 跨设备协调（默认 localhost:1883）</li>
+            </ul>
+            <p style="margin-top:12px;color:var(--text-muted);">
+              这些配置通过 .env 文件中的 COMPANION_REDIS_URL、COMPANION_POSTGRES_URL、COMPANION_NEO4J_URI、COMPANION_MQTT_BROKER_HOST 设置。
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section: Test -->
+      <section id="section-test" class="content-section" style="display:none;">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon">🔌</div>
+            <h2>LLM API 测试</h2>
+            <span class="card-desc">验证 OpenAI / Anthropic 连通性</span>
+          </div>
+          <div class="btn-group">
+            <button id="test-llm-btn" class="btn btn-primary">
+              <span>🧪</span> 测试 LLM 连接
+            </button>
+          </div>
+          <div id="llm-test-results" class="test-results"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon">🖥️</div>
+            <h2>后端服务测试</h2>
+            <span class="card-desc">Ping 各微服务的 /health 端点</span>
+          </div>
+          <div class="btn-group">
+            <button id="test-backend-btn" class="btn btn-primary">
+              <span>🔍</span> 测试后端服务
+            </button>
+          </div>
+          <div id="backend-test-results" class="test-results"></div>
+        </div>
+      </section>
+
+      <!-- Section: Export / Save -->
+      <section id="section-export" class="content-section" style="display:none;">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon">💾</div>
+            <h2>保存配置</h2>
+            <span class="card-desc">持久化到浏览器</span>
+          </div>
+          <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px;">
+            将当前配置保存到浏览器的 localStorage 中，下次打开页面时自动恢复。
+          </p>
+          <button id="save-btn" class="btn btn-success">
+            <span>💾</span> 保存配置
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon">📤</div>
+            <h2>导出 / 导入 .env</h2>
+            <span class="card-desc">与项目 .env 文件互操作</span>
+          </div>
+          <div class="btn-group" style="margin-bottom:20px;">
+            <button id="export-btn" class="btn btn-primary">
+              <span>📤</span> 导出 .env 文件
+            </button>
+            <div class="file-upload-wrap">
+              <button class="btn btn-secondary">
+                <span>📥</span> 从 .env 导入
+              </button>
+              <input type="file" id="import-file" accept=".env,.txt">
+            </div>
+          </div>
+          <p style="color:var(--text-muted);font-size:0.8rem;">
+            导出的 .env 文件可直接放入项目根目录使用。导入支持标准 KEY=VALUE 格式，以 COMPANION_ 为前缀。
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon">🚀</div>
+            <h2>启动命令</h2>
+            <span class="card-desc">一键生成启动脚本</span>
+          </div>
+          <div id="command-content"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

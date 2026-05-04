@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live2D 纯CDN测试</title>
+
+    <!-- Live2D Cubism 运行时库 -->
+    <script src="https://cdn.jsdelivr.net/gh/dylanNew/live2d/webgl/Live2D/lib/live2d.min.js"></script>
+
+    <!-- PixiJS UMD -->
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.4.2/dist/pixi.min.js"></script>
+
+    <!-- pixi-live2d-display UMD -->
+    <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/index.min.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #0d0d1a;
+            color: #e2e8f0;
+            font-family: monospace;
+        }
+        h1 { color: #e94560; }
+        #status {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 16px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+        }
+        #canvas-container {
+            width: 400px;
+            height: 600px;
+            border: 2px solid #e94560;
+            border-radius: 20px;
+            background: rgba(26, 26, 46, 0.5);
+        }
+        .error { color: #f87171; }
+        .success { color: #6ee7b7; }
+    </style>
+</head>
+<body>
+    <h1>✨ Live2D 纯CDN测试</h1>
+    <div id="status">
+        <p id="log"></p>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script>
+        const log = document.getElementById('log');
+        function addLog(msg, isError = false) {
+            const p = document.createElement('p');
+            p.textContent = msg;
+            p.className = isError ? 'error' : 'success';
+            log.appendChild(p);
+            console.log(msg);
+        }
+
+        // 检查依赖
+        if (typeof Live2D === 'undefined') {
+            addLog('❌ Live2D Cubism运行时未加载', true);
+        } else {
+            addLog('✅ Live2D Cubism运行时已加载');
+        }
+
+        if (typeof PIXI === 'undefined') {
+            addLog('❌ PixiJS未加载', true);
+        } else {
+            addLog('✅ PixiJS ' + PIXI.VERSION + ' 已加载');
+        }
+
+        if (typeof PIXI === 'undefined' || typeof PIXI.live2d === 'undefined') {
+            addLog('❌ pixi-live2d-display未加载', true);
+            addLog('可能CDN被墙，请使用VPN或等待', true);
+        } else {
+            addLog('✅ pixi-live2d-display已加载');
+
+            // 加载模型
+            (async function() {
+                try {
+                    addLog('⏳ 正在创建PixiJS应用...');
+
+                    const app = new PIXI.Application({
+                        width: 400,
+                        height: 600,
+                        backgroundAlpha: 0,
+                        antialias: true,
+                    });
+
+                    document.getElementById('canvas-container').appendChild(app.view);
+                    addLog('✅ PixiJS应用创建成功');
+
+                    addLog('⏳ 正在从CDN加载Live2D模型...');
+
+                    const model = await PIXI.live2d.Live2DModel.from(
+                        'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/shizuku/shizuku.model.json',
+                        { autoInteract: true }
+                    );
+
+                    const scaleX = 400 / model.width;
+                    const scaleY = 600 / model.height;
+                    const scale = Math.min(scaleX, scaleY) * 0.8;
+
+                    model.scale.set(scale);
+                    model.x = 200;
+                    model.y = 300;
+                    model.anchor.set(0.5, 0.5);
+
+                    app.stage.addChild(model);
+
+                    addLog('🎉 模型加载成功！鼠标移动试试看');
+
+                } catch (err) {
+                    console.error(err);
+                    addLog('❌ 模型加载失败: ' + err.message, true);
+                }
+            })();
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live2D 诊断</title>
+
+    <!-- Live2D Cubism 运行时库 -->
+    <script src="https://cdn.jsdelivr.net/gh/dylanNew/live2d/webgl/Live2D/lib/live2d.min.js"></script>
+
+    <!-- PixiJS UMD -->
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.4.2/dist/pixi.min.js"></script>
+
+    <!-- pixi-live2d-display UMD -->
+    <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/index.min.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #0d0d1a;
+            color: #e2e8f0;
+            font-family: monospace;
+        }
+        pre {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔍 Live2D 诊断工具</h1>
+    <h2>全局对象检查</h2>
+    <pre id="output"></pre>
+
+    <script>
+        const output = document.getElementById('output');
+        let log = '';
+
+        function add(msg) {
+            log += msg + '\n';
+            console.log(msg);
+        }
+
+        // 检查所有可能的全局变量
+        add('=== 检查全局变量 ===\n');
+
+        add('typeof Live2D: ' + typeof Live2D);
+        add('typeof Live2DCubismCore: ' + typeof Live2DCubismCore);
+        add('typeof PIXI: ' + typeof PIXI);
+
+        if (typeof PIXI !== 'undefined') {
+            add('PIXI.VERSION: ' + PIXI.VERSION);
+            add('typeof PIXI.live2d: ' + typeof PIXI.live2d);
+
+            if (typeof PIXI.live2d !== 'undefined') {
+                add('PIXI.live2d keys: ' + Object.keys(PIXI.live2d).join(', '));
+            }
+        }
+
+        add('\n=== 检查window对象上的Live2D相关属性 ===\n');
+
+        const live2dKeys = Object.keys(window).filter(key =>
+            key.toLowerCase().includes('live2d') || key.toLowerCase().includes('pixi')
+        );
+
+        add('找到的相关全局变量:');
+        live2dKeys.forEach(key => {
+            add('  - window.' + key + ' (' + typeof window[key] + ')');
+        });
+
+        // 检查特定的可能暴露点
+        add('\n=== 检查可能的API入口 ===\n');
+
+        const checks = [
+            'window.Live2DModel',
+            'window.PIXI.live2d.Live2DModel',
+            'window.PIXI.Live2DModel',
+            'window.PixiLive2dDisplay',
+        ];
+
+        checks.forEach(path => {
+            try {
+                const value = eval(path);
+                add(path + ': ' + typeof value);
+                if (typeof value === 'function') {
+                    add('  ✅ 这是一个构造函数!');
+                }
+            } catch (err) {
+                add(path + ': undefined');
+            }
+        });
+
+        // 如果PIXI存在，列出所有属性
+        if (typeof PIXI !== 'undefined') {
+            add('\n=== PIXI对象的所有属性 ===\n');
+            const pixiKeys = Object.keys(PIXI).slice(0, 50); // 只显示前50个
+            add(pixiKeys.join(', '));
+        }
+
+        output.textContent = log;
+    </script>
+</body>
+</html>

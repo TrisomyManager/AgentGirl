@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Live2D Test</title>
+
+    <!-- Live2D Cubism 运行时库 -->
+    <script src="https://cdn.jsdelivr.net/gh/dylanNew/live2d/webgl/Live2D/lib/live2d.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/live2d-cubism-core@1.0.0/live2dcubismcore.min.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #0d0d1a;
+            color: #e2e8f0;
+            font-family: monospace;
+        }
+        #status {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 16px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+        }
+        #canvas-container {
+            width: 400px;
+            height: 600px;
+            border: 2px solid #e94560;
+            border-radius: 20px;
+            background: rgba(26, 26, 46, 0.5);
+            position: relative;
+        }
+        .error {
+            color: #f87171;
+        }
+        .success {
+            color: #6ee7b7;
+        }
+    </style>
+</head>
+<body>
+    <h1>简易Live2D测试</h1>
+    <div id="status">
+        <p id="step1">步骤1: 检查Live2D运行时...</p>
+        <p id="step2">步骤2: 加载PixiJS...</p>
+        <p id="step3">步骤3: 加载pixi-live2d-display...</p>
+        <p id="step4">步骤4: 加载模型...</p>
+        <p id="error" class="error"></p>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="module">
+        console.log('=== Simple Live2D Test ===');
+
+        // 步骤1: 检查Live2D运行时
+        if (typeof Live2D !== 'undefined') {
+            document.getElementById('step1').className = 'success';
+            document.getElementById('step1').textContent = '✅ 步骤1: Live2D Cubism 2.x 运行时已加载';
+        } else {
+            document.getElementById('step1').className = 'error';
+            document.getElementById('step1').textContent = '❌ 步骤1: Live2D运行时加载失败';
+        }
+
+        if (typeof Live2DCubismCore !== 'undefined') {
+            console.log('✅ Live2D Cubism 4.x core loaded');
+        }
+
+        try {
+            // 步骤2: 加载PixiJS (从node_modules)
+            const PIXI = await import('/node_modules/pixi.js/dist/pixi.mjs');
+            window.PIXI = PIXI;
+            document.getElementById('step2').className = 'success';
+            document.getElementById('step2').textContent = '✅ 步骤2: PixiJS从本地加载成功';
+            console.log('✅ PixiJS loaded:', PIXI);
+
+            // 步骤3: 加载pixi-live2d-display (从node_modules)
+            const live2dModule = await import('/node_modules/pixi-live2d-display/dist/index.mjs');
+            const { Live2DModel } = live2dModule;
+            document.getElementById('step3').className = 'success';
+            document.getElementById('step3').textContent = '✅ 步骤3: pixi-live2d-display从本地加载成功';
+            console.log('✅ Live2DModel loaded:', Live2DModel);
+
+            // 创建PixiJS应用
+            const app = new PIXI.Application({
+                width: 400,
+                height: 600,
+                backgroundAlpha: 0,
+                antialias: true,
+            });
+            document.getElementById('canvas-container').appendChild(app.view);
+            console.log('✅ PixiJS app created');
+
+            // 步骤4: 加载模型
+            document.getElementById('step4').textContent = '⏳ 步骤4: 正在从CDN加载模型...';
+
+            const model = await Live2DModel.from(
+                'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/shizuku/shizuku.model.json',
+                { autoInteract: true }
+            );
+
+            // 调整模型大小
+            const scaleX = 400 / model.width;
+            const scaleY = 600 / model.height;
+            const scale = Math.min(scaleX, scaleY) * 0.8;
+            model.scale.set(scale);
+            model.x = 200;
+            model.y = 300;
+            model.anchor.set(0.5, 0.5);
+
+            app.stage.addChild(model);
+
+            document.getElementById('step4').className = 'success';
+            document.getElementById('step4').textContent = '✅ 步骤4: 模型加载成功！鼠标移动试试';
+            console.log('✅ Model loaded successfully!');
+
+        } catch (err) {
+            console.error('❌ Error:', err);
+            document.getElementById('error').textContent = '错误: ' + err.message;
+
+            // 标记失败的步骤
+            if (!document.getElementById('step2').className) {
+                document.getElementById('step2').className = 'error';
+                document.getElementById('step2').textContent = '❌ 步骤2: PixiJS加载失败';
+            } else if (!document.getElementById('step3').className) {
+                document.getElementById('step3').className = 'error';
+                document.getElementById('step3').textContent = '❌ 步骤3: pixi-live2d-display加载失败';
+            } else {
+                document.getElementById('step4').className = 'error';
+                document.getElementById('step4').textContent = '❌ 步骤4: 模型加载失败';
+            }
+        }
+    </script>
+</body>
+</html>

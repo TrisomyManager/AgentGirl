@@ -1,0 +1,19 @@
+{
+  "name": "@companion-ai/sdk",
+  "version": "0.1.0",
+  "description": "Companion AI Frontend SDK for standalone App",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "eslint src/**/*.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live2D Test</title>
+
+    <!-- Live2D Cubism 运行时库 -->
+    <script src="https://cdn.jsdelivr.net/gh/dylanNew/live2d/webgl/Live2D/lib/live2d.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/live2d-cubism-core@1.0.0/live2dcubismcore.min.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #0d0d1a;
+            color: #e2e8f0;
+            font-family: monospace;
+        }
+        #status {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 16px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+        }
+        #canvas {
+            border: 2px solid #e94560;
+            border-radius: 20px;
+            background: rgba(26, 26, 46, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <h1>Live2D 最小化测试</h1>
+    <div id="status">
+        <p id="loading">正在加载PixiJS和Live2D库...</p>
+        <p id="model-status">模型状态: 等待中</p>
+        <p id="error-msg" style="color: #f87171;"></p>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="module">
+        console.log('=== Live2D Test Start ===');
+
+        // 1. 加载PixiJS
+        try {
+            const pixiModule = await import('https://cdn.jsdelivr.net/npm/pixi.js@7/dist/pixi.min.mjs');
+            window.PIXI = pixiModule;
+            console.log('✅ PixiJS loaded:', pixiModule);
+            document.getElementById('loading').textContent = '✅ PixiJS加载成功';
+        } catch (err) {
+            console.error('❌ PixiJS failed:', err);
+            document.getElementById('error-msg').textContent = 'PixiJS加载失败: ' + err;
+        }
+
+        // 2. 加载Live2D Display
+        try {
+            const live2dModule = await import('https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/index.min.mjs');
+            const { Live2DModel } = live2dModule;
+            console.log('✅ Live2D module loaded:', live2dModule);
+            document.getElementById('model-status').textContent = '✅ Live2D库加载成功';
+
+            // 3. 创建PixiJS应用
+            const app = new window.PIXI.Application({
+                width: 400,
+                height: 600,
+                backgroundAlpha: 0,
+                antialias: true,
+            });
+            document.getElementById('canvas-container').appendChild(app.view);
+            console.log('✅ PixiJS app created');
+
+            // 4. 加载模型
+            document.getElementById('model-status').textContent = '⏳ 正在加载Live2D模型...';
+            const model = await Live2DModel.from(
+                'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/shizuku/shizuku.model.json',
+                { autoInteract: true }
+            );
+
+            // 5. 调整模型大小
+            const scaleX = 400 / model.width;
+            const scaleY = 600 / model.height;
+            const scale = Math.min(scaleX, scaleY) * 0.8;
+            model.scale.set(scale);
+            model.x = 200;
+            model.y = 300;
+            model.anchor.set(0.5, 0.5);
+
+            app.stage.addChild(model);
+
+            console.log('✅ Model loaded successfully!');
+            document.getElementById('model-status').textContent = '✅ 模型加载成功！鼠标移动试试看';
+            document.getElementById('model-status').style.color = '#6ee7b7';
+
+        } catch (err) {
+            console.error('❌ Live2D error:', err);
+            document.getElementById('error-msg').textContent = 'Live2D错误: ' + err.message;
+            document.getElementById('model-status').textContent = '❌ 模型加载失败';
+        }
+    </script>
+</body>
+</html>

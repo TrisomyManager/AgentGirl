@@ -1,0 +1,246 @@
+version: "3.9"
+
+services:
+  # ------------------------------------------------------------------
+  # Data layer
+  # ------------------------------------------------------------------
+  postgres:
+    image: ankane/pgvector:latest
+    container_name: companion-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: companion
+      POSTGRES_PASSWORD: companion_pass
+      POSTGRES_DB: companion
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_pgvector.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U companion -d companion"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: companion-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/companion_pass
+      NEO4J_PLUGINS: '["apoc", "gds"]'
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: companion-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: companion-mqtt
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+
+  # ------------------------------------------------------------------
+  # Application layer
+  # ------------------------------------------------------------------
+  core_orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: companion-core
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      COMPANION_SERVICE_NAME: core_orchestrator
+      COMPANION_SERVICE_PORT: 8000
+      COMPANION_REDIS_URL: redis://redis:6379/0
+      COMPANION_POSTGRES_URL: postgresql://companion:companion_pass@postgres:5432/companion
+      COMPANION_NEO4J_URI: bolt://neo4j:7687
+      COMPANION_NEO4J_USER: neo4j
+      COMPANION_NEO4J_PASSWORD: companion_pass
+      COMPANION_MQTT_BROKER_HOST: mosquitto
+      COMPANION_MQTT_BROKER_PORT: 1883
+      COMPANION_DEFAULT_LLM_MODEL: gpt-4o
+      COMPANION_OPENAI_API_KEY: ${OPENAI_API_KEY}
+      COMPANION_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+    command: uvicorn core_orchestrator.main:app --host 0.0.0.0 --port 8000
+
+  persona_engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: companion-persona
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      COMPANION_SERVICE_NAME: persona_engine
+      COMPANION_SERVICE_PORT: 8001
+      COMPANION_REDIS_URL: redis://redis:6379/0
+      COMPANION_POSTGRES_URL: postgresql://companion:companion_pass@postgres:5432/companion
+      COMPANION_DEFAULT_LLM_MODEL: gpt-4o
+      COMPANION_OPENAI_API_KEY: ${OPENAI_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn persona_engine.main:app --host 0.0.0.0 --port 8001
+
+  memory_system:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: companion-memory
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    environment:
+      COMPANION_SERVICE_NAME: memory_system
+      COMPANION_SERVICE_PORT: 8002
+      COMPANION_REDIS_URL: redis://redis:6379/0
+      COMPANION_POSTGRES_URL: postgresql://companion:companion_pass@postgres:5432/companion
+      COMPANION_NEO4J_URI: bolt://neo4j:7687
+      COMPANION_NEO4J_USER: neo4j
+      COMPANION_NEO4J_PASSWORD: companion_pass
+      COMPANION_DEFAULT_LLM_MODEL: gpt-4o
+      COMPANION_OPENAI_API_KEY: ${OPENAI_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+    command: uvicorn memory_system.main:app --host 0.0.0.0 --port 8002
+
+  voice_layer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: companion-voice
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+    environment:
+      COMPANION_SERVICE_NAME: voice_layer
+      COMPANION_SERVICE_PORT: 8003
+      COMPANION_TTS_PROVIDER: fish_audio
+      COMPANION_TTS_API_KEY: ${TTS_API_KEY}
+      COMPANION_WHISPER_API_KEY: ${WHISPER_API_KEY}
+    command: uvicorn voice_layer.main:app --host 0.0.0.0 --port 8003
+
+  action_layer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: companion-action
+    restart: unless-stopped
+    ports:
+      - "8004:8004"
+    environment:
+      COMPANION_SERVICE_NAME: action_layer
+      COMPANION_SERVICE_PORT: 8004
+      COMPANION_ACTION_API_KEY: ${ACTION_API_KEY}
+    command: uvicorn action_layer.main:app --host 0.0.0.0 --port 8004
+
+  device_coordination:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: companion-device
+    restart: unless-stopped
+    ports:
+      - "8005:8005"
+    environment:
+      COMPANION_SERVICE_NAME: device_coordination
+      COMPANION_SERVICE_PORT: 8005
+      COMPANION_REDIS_URL: redis://redis:6379/0
+      COMPANION_POSTGRES_URL: postgresql://companion:companion_pass@postgres:5432/companion
+      COMPANION_MQTT_BROKER_HOST: mosquitto
+      COMPANION_MQTT_BROKER_PORT: 1883
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn device_coordination.main:app --host 0.0.0.0 --port 8005
+
+  gateway_adapter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: companion-gateway
+    restart: unless-stopped
+    ports:
+      - "8006:8006"
+    environment:
+      COMPANION_SERVICE_NAME: gateway_adapter
+      COMPANION_SERVICE_PORT: 8006
+      COMPANION_REDIS_URL: redis://redis:6379/0
+      COMPANION_JWT_SECRET: ${JWT_SECRET}
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn gateway_adapter.main:app --host 0.0.0.0 --port 8006
+
+  # ------------------------------------------------------------------
+  # Workers
+  # ------------------------------------------------------------------
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: companion-celery
+    restart: unless-stopped
+    environment:
+      COMPANION_REDIS_URL: redis://redis:6379/0
+      COMPANION_POSTGRES_URL: postgresql://companion:companion_pass@postgres:5432/companion
+      COMPANION_NEO4J_URI: bolt://neo4j:7687
+      COMPANION_NEO4J_USER: neo4j
+      COMPANION_NEO4J_PASSWORD: companion_pass
+      COMPANION_DEFAULT_LLM_MODEL: gpt-4o
+      COMPANION_OPENAI_API_KEY: ${OPENAI_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+    command: celery -A memory_system.pipeline worker --loglevel=info --concurrency=2
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  redis_data:
+  mosquitto_data:
