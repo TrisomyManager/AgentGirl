@@ -237,7 +237,7 @@ sleep 6
 grep "lite_mode=" /tmp/backend.log    # 必须看到 lite_mode=True
 ```
 
-或者更稳的做法：把 `COMPANION_LITE_MODE=true` 写到 `companion-ai/.env`，让 pydantic-settings 直接 pick up，避免 env 注入问题。
+**已补齐的文档/约定（本轮）**：`companion-ai/.env.example` 现已包含上述 Lite Mode 相关变量说明；把该文件复制为同目录下的 `.env`（仓库已 gitignore）即可让 pydantic-settings 在任意启动方式下 pick up，无需依赖 tmux 里 fragile 的 `export` 行。更省事的一键启动仍推荐 `python scripts/start_lite_server.py`（在 import `main` 之前强制 `COMPANION_LITE_MODE=true`）。
 
 ### Cloud preview URL（可能已失效）
 
