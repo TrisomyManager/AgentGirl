@@ -384,6 +384,46 @@ export function useApi() {
     }
   }
 
+  // ── Action executor / reminders ──
+  async function listReminders(
+    userId: string,
+    opts: { includeFired?: boolean; includeCancelled?: boolean } = {},
+  ): Promise<any[] | null> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.includeFired) params.set('include_fired', 'true');
+      if (opts.includeCancelled) params.set('include_cancelled', 'true');
+      const url = `${ORCHESTRATOR_URL}/actions/reminders/${encodeURIComponent(userId)}${params.toString() ? `?${params}` : ''}`;
+      const resp = await fetch(url);
+      if (!resp.ok) return null;
+      return await resp.json();
+    } catch {
+      return null;
+    }
+  }
+
+  async function cancelReminder(reminderId: string, userId?: string): Promise<boolean> {
+    try {
+      const params = new URLSearchParams();
+      if (userId) params.set('user_id', userId);
+      const url = `${ORCHESTRATOR_URL}/actions/reminders/${encodeURIComponent(reminderId)}${params.toString() ? `?${params}` : ''}`;
+      const resp = await fetch(url, { method: 'DELETE' });
+      return resp.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async function listActions(): Promise<any[] | null> {
+    try {
+      const resp = await fetch(`${ORCHESTRATOR_URL}/actions/list`);
+      if (!resp.ok) return null;
+      return await resp.json();
+    } catch {
+      return null;
+    }
+  }
+
   function clearError() {
     error.value = null;
   }
@@ -406,6 +446,9 @@ export function useApi() {
     recallMemory,
     deleteMemory,
     deleteAllMemories,
+    listReminders,
+    cancelReminder,
+    listActions,
     clearError,
   };
 }
