@@ -213,6 +213,51 @@ def _rule_based_reply(user_message: str, persona_name: str = "小暖") -> str:
     return "我在认真听你说。你可以继续讲，我会尽量记住对你重要的内容。"
 
 
+async def _try_action_executor(tc: TurnContext, intent: str) -> Optional[Dict[str, Any]]:
+    """If the user message looks like a registered action, run it.
+
+    Returns ``None`` when no action matches — the caller should fall
+    back to the normal LLM-driven path. Returns a dict with the
+    handler name + ``ActionResult`` fields when the executor handled
+    the turn, so the state machine can render the assistant message
+    without spending an LLM call.
+
+    Routing rule (deliberately simple, all keyword-based):
+      1. The intent_router routed to TOOL_USE.
+      2. ``ActionRegistry.find_by_keyword`` matches one of the
+         registered handlers' keyword list.
+      3. We dispatch with a ``raw_text`` param so handlers like
+         ``set_reminder`` can re-parse the natural-language delay.
+    """
+    if intent != Intent.TOOL_USE.value:
+        return None
+    try:
+        from action_executor import handlers as _handlers  # noqa: F401
+        from action_executor.registry import get_registry
+    except Exception as exc:
+        logger.warning("action_executor.import_failed", error=str(exc))
+        return None
+
+    registry = get_registry()
+    name = registry.find_by_keyword(tc.user_message)
+    if not name:
+        return None
+
+    params: Dict[str, Any] = {
+        "user_id": tc.user.user_id,
+        "session_id": tc.session_id,
+        "raw_text": tc.user_message,
+    }
+    result = await registry.dispatch(name, params)
+    return {
+        "name": name,
+        "ok": result.ok,
+        "message": result.message,
+        "data": result.data,
+        "proactive_push": result.proactive_push,
+    }
+
+
 async def _generate_response_monolithic(tc: TurnContext, system_prompt: str, persona_name: str = "小暖") -> str:
     """Call LLM directly (monolithic mode) without HTTP roundtrip to persona_engine."""
     from shared.llm_client import LLMClient
@@ -468,6 +513,14 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
             state["assistant_message"] = "设备指令发送失败了，你可以稍后再试一次。"
             state["messages"] = messages + [AIMessage(content=state["assistant_message"])]
             return state
+
+    action_handled = await _try_action_executor(tc, intent)
+    if action_handled is not None and action_handled.get("ok"):
+        assistant_msg = action_handled.get("message") or "好的。"
+        state["assistant_message"] = assistant_msg
+        state["messages"] = messages + [AIMessage(content=assistant_msg)]
+        log.info("action_executor_handled", name=action_handled.get("name"))
+        return state
 
     # Monolithic mode: call LLM/fallback directly, skip HTTP to persona_engine
     if _is_monolithic():
@@ -813,6 +866,21 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
             yield {"event": "token", "text": assistant_msg}
         state["assistant_message"] = assistant_msg
         state["messages"] = list(state["messages"]) + [AIMessage(content=assistant_msg)]
+    elif (action_handled := await _try_action_executor(tc, intent)) and action_handled.get("ok"):
+        # Action executor handled it (set_reminder / get_time / ...). Stream
+        # the deterministic reply through chunk_text_stream so the UI gets
+        # the same token-by-token feel as an LLM reply.
+        from shared.llm_client import chunk_text_stream
+
+        assistant_msg = action_handled.get("message") or "好的。"
+        accumulated: List[str] = []
+        async for chunk in chunk_text_stream(assistant_msg):
+            accumulated.append(chunk)
+            yield {"event": "token", "text": chunk}
+        full = "".join(accumulated) or assistant_msg
+        state["assistant_message"] = full
+        state["messages"] = list(state["messages"]) + [AIMessage(content=full)]
+        logger.info("stream.action_executor_handled", name=action_handled.get("name"))
     else:
         accumulated: List[str] = []
         try:
