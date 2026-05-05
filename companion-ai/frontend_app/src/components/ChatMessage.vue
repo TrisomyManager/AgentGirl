@@ -10,18 +10,17 @@
     <div class="message-content">
       <div class="message-bubble" :class="message.role">
         <div
-          v-if="message.isTyping"
+          v-if="message.isTyping && !message.content"
           class="typing-indicator"
         >
           <span></span>
           <span></span>
           <span></span>
         </div>
-        <div
-          v-else
-          class="message-text"
-          v-html="renderedContent"
-        ></div>
+        <div v-else class="message-text">
+          <span v-html="renderedContent"></span>
+          <span v-if="message.isTyping" class="streaming-cursor" aria-hidden="true">▍</span>
+        </div>
       </div>
 
       <div class="message-meta" :class="message.role">
@@ -76,8 +75,8 @@ function renderMarkdown(text: string): string {
 }
 
 const renderedContent = computed(() => {
-  if (props.message.isTyping) return '';
-  return renderMarkdown(props.message.content);
+  if (props.message.isTyping && !props.message.content) return '';
+  return renderMarkdown(props.message.content || '');
 });
 </script>
 
@@ -192,6 +191,18 @@ const renderedContent = computed(() => {
   padding: 1px 8px;
   border-radius: 10px;
   font-size: 10px;
+}
+
+.streaming-cursor {
+  display: inline-block;
+  margin-left: 1px;
+  color: #e94560;
+  animation: cursorBlink 1s steps(1) infinite;
+  font-weight: 700;
+}
+
+@keyframes cursorBlink {
+  50% { opacity: 0; }
 }
 
 .typing-indicator {

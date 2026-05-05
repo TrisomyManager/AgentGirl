@@ -160,6 +160,56 @@
           </div>
         </section>
 
+        <section
+          v-if="statusData?.release_notes && statusData.release_notes.items.length"
+          class="glass-card release-card"
+        >
+          <div class="section-head release-head">
+            <div>
+              <span class="section-label">本轮交付</span>
+              <h3 class="release-title">{{ statusData.release_notes.title }}</h3>
+            </div>
+            <span v-if="statusData.release_notes.pr_branch" class="chip neutral release-branch">
+              {{ statusData.release_notes.pr_branch }}
+            </span>
+          </div>
+          <p v-if="statusData.release_notes.summary" class="release-summary">
+            {{ statusData.release_notes.summary }}
+          </p>
+          <div class="release-meta-row">
+            <span
+              v-for="(count, cat) in releaseCategoryCounts"
+              :key="cat"
+              class="chip"
+              :class="getReleaseCategoryClass(cat)"
+            >
+              {{ getReleaseCategoryLabel(cat) }} · {{ count }}
+            </span>
+          </div>
+          <div class="release-grid">
+            <article
+              v-for="(item, index) in statusData.release_notes.items"
+              :key="`release-${index}`"
+              class="release-item"
+              :class="getReleaseCategoryClass(item.category)"
+            >
+              <div class="release-item-top">
+                <span class="chip" :class="getReleaseCategoryClass(item.category)">
+                  {{ getReleaseCategoryLabel(item.category) }}
+                </span>
+                <strong>{{ item.title }}</strong>
+              </div>
+              <p class="release-detail">{{ item.detail }}</p>
+              <p v-if="item.impact" class="release-impact">
+                <span class="impact-label">影响：</span>{{ item.impact }}
+              </p>
+              <div v-if="item.refs.length" class="release-refs">
+                <code v-for="ref in item.refs" :key="ref" class="release-ref">{{ ref }}</code>
+              </div>
+            </article>
+          </div>
+        </section>
+
         <section class="glass-card">
           <div class="section-head">
             <span class="section-label">架构分层</span>
@@ -360,6 +410,21 @@ interface ModuleInfo {
   last_updated: string;
 }
 
+interface ReleaseNoteItem {
+  category: string;
+  title: string;
+  detail: string;
+  impact: string;
+  refs: string[];
+}
+
+interface ReleaseSection {
+  title: string;
+  pr_branch: string;
+  summary: string;
+  items: ReleaseNoteItem[];
+}
+
 interface ProjectStatusData {
   project_name: string;
   version: string;
@@ -374,6 +439,7 @@ interface ProjectStatusData {
   test_snapshot: TestSnapshot;
   modules: ModuleInfo[];
   architecture_layers: Record<string, string[]>;
+  release_notes?: ReleaseSection;
 }
 
 const API_BASE_URL =
@@ -417,6 +483,15 @@ const stats = computed(() => {
   };
 });
 
+const releaseCategoryCounts = computed<Record<string, number>>(() => {
+  const items = statusData.value?.release_notes?.items ?? [];
+  const counts: Record<string, number> = {};
+  for (const item of items) {
+    counts[item.category] = (counts[item.category] ?? 0) + 1;
+  }
+  return counts;
+});
+
 async function loadStatus() {
   loading.value = true;
   error.value = '';
@@ -456,6 +531,29 @@ function getMilestoneLabel(status: string): string {
     queued: '排队中',
   };
   return labels[status] || status;
+}
+
+function getReleaseCategoryLabel(category: string): string {
+  const labels: Record<string, string> = {
+    feature: '新特性',
+    fix: '修复',
+    docs: '文档',
+    chore: '工程',
+    infra: '基础设施',
+  };
+  return labels[category] || category;
+}
+
+function getReleaseCategoryClass(category: string): string {
+  // Map to CSS class names that mirror the existing chip color tokens.
+  const classes: Record<string, string> = {
+    feature: 'release-feature',
+    fix: 'release-fix',
+    docs: 'release-docs',
+    chore: 'release-chore',
+    infra: 'release-infra',
+  };
+  return classes[category] || 'release-other';
 }
 
 function getModuleStatus(moduleId: string): ModuleInfo['status'] | 'planned' {
@@ -1213,11 +1311,178 @@ onMounted(() => {
   font-size: 12px;
 }
 
+/* ───────── 本轮交付 ───────── */
+.release-card {
+  background:
+    radial-gradient(circle at top right, rgba(110, 231, 183, 0.14), transparent 40%),
+    radial-gradient(circle at bottom left, rgba(192, 132, 252, 0.12), transparent 38%),
+    rgba(255, 255, 255, 0.04);
+}
+
+.release-head {
+  align-items: flex-start;
+}
+
+.release-title {
+  margin: 4px 0 0;
+  font-size: 18px;
+  color: #f8fafc;
+  letter-spacing: 0.01em;
+}
+
+.release-branch {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+}
+
+.release-summary {
+  margin: 0 0 14px;
+  color: #cbd5e1;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.release-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.release-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.release-item {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 14px 16px;
+  background: rgba(15, 23, 42, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: transform 0.18s ease, border-color 0.18s ease;
+}
+
+.release-item:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.release-item-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.release-item-top strong {
+  color: #f8fafc;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.release-detail {
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.release-impact {
+  margin: 0;
+  font-size: 12.5px;
+  color: #d1fae5;
+  line-height: 1.6;
+}
+
+.impact-label {
+  color: #6ee7b7;
+  font-weight: 600;
+}
+
+.release-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.release-ref {
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  word-break: break-all;
+}
+
+/* Category-tinted chips and item left border. */
+.chip.release-feature {
+  background: rgba(110, 231, 183, 0.12);
+  border: 1px solid rgba(110, 231, 183, 0.32);
+  color: #6ee7b7;
+}
+
+.chip.release-fix {
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.32);
+  color: #fcd34d;
+}
+
+.chip.release-docs {
+  background: rgba(96, 165, 250, 0.14);
+  border: 1px solid rgba(96, 165, 250, 0.32);
+  color: #93c5fd;
+}
+
+.chip.release-chore {
+  background: rgba(192, 132, 252, 0.14);
+  border: 1px solid rgba(192, 132, 252, 0.32);
+  color: #d8b4fe;
+}
+
+.chip.release-infra {
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.32);
+  color: #7dd3fc;
+}
+
+.chip.release-other {
+  background: rgba(148, 163, 184, 0.14);
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  color: #cbd5e1;
+}
+
+.release-item.release-feature {
+  border-left: 3px solid rgba(110, 231, 183, 0.6);
+}
+
+.release-item.release-fix {
+  border-left: 3px solid rgba(251, 191, 36, 0.6);
+}
+
+.release-item.release-docs {
+  border-left: 3px solid rgba(96, 165, 250, 0.6);
+}
+
+.release-item.release-chore {
+  border-left: 3px solid rgba(192, 132, 252, 0.6);
+}
+
+.release-item.release-infra {
+  border-left: 3px solid rgba(56, 189, 248, 0.6);
+}
+
 @media (max-width: 1100px) {
   .overview-grid,
   .content-grid,
   .milestone-grid,
-  .modules-grid {
+  .modules-grid,
+  .release-grid {
     grid-template-columns: 1fr;
   }
 

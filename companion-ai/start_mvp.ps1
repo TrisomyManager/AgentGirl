@@ -32,11 +32,26 @@ Start-Process powershell -ArgumentList @(
 
 Start-Sleep -Seconds 3
 
+# Ensure frontend deps are installed before launching Vite
+$FrontendDir = Join-Path $Root 'frontend_app'
+$NodeModules = Join-Path $FrontendDir 'node_modules'
+if (-not (Test-Path $NodeModules)) {
+    Write-Host "[1.5/2] frontend_app/node_modules not found — running 'npm install' (first run only)..."
+    Push-Location $FrontendDir
+    & npm install
+    $npmExit = $LASTEXITCODE
+    Pop-Location
+    if ($npmExit -ne 0) {
+        Write-Host "  npm install failed (exit $npmExit). Install Node.js >= 18 and re-run this script." -ForegroundColor Red
+        return
+    }
+}
+
 # Start frontend
 Write-Host "[2/2] Starting Vue dev server..."
 Start-Process powershell -ArgumentList @(
     "-NoExit", "-Command",
-    "Set-Location '$Root\frontend_app'; " +
+    "Set-Location '$FrontendDir'; " +
     "`$env:VITE_API_BASE_URL='http://127.0.0.1:8000'; " +
     "npm run dev"
 ) -WindowStyle Normal

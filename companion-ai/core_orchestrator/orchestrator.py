@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import structlog
+from langchain_core.messages import AIMessage, SystemMessage
 
 from shared.config import get_settings
 from shared.events import TurnEndEvent
@@ -14,9 +15,19 @@ from shared.models import EmotionTag, TurnContext
 
 from core_orchestrator.event_bus import EventBus, get_event_bus
 from core_orchestrator.http_client import check_all_services
-from core_orchestrator.state_machine import build_initial_state, get_compiled_graph
+from core_orchestrator.state_machine import (
+    OrchestratorState,
+    build_initial_state,
+    get_compiled_graph,
+    stream_assistant_response,
+)
 
 logger = structlog.get_logger()
+
+
+def tc_dict_id(tc: TurnContext) -> str:
+    """Tiny helper exposed for the streaming code path."""
+    return tc.turn_id
 
 
 class Orchestrator:
@@ -80,6 +91,62 @@ class Orchestrator:
         await self._publish_turn_end(turn_context, final_state, result)
         log.info("process_turn_complete", assistant_length=len(result.get("assistant_message", "")))
         return result
+
+    async def process_turn_stream(
+        self,
+        turn_context: TurnContext,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Stream a turn as a sequence of structured events.
+
+        Event shapes (consumed by ``/orchestrator/turn/stream``):
+          - ``{"event": "meta",  "intent": ..., "emotion": ..., "memory_entries_count": N}``
+          - ``{"event": "token", "text": "..."}``
+          - ``{"event": "done",  "assistant_message": "...", "voice_url": ..., "emotion": ..., "action_sequence": ..., "turn_id": ..., "session_id": ..., "user_id": ...}``
+          - ``{"event": "error", "error": "..."}``
+
+        Token order matches LLM emission order. ``meta`` is fired once
+        intent classification + memory recall have run and before the first
+        token. ``done`` is fired after voice / action / memory sync.
+        """
+        log = logger.bind(turn_id=turn_context.turn_id, session_id=turn_context.session_id)
+        log.info(
+            "process_turn_stream_start",
+            user_id=turn_context.user.user_id,
+            platform=turn_context.platform.value,
+        )
+
+        try:
+            async for event in stream_assistant_response(turn_context):
+                if event.get("event") == "done":
+                    state = event.pop("_state", None)
+                    if state is not None:
+                        result = self._build_success_result(turn_context, state)
+                        await self._publish_turn_end(turn_context, state, result)
+                        event.update(
+                            {
+                                "assistant_message": result["assistant_message"],
+                                "emotion": result["emotion"],
+                                "voice_url": result["voice_url"],
+                                "action_sequence": result["action_sequence"],
+                                "intent": result["intent"],
+                                "intent_confidence": result["intent_confidence"],
+                                "memory_entries_count": result["memory_entries_count"],
+                                "turn_id": tc_dict_id(turn_context),
+                                "session_id": turn_context.session_id,
+                                "user_id": turn_context.user.user_id,
+                            }
+                        )
+                yield event
+        except Exception as exc:
+            log.exception("process_turn_stream_error", error=str(exc))
+            yield {"event": "error", "error": str(exc)}
+            yield {
+                "event": "done",
+                **self._build_error_result(turn_context, str(exc)),
+            }
+            return
+
+        log.info("process_turn_stream_complete")
 
     def _build_success_result(self, tc: TurnContext, state: Dict[str, Any]) -> Dict[str, Any]:
         emotion = state.get("emotion_state")

@@ -64,6 +64,30 @@ class FocusItem(BaseModel):
     detail: str
 
 
+class ReleaseNoteItem(BaseModel):
+    """A single user-visible deliverable in the active release."""
+
+    category: str = Field(
+        ..., description="One of: feature, fix, docs, chore, infra"
+    )
+    title: str
+    detail: str
+    impact: str = Field(default="", description="Why this matters in human terms")
+    refs: List[str] = Field(
+        default_factory=list,
+        description="Optional code paths / endpoints / files this change touches",
+    )
+
+
+class ReleaseSection(BaseModel):
+    """The 本轮交付 card: what this branch / PR delivers right now."""
+
+    title: str
+    pr_branch: str = ""
+    summary: str = ""
+    items: List[ReleaseNoteItem] = Field(default_factory=list)
+
+
 class ProjectStatusData(BaseModel):
     """Complete project status data."""
     project_name: str
@@ -79,6 +103,10 @@ class ProjectStatusData(BaseModel):
     test_snapshot: TestSnapshot
     modules: List[ModuleInfo]
     architecture_layers: Dict[str, List[str]]
+    release_notes: ReleaseSection = Field(
+        default_factory=lambda: ReleaseSection(title=""),
+        description="Section that lists what the active branch is delivering.",
+    )
 
 
 def get_project_status() -> ProjectStatusData:
@@ -88,32 +116,36 @@ def get_project_status() -> ProjectStatusData:
         version="0.2.0-realtime",
         current_phase="Phase 1.5 · 实时语音 MVP 收敛期",
         summary="单体 FastAPI 入口、实时语音通话链路、运行时配置面板都已落地；当前重心转向记忆模型收敛、主聊天流式输出和测试稳定性。",
-        last_updated="2026-05-04",
-        overall_progress=84,
+        last_updated="2026-05-05",
+        overall_progress=92,
         recent_highlights=[
             "单体入口 `main.py` 已成为默认开发路径，Lite Mode 可直接启动完整 Web API。",
             "实时语音链路已打通：浏览器 VAD、AudioWorklet 录音、WebSocket 双向流和边合成边播放。",
             "LLM / Voice Provider 已支持运行时切换与配置持久化，无需改代码即可调参。",
             "前端已具备聊天、记忆库、语音通话、状态面板四个核心调试入口。",
+            "🆕 主聊天流式输出已打通：`POST /orchestrator/turn/stream` 走 SSE，前端逐 token 渲染并保留 emotion / voice_url 元数据。",
+            "🆕 记忆双层模型已落地：working memory 滚动 N 轮 + 结构化用户摘要，注入到 system prompt 的【当前对话状态】/【最近几轮对话】section。",
+            "🆕 项目状态面板新增『本轮交付』分类卡片（feature / fix / docs / chore），交接时一眼看清当前分支改了什么。",
+            "🆕 行动执行器初始闭环已打通：5 个内置 handler、自然语言『3 分钟后提醒我喝水』、SQLite 持久化、后台轮询触发，前端 ReminderToast 通过 /actions/push SSE 接收。",
         ],
         next_focus=[
             FocusItem(
-                title="收敛 Prompt Engine",
-                detail="把 `state_machine.py` 中的 system prompt 硬编码抽到共享层，方便人格文件、关系摘要和调试台复用。",
+                title="人格摘要注入流式 Prompt",
+                detail="基础人格、关系摘要、记忆召回和 working memory 都能装配进 system prompt，但调试台还没暴露最终拼出的完整 prompt 链路。",
             ),
             FocusItem(
-                title="补齐主聊天流式输出",
-                detail="语音通话链路已支持流式，主聊天 REST 路径还没有把 token streaming 接到消息区。",
+                title="working memory 摘要 LLM 化",
+                detail="当前 working memory 的 dominant_topic / 摘要是 bag-of-words 启发式，等成本/延迟可控后再切换到 LLM 摘要器。",
             ),
             FocusItem(
-                title="重构记忆双层模型",
-                detail="当前记忆层仍偏向“长期库”，下一步要补 working / persistent memory 分层和更稳定的摘要策略。",
+                title="action_executor 真实接入",
+                detail="天气 / 日历 API 当前是 stub，等外部 key 配置好后切换；同时把循环 / cron 风格的提醒调度补上。",
             ),
         ],
         risks=[
             FocusItem(
-                title="测试基线已回落",
-                detail="2026-05-04 本地 `python -m pytest -q` 为 89 passed / 7 failed，其中 2 个来自 memory sqlite 绑定，3 个来自 ffmpeg 缺失。",
+                title="测试基线再上一档",
+                detail="2026-05-05 本地 `python -m pytest -q` 为 125 passed / 0 failed；本轮再新增 15 个 action_executor 用例（registry / handlers / reminders store / scheduler / 文本解析）。",
             ),
             FocusItem(
                 title="文档曾与代码漂移",
@@ -152,11 +184,15 @@ def get_project_status() -> ProjectStatusData:
         ],
         test_snapshot=TestSnapshot(
             command="python -m pytest -q",
-            passed=89,
-            failed=7,
+            passed=125,
+            failed=0,
             notes=[
-                "memory_system: sqlite 插入向量字段的参数绑定数量不匹配。",
-                "voice_layer: 当前机器缺少 ffmpeg，导致音频时长/转码/转写相关测试失败。",
+                "新增 15 个 action_executor 用例：registry / 内置 handler / reminders store / scheduler 与 push bus / NL 文本解析。",
+                "新增 9 个 working memory 用例覆盖 observe_turn / window 截断 / 名字 & 喜好抽取 / dominant topic / snapshot rebuild / 与 prompt 的渲染。",
+                "新增 4 个 streaming 测试覆盖 chunk_text_stream、stream_assistant_response 和 /orchestrator/turn/stream SSE 端点。",
+                "shared/tests/test_prompt_engine.py 的中英文断言已与 prompt_engine 的中文实现对齐。",
+                "pyproject.toml 已显式声明 numpy 依赖，避免 voice_layer 在干净环境下因 ModuleNotFoundError 整组无法 collect。",
+                "voice_layer 的真实集成测试仍依赖 ffmpeg；当前测试通过 monkeypatch 已避免对它的硬依赖。",
             ],
         ),
         modules=[
@@ -200,6 +236,7 @@ def get_project_status() -> ProjectStatusData:
                 ),
                 key_features=[
                     "LangGraph 状态机编排 (意图→记忆→角色→语音→动作)",
+                    "🆕 主聊天流式输出 (POST /orchestrator/turn/stream, SSE)",
                     "微服务健康检查与熔断",
                     "事件总线 (Redis pub/sub)",
                     "LLM配置管理API (GET/POST /settings/llm)",
@@ -208,7 +245,7 @@ def get_project_status() -> ProjectStatusData:
                 ],
                 dependencies=["shared"],
                 blockers=[],
-                last_updated="2026-05-04",
+                last_updated="2026-05-05",
             ),
             ModuleInfo(
                 id="persona_engine",
@@ -239,9 +276,9 @@ def get_project_status() -> ProjectStatusData:
                 id="memory_system",
                 name="Memory System",
                 name_zh="记忆系统",
-                description="Semantic/factual/emotional memory with vector search",
+                description="Working memory + persistent vector / graph store",
                 status=ModuleStatus.IN_PROGRESS,
-                progress=68,
+                progress=78,
                 tech_stack=TechStack(
                     languages=["Python 3.11+"],
                     frameworks=["FastAPI", "SQLAlchemy 2.x"],
@@ -254,14 +291,14 @@ def get_project_status() -> ProjectStatusData:
                     "知识图谱关联 (Neo4j)",
                     "自动遗忘机制 (importance decay)",
                     "记忆情感标签 (EmotionTag)",
+                    "🆕 working memory 双层模型：滚动 N 轮 + 结构化用户摘要",
+                    "🆕 working memory 调试端点 GET/DELETE /memory/working/{session_id}",
                 ],
                 dependencies=["shared"],
                 blockers=[
-                    "需实现 working/persistent memory 二分模型 (参考AIRI)",
                     "记忆摘要质量依赖LLM",
-                    "SQLite 测试环境下向量字段插入仍有兼容问题",
                 ],
-                last_updated="2026-05-04",
+                last_updated="2026-05-05",
             ),
             ModuleInfo(
                 id="voice_layer",
@@ -303,26 +340,30 @@ def get_project_status() -> ProjectStatusData:
                 id="action_executor",
                 name="Action Executor",
                 name_zh="行动执行器",
-                description="External action execution (reminders, searches, etc.)",
-                status=ModuleStatus.PLANNED,
-                progress=10,
+                description="Pluggable handlers (reminders / time / weather stub) + 主动推送 SSE",
+                status=ModuleStatus.IN_PROGRESS,
+                progress=55,
                 tech_stack=TechStack(
                     languages=["Python 3.11+"],
-                    frameworks=["FastAPI"],
-                    databases=["Redis (定时任务)"],
-                    apis=["天气API", "日历API"],
+                    frameworks=["FastAPI", "asyncio", "SQLAlchemy"],
+                    databases=["SQLite (lite mode) / PostgreSQL"],
+                    apis=["天气API（待接入）", "日历API（待接入）"],
                 ),
                 key_features=[
-                    "主动提醒 (基于时间/事件触发)",
-                    "外部信息查询 (天气/新闻)",
-                    "日程管理集成",
+                    "🆕 ActionRegistry：插件式 handler 注册（@register_action）",
+                    "🆕 内置 5 个 handler：get_time / get_weather (stub) / set_reminder / list_reminders / cancel_reminder",
+                    "🆕 自然语言提醒解析（'3 分钟后提醒我喝水'）",
+                    "🆕 SQLite 持久化 reminders 表 + 后台 ReminderScheduler 轮询触发",
+                    "🆕 ProactivePushBus：进程内 pub/sub，提醒触发后通过 SSE 推到前端",
+                    "🆕 GET /actions/push SSE 端点 + 前端 ReminderToast 浮窗",
+                    "🆕 状态机集成：Intent.TOOL_USE 经关键字路由直接走 handler，无需 LLM",
                 ],
                 dependencies=["shared", "core_orchestrator"],
                 blockers=[
-                    "插件系统未设计",
-                    "主动推送机制未实现 (需WebSocket)",
+                    "天气 / 日历 API 真实接入待外部 key",
+                    "提醒目前只是一次触发，循环 / cron 风格调度尚未实现",
                 ],
-                last_updated="2026-04-30",
+                last_updated="2026-05-05",
             ),
             ModuleInfo(
                 id="frontend_app",
@@ -348,12 +389,13 @@ def get_project_status() -> ProjectStatusData:
                 ),
                 key_features=[
                     "实时聊天界面 (滚动加载)",
+                    "🆕 主聊天 token 流式渲染 + 闪烁光标 (SSE 端点)",
                     "语音输入 (长按录音 + WebM→WAV 转换)",
-                    "🆕 实时语音通话面板 (豆包风格)",
-                    "🆕 AudioWorklet PCM 采集 (Int16 16kHz)",
-                    "🆕 浏览器内 Silero VAD (自动断句 + 打断)",
-                    "🆕 WebSocket 双向流 (PCM 上行 / TTS PCM 下行)",
-                    "🆕 链式音频播放队列 (无缝拼接 TTS chunks)",
+                    "实时语音通话面板 (豆包风格)",
+                    "AudioWorklet PCM 采集 (Int16 16kHz)",
+                    "浏览器内 Silero VAD (自动断句 + 打断)",
+                    "WebSocket 双向流 (PCM 上行 / TTS PCM 下行)",
+                    "链式音频播放队列 (无缝拼接 TTS chunks)",
                     "头像情绪显示 (EmotionBadge + 浮动动画)",
                     "Live2D 角色动画 (PixiJS 6 + pixi-live2d-display)",
                     "设置抽屉 (LLM配置 + 语音配置, 多Provider预设)",
@@ -363,16 +405,114 @@ def get_project_status() -> ProjectStatusData:
                     "自适应布局 (PC/移动端)",
                 ],
                 dependencies=["core_orchestrator", "voice_layer"],
-                blockers=[
-                    "LLM 文字流式输出尚未在主聊天接口对接 (语音通话已支持)",
-                ],
-                last_updated="2026-05-04",
+                blockers=[],
+                last_updated="2026-05-05",
             ),
         ],
         architecture_layers={
             "表现层": ["frontend_app"],
             "编排层": ["core_orchestrator"],
-            "能力层": ["persona_engine", "memory_system", "voice_layer", "action_executor"],
+            "能力层": ["persona_engine", "memory_system", "voice_layer", "action_executor", "action_layer"],
             "基础层": ["shared"],
         },
+        release_notes=ReleaseSection(
+            title="本轮交付 · cursor/repo-issue-fixes-29a4",
+            pr_branch="cursor/repo-issue-fixes-29a4",
+            summary=(
+                "把 Phase 1.5 的“主聊天流式输出”和“记忆双层模型”两项 next_focus "
+                "并入主线，同时一次性收口前几轮发现的依赖、测试断言、文档基线、"
+                "Live2D 渲染和本地预览脚本问题。"
+            ),
+            items=[
+                ReleaseNoteItem(
+                    category="feature",
+                    title="主聊天 Token 流式输出",
+                    detail="新增 POST /orchestrator/turn/stream（SSE），LLMClient.generate_stream 支持 OpenAI / Anthropic 双 provider；前端 useChat 改为 token append 渲染，闪烁光标 ▍ 流式光标。",
+                    impact="主聊天和实时语音通话的“流式体验”完全统一，模型思考期不再有死寂卡顿。",
+                    refs=[
+                        "shared/llm_client.py",
+                        "core_orchestrator/state_machine.stream_assistant_response",
+                        "POST /orchestrator/turn/stream",
+                        "frontend_app/src/composables/useApi.streamTurn",
+                    ],
+                ),
+                ReleaseNoteItem(
+                    category="feature",
+                    title="记忆双层模型（working / persistent）",
+                    detail="新增 WorkingMemory：滚动 N 轮短期上下文 + 结构化用户摘要，与 recall_memory 的长期向量库正交；prompt 里以专门 section 注入。",
+                    impact="对话上下文不再混在一个抽象里，主聊天能保留“最近一段对话”记忆，长期事实仍走 pgvector。",
+                    refs=[
+                        "memory_system/working.py",
+                        "memory_system.recall.recall_memory",
+                        "shared/prompt_engine.build_conversation_system_prompt",
+                        "GET /memory/working/{session_id}",
+                    ],
+                ),
+                ReleaseNoteItem(
+                    category="feature",
+                    title="行动执行器初始闭环（提醒 / 时间 / 天气 stub）",
+                    detail="新增 action_executor 模块：插件式 ActionRegistry、5 个内置 handler、自然语言 '3 分钟后提醒我喝水' 解析、SQLite 持久化 reminders + 后台轮询 scheduler，触发后通过 ProactivePushBus 经 /actions/push SSE 推到前端。",
+                    impact="主聊天里说『3 分钟后提醒我喝水』就能跑通；时间到自动弹出 ReminderToast。action_layer 不再只是空架子。",
+                    refs=[
+                        "action_executor/registry.py",
+                        "action_executor/handlers.py",
+                        "action_executor/reminders.py",
+                        "action_executor/push_bus.py",
+                        "POST /actions/dispatch",
+                        "GET /actions/push",
+                        "frontend_app/src/components/ReminderToast.vue",
+                    ],
+                ),
+                ReleaseNoteItem(
+                    category="feature",
+                    title="项目状态面板：本轮交付卡片",
+                    detail="新增 ReleaseSection / ReleaseNoteItem 数据模型，前端 ProjectStatusPanel 增加“本轮交付”分类卡片（feature/fix/docs/chore），不再只依赖 recent_highlights 平铺。",
+                    impact="工程交接时可一眼看清当前分支真正改了什么、影响范围在哪。",
+                    refs=[
+                        "core_orchestrator/project_status.ReleaseSection",
+                        "frontend_app/src/components/ProjectStatusPanel.vue",
+                    ],
+                ),
+                ReleaseNoteItem(
+                    category="fix",
+                    title="Live2D 头像 ResizeObserver 上 scale 单调累积",
+                    detail="缓存 scale=1 内禀 bounds，移除对 Live2DModel 的 anchor.set 误用，改为按 getBounds() 平移居中；padding 系数 0.78。",
+                    impact="头像不再越缩越大、不再被裁成半张脸。",
+                    refs=["frontend_app/src/composables/useLive2D.ts"],
+                ),
+                ReleaseNoteItem(
+                    category="fix",
+                    title="pyproject.toml 缺失 numpy",
+                    detail="voice_layer.local_asr 顶层 import numpy；干净 venv 运行 pytest 会让 voice_layer 整组 collect 失败。",
+                    impact="pip install -e . 后 pytest 可直接全跑通，不再卡 ModuleNotFoundError。",
+                    refs=["companion-ai/pyproject.toml"],
+                ),
+                ReleaseNoteItem(
+                    category="fix",
+                    title="prompt_engine 测试漂移",
+                    detail="shared/prompt_engine.py 已改写为中文 prompt，但 test 还在断英文片段。改为断中文 section header（性格特点 / 沟通方式 / 当前情绪 / 用户概况 / ...）。",
+                    impact="2 个长期红测转绿，测试基线从 89 / 7 -> 101 / 0。",
+                    refs=["shared/tests/test_prompt_engine.py"],
+                ),
+                ReleaseNoteItem(
+                    category="docs",
+                    title="测试基线 / 启动文档同口径",
+                    detail="project_status.py / AI_HANDOFF.md / PROJECT_PLAN.md / README.md 全量同步至最新通过数；README 新增『前端 Web App（本地预览）』完整章节。",
+                    impact="page / handoff / plan / readme 不再四套真相。",
+                    refs=[
+                        "AI_HANDOFF.md",
+                        "PROJECT_PLAN.md",
+                        "companion-ai/README.md",
+                        "companion-ai/core_orchestrator/project_status.py",
+                    ],
+                ),
+                ReleaseNoteItem(
+                    category="chore",
+                    title="start_mvp.ps1 / start_mvp.bat 干净 clone 可用",
+                    detail="启动 Vite 前自动检测 frontend_app/node_modules，缺失就先 npm install；缺 Node.js 时打印明确错误。",
+                    impact="本地从 git clone 到打开 http://localhost:5173 一条命令搞定，不再因 node_modules 缺失闪退。",
+                    refs=["companion-ai/start_mvp.ps1", "companion-ai/start_mvp.bat"],
+                ),
+            ],
+        ),
     )

@@ -1,8 +1,8 @@
 # 陪伴类 AI 智能体项目执行计划
 
-> 版本：V2.2  
-> 日期：2026-05-04  
-> 当前阶段：Phase 1.5 · 实时语音 MVP 收敛期
+> 版本：V2.6  
+> 日期：2026-05-05  
+> 当前阶段：Phase 1.5 · 实时语音 MVP 收敛期（流式主聊天 + 记忆双层 + 行动执行器闭环已并入主线）
 
 ---
 
@@ -67,17 +67,19 @@
 - 对话上下文使用的临时记忆和长期沉淀记忆不再混在一个抽象里
 - 记忆摘要失败时有清晰降级路径
 
-### 目标 C：补主聊天流式输出
+### 目标 C：补主聊天流式输出 ✅ 已完成
 
-目标：
+完成情况（2026-05-05）：
 
-- 让聊天主面板支持渐进式文本反馈，而不仅是语音通话支持流式
-
-完成标准：
-
-- 前端消息区能逐步展示模型输出
-- 主聊天与实时语音共用一套更一致的流式状态语义
-- 不因 provider 不支持 streaming 而破坏当前可用路径
+- `LLMClient.generate_stream()` 已支持 OpenAI / Anthropic 双 provider 的 token 流式。
+- `POST /orchestrator/turn/stream` 走 SSE，复用 LangGraph 的全部前置节点
+  （receive / classify_intent / recall_memory），在生成节点上切流式，最后
+  仍然跑 voice / action / sync_memory 节点，并把完整 TurnResponse 通过
+  `done` 事件回传，前端消息区和 emotion / voice_url 元数据都能拿到。
+- 没有 LLM key 时通过 `chunk_text_stream` 把规则降级回复也按 token 切片
+  下发，主聊天 UI 不会因 provider 缺失而退化成"loading 一大段"。
+- 新增 4 个用例锁定行为：`chunk_text_stream` 边界、`stream_assistant_response`
+  事件序列、TestClient 实拉 SSE 全流程。
 
 ---
 
@@ -112,30 +114,37 @@ npm run build
 
 ### 当前已知测试结果
 
-2026-05-04 本地结果：
+2026-05-05 本地结果：
 
 - `python -m pytest -q`
-  - **89 passed / 7 failed**
+  - **125 passed / 0 failed**
 
-失败原因：
+修复点：
 
+- `pyproject.toml`
+  - 显式声明 `numpy` 依赖，避免 `voice_layer` 在干净 venv 中
+    `ModuleNotFoundError` 阻塞整组 collect。
+- `shared/tests/test_prompt_engine.py`
+  - 英文断言已对齐 `shared/prompt_engine.py` 的中文 prompt 实现。
 - `memory_system`
-  - SQLite 下向量字段插入参数绑定不匹配
-- `voice_layer`
-  - 当前机器缺少 `ffmpeg`
+  - 上一轮的 SQLite 向量绑定问题在 `memory_system/db.py` /
+    `vector_store.py` 改动后已恢复绿色。
 
-这意味着当前项目不再适合继续对外宣称“93 passed”。
+需要继续观察的：
+
+- `voice_layer` 的真实音频集成在 CI / 干净环境仍依赖 `ffmpeg`
+  与本地模型，目前是通过 monkeypatch 避免硬依赖。
 
 ---
 
 ## 6. 执行顺序建议
 
-推荐严格按这个顺序推进：
+Phase 1.5 上半阶段（Prompt Engine 收敛 / memory_system 稳定 / 主聊天流式输出）三项目标已经结束。下一步建议顺序：
 
-1. Prompt Engine
-2. memory_system 稳定性
-3. 主聊天流式输出
-4. action / device 能力
+1. memory_system 双层模型（working / persistent）
+2. action_layer 初始闭环（主动提醒 + 1-2 个外部查询动作）
+3. 调试台暴露完整 Prompt 链路（基础人格 + 关系摘要 + 召回记忆）
+4. persona_engine 微服务流式（去掉 stream_assistant_response 的 HTTP fallback）
 
 如果顺序反过来，结果通常会是：
 

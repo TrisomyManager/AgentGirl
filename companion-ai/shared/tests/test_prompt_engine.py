@@ -10,7 +10,15 @@ from shared.prompt_engine import build_base_system_prompt, build_conversation_sy
 
 def test_build_base_system_prompt_without_persona() -> None:
     prompt = build_base_system_prompt()
-    assert "warm, emotionally aware companion AI" in prompt
+    assert "小暖" in prompt
+    assert "陪伴者" in prompt
+
+
+def test_build_base_system_prompt_with_persona_uses_name() -> None:
+    persona = PersonaProfile(name="星野")
+    prompt = build_base_system_prompt(persona=persona)
+    assert "星野" in prompt
+    assert "陪伴者" in prompt
 
 
 def test_build_conversation_system_prompt_includes_context() -> None:
@@ -57,9 +65,24 @@ def test_build_conversation_system_prompt_includes_context() -> None:
         memory=memory,
     )
 
-    assert "You are 小暖" in prompt
-    assert "Communication style:" in prompt
-    assert "Relationship state:" in prompt
-    assert "User summary:" in prompt
-    assert "Relevant memories:" in prompt
-    assert "Known facts:" in prompt
+    assert "小暖" in prompt
+    assert "【性格特点】" in prompt
+    assert "温柔" in prompt
+    assert "【沟通方式】" in prompt
+    assert "温柔自然，像一位知心朋友。" in prompt
+    assert "【价值观】" in prompt
+    assert "真诚" in prompt
+    assert "【关于你自己】" in prompt
+    assert "诞生于数字花园。" in prompt
+    assert "【关系目标】" in prompt
+    assert "安心倾诉" in prompt
+    assert "【当前情绪】" in prompt
+    assert "平静" in prompt
+    assert "【你们的关系】" in prompt
+    assert "亲密度 0.70" in prompt
+    assert "【用户概况】" in prompt
+    assert "Prefers quiet evenings and warm drinks." in prompt
+    assert "【记忆片段】" in prompt
+    assert "User likes rainy days." in prompt
+    assert "【已知事实】" in prompt
+    assert "User has a cat named Mimi." in prompt

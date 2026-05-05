@@ -42,7 +42,7 @@
                 :message="msg"
               />
 
-              <div v-if="isTyping" class="typing-row">
+              <div v-if="isTyping && !hasStreamingContent" class="typing-row">
                 <div class="msg-avatar">
                   <img
                     src="https://placehold.co/36x36/e94560/FFF?text=暖"
@@ -93,11 +93,16 @@
       :user-id="userId"
       @close="memoryVisible = false"
     />
+
+    <ReminderToast
+      :reminder="lastReminder"
+      @dismiss="dismissLastReminder"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import TopBar from './components/TopBar.vue';
 import ChatMessage from './components/ChatMessage.vue';
 import ChatInput from './components/ChatInput.vue';
@@ -107,7 +112,9 @@ import ProjectStatusPanel from './components/ProjectStatusPanel.vue';
 import LlmStatusBar from './components/LlmStatusBar.vue';
 import VoiceCallPanel from './components/VoiceCallPanel.vue';
 import MemoryViewer from './components/MemoryViewer.vue';
+import ReminderToast from './components/ReminderToast.vue';
 import { useChat } from './composables/useChat';
+import { useProactivePush } from './composables/useProactivePush';
 
 const {
   messages,
@@ -128,6 +135,24 @@ const {
   clearError,
   checkServer,
 } = useChat();
+
+// Subscribe to /actions/push (SSE) so reminder_fired events surface as a
+// floating toast in the corner. dismissLastReminder is wired to the toast's
+// close button.
+const { lastReminder, dismissLastReminder } = useProactivePush();
+
+// Suppress the global typing dots once the streamed assistant bubble has
+// real content — the bubble itself shows incremental progress so the dots
+// would just be visual noise.
+const hasStreamingContent = computed(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const m = messages.value[i];
+    if (m.role !== 'assistant') break;
+    if (m.isTyping && (m.content || '').length > 0) return true;
+    if (!m.isTyping) break;
+  }
+  return false;
+});
 
 const settingsVisible = ref(false);
 const statusVisible = ref(false);

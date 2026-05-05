@@ -51,6 +51,7 @@ _ENABLED_MODULES: Dict[str, bool] = {
     "memory_system": True,        # Vector memory
     "voice_layer": settings.enable_voice,
     "action_layer": settings.enable_action_2d,
+    "action_executor": True,      # Reminders / time / weather (pluggable handlers)
     "device_coordination": settings.enable_device_coordination and not settings.lite_mode,
 }
 
@@ -111,6 +112,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as exc:
             logger.warning("action_layer_startup_failed", error=str(exc))
 
+    if _ENABLED_MODULES.get("action_executor"):
+        try:
+            from action_executor.main import lifespan as action_executor_lifespan
+            app.state.action_executor_ctx = action_executor_lifespan(app)
+            await app.state.action_executor_ctx.__aenter__()
+            logger.info("action_executor_ready")
+        except Exception as exc:
+            logger.warning("action_executor_startup_failed", error=str(exc))
+
     if _ENABLED_MODULES.get("device_coordination"):
         try:
             from device_coordination.main import lifespan as device_lifespan
@@ -148,6 +158,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         ("gateway_adapter", "gateway_ctx"),
         ("core_orchestrator", "orch_ctx"),
         ("device_coordination", "device_ctx"),
+        ("action_executor", "action_executor_ctx"),
         ("action_layer", "action_ctx"),
         ("voice_layer", "voice_ctx"),
         ("memory_system", "memory_ctx"),
@@ -232,6 +243,13 @@ def create_app() -> FastAPI:
             routers.append(action_router)
         except Exception as exc:
             logger.warning("action_router_load_failed", error=str(exc))
+
+    if _ENABLED_MODULES.get("action_executor"):
+        try:
+            from action_executor.api import router as action_executor_router
+            routers.append(action_executor_router)
+        except Exception as exc:
+            logger.warning("action_executor_router_load_failed", error=str(exc))
 
     if _ENABLED_MODULES.get("device_coordination"):
         try:

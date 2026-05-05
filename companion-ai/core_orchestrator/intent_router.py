@@ -63,6 +63,17 @@ _TOOL_KEYWORDS = (
     "几点",
     "汇率",
     "新闻",
+    # action_executor: reminders are "tools" too — the state machine
+    # routes Intent.TOOL_USE to ``_try_action_executor`` first.
+    "提醒我",
+    "提醒一下",
+    "帮我提醒",
+    "记得提醒",
+    "我有什么提醒",
+    "待办提醒",
+    "取消提醒",
+    "remind me",
+    "set reminder",
 )
 _ACTION_KEYWORDS = (
     "抱抱",

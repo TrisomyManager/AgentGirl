@@ -60,7 +60,15 @@ export function useChat() {
   const userName = ref(localStorage.getItem(STORAGE_USER_KEY) || '用户');
   const userId = 'user_001';
 
-  const { isLoading, error, serverAvailable, sendTurn, transcribeVoice, clearError, checkServer } = useApi();
+  const {
+    isLoading,
+    error,
+    serverAvailable,
+    streamTurn,
+    transcribeVoice,
+    clearError,
+    checkServer,
+  } = useApi();
   const voice = useVoice();
 
   if (!localStorage.getItem(STORAGE_SESSION_KEY)) {
@@ -124,6 +132,40 @@ export function useChat() {
     currentAction.value = '';
   }
 
+  function findMessageIndex(id: string): number {
+    return messages.value.findIndex((m) => m.id === id);
+  }
+
+  function updateMessage(id: string, patch: Partial<ChatMessage>) {
+    const idx = findMessageIndex(id);
+    if (idx === -1) return;
+    // Replace the whole array so Vue reactivity always picks it up, even if
+    // the parent component is keying on the array reference (e.g. for keyed
+    // v-for cache invalidation).
+    const next = messages.value.slice();
+    next[idx] = { ...next[idx], ...patch };
+    messages.value = next;
+    saveHistory(messages.value);
+  }
+
+  // Throttle localStorage writes during streaming — a 100-character reply
+  // would otherwise hit localStorage ~30 times in <1s.
+  let _appendSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function appendToMessage(id: string, chunk: string) {
+    const idx = findMessageIndex(id);
+    if (idx === -1) return;
+    const prev = messages.value[idx];
+    const next = messages.value.slice();
+    next[idx] = { ...prev, content: (prev.content || '') + chunk };
+    messages.value = next;
+    if (_appendSaveTimer) clearTimeout(_appendSaveTimer);
+    _appendSaveTimer = setTimeout(() => {
+      saveHistory(messages.value);
+      _appendSaveTimer = null;
+    }, 200);
+  }
+
   async function sendMessage(content: string, options: SendMessageOptions = {}) {
     const trimmed = content.trim();
     if (!trimmed) {
@@ -138,8 +180,8 @@ export function useChat() {
       timestamp: Date.now(),
     });
 
-    isTyping.value = true;
-    const resp = await sendTurn({
+    const wantsVoiceReply = options.requestVoiceReply ?? voice.autoPlayEnabled.value;
+    const turnReq = {
       session_id: sessionId.value,
       user: {
         user_id: userId,
@@ -148,17 +190,58 @@ export function useChat() {
       user_message: trimmed,
       platform: 'app',
       has_voice: options.hasVoiceInput ?? false,
-      request_voice_reply: options.requestVoiceReply ?? voice.autoPlayEnabled.value,
+      request_voice_reply: wantsVoiceReply,
       voice_duration_ms: options.voiceDurationMs,
+    };
+
+    // Pre-create the assistant bubble so token chunks can stream into it.
+    const assistantId = generateId();
+    addMessage({
+      id: assistantId,
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+      isTyping: true,
+    });
+
+    isTyping.value = true;
+    const resp = await streamTurn(turnReq, {
+      onToken: (text) => {
+        appendToMessage(assistantId, text);
+      },
+      onMeta: (meta) => {
+        if (meta?.emotion?.primary) {
+          currentEmotion.value = meta.emotion.primary;
+        }
+      },
+      onError: () => {
+        // error.value is already set by useApi; the bubble below shows
+        // whatever partial content the server sent before the error frame.
+      },
     });
     isTyping.value = false;
 
     if (resp) {
-      handleTurnResponse(resp);
+      finalizeStreamedMessage(assistantId, resp);
+    } else {
+      // Stream failed before producing a final payload — leave the partial
+      // message visible but drop the typing flag.
+      const idx = findMessageIndex(assistantId);
+      if (idx !== -1) {
+        const partial = messages.value[idx].content;
+        if (!partial) {
+          updateMessage(assistantId, {
+            content: '（连接中断，请稍后再试）',
+            isTyping: false,
+          });
+        } else {
+          updateMessage(assistantId, { isTyping: false });
+        }
+      }
     }
   }
 
-  function handleTurnResponse(resp: TurnResponse) {
+  function finalizeStreamedMessage(assistantId: string, resp: TurnResponse) {
     if (resp.emotion?.primary) {
       currentEmotion.value = resp.emotion.primary;
     }
@@ -171,18 +254,20 @@ export function useChat() {
       }, resp.action_sequence.total_duration_ms || 3000);
     }
 
-    const assistantMsg: ChatMessage = {
-      id: resp.turn_id || generateId(),
-      role: 'assistant',
-      content: resp.assistant_message || '（无回复）',
-      timestamp: Date.now(),
+    const finalContent =
+      resp.assistant_message ||
+      messages.value[findMessageIndex(assistantId)]?.content ||
+      '（无回复）';
+
+    updateMessage(assistantId, {
+      content: finalContent,
+      isTyping: false,
       emotion: resp.emotion?.primary,
       voiceUrl: resp.voice_url,
       actionText: resp.action_sequence?.frames?.[0]?.action_type
         ? actionLabelMap[resp.action_sequence.frames[0].action_type]
         : undefined,
-    };
-    addMessage(assistantMsg);
+    });
 
     if (resp.voice_url && voice.autoPlayEnabled.value) {
       voice.playAudio(resp.voice_url).catch(() => {

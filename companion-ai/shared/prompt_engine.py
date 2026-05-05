@@ -90,4 +90,37 @@ def build_conversation_system_prompt(
     if memory and memory.graph_facts:
         parts.append("【已知事实】\n- " + "\n- ".join(memory.graph_facts[:3]))
 
+    if memory and memory.working_memory:
+        wm = memory.working_memory
+        wm_bits: List[str] = []
+        if wm.user_name:
+            wm_bits.append(f"用户自称：{wm.user_name}")
+        if wm.user_role:
+            wm_bits.append(f"用户身份：{wm.user_role}")
+        if wm.dominant_topic:
+            wm_bits.append(f"近段聊的主题：{wm.dominant_topic}")
+        if wm.last_user_emotion:
+            wm_bits.append(f"用户上一句的情绪：{_emotion_zh(wm.last_user_emotion)}")
+        if wm.likes:
+            wm_bits.append("最近表达的喜好：" + "、".join(wm.likes[:3]))
+        if wm.dislikes:
+            wm_bits.append("最近表达的反感：" + "、".join(wm.dislikes[:3]))
+        if wm.last_assistant_preview:
+            wm_bits.append(f"你上一轮的话：{wm.last_assistant_preview}")
+        if wm_bits:
+            parts.append("【当前对话状态】\n- " + "\n- ".join(wm_bits))
+
+        if wm.recent_turns:
+            tail_turns = wm.recent_turns[-3:]
+            tail_lines: List[str] = []
+            for t in tail_turns:
+                user_msg = (t.get("user_message") or "").strip().replace("\n", " ")
+                assistant_msg = (t.get("assistant_message") or "").strip().replace("\n", " ")
+                if user_msg:
+                    tail_lines.append(f"用户：{user_msg}")
+                if assistant_msg:
+                    tail_lines.append(f"你：{assistant_msg}")
+            if tail_lines:
+                parts.append("【最近几轮对话】\n" + "\n".join(tail_lines))
+
     return "\n\n".join(parts)
