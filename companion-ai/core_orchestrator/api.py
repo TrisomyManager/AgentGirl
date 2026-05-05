@@ -481,6 +481,39 @@ async def project_status() -> ProjectStatusData:
     return get_project_status()
 
 
+@router.post(
+    "/debug/prompt_preview",
+    tags=["development"],
+    summary="Preview assembled conversation system prompt for a hypothetical turn",
+)
+async def debug_prompt_preview(request: TurnRequest) -> Dict[str, Any]:
+    """Build the same system prompt as the reply path without calling the LLM."""
+    from core_orchestrator.state_machine import build_prompt_preview
+
+    turn_id = str(uuid.uuid4())
+    tc = TurnContext(
+        turn_id=turn_id,
+        session_id=request.session_id,
+        user=request.user,
+        user_message=request.user_message,
+        platform=request.platform,
+        has_voice=request.has_voice,
+        request_voice_reply=request.request_voice_reply,
+        voice_duration_ms=request.voice_duration_ms,
+        has_image=request.has_image,
+        image_urls=request.image_urls,
+        device_info=request.device_info,
+    )
+    system_prompt = await build_prompt_preview(tc)
+    return {
+        "turn_id": turn_id,
+        "session_id": tc.session_id,
+        "user_id": tc.user.user_id,
+        "system_prompt": system_prompt,
+        "prompt_length": len(system_prompt),
+    }
+
+
 @router.get(
     "/debug/system_prompt",
     tags=["development"],

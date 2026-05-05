@@ -116,9 +116,12 @@ def get_project_status() -> ProjectStatusData:
         project_name="Companion AI - 小暖",
         version="0.2.0-realtime",
         current_phase="Phase 1.5 · 实时语音 MVP 收敛期",
-        summary="单体 FastAPI 入口、实时语音通话链路、运行时配置面板都已落地；当前重心转向记忆模型收敛、主聊天流式输出和测试稳定性。",
+        summary=(
+            "单体 FastAPI 与 Lite Mode 已稳定；主聊天 SSE、记忆双层、行动执行器提醒链路与 "
+            "项目状态面板已落地。本轮补齐「假设用户句」的 system prompt 预览 API，便于工程调试。"
+        ),
         last_updated="2026-05-05",
-        overall_progress=92,
+        overall_progress=93,
         recent_highlights=[
             "单体入口 `main.py` 已成为默认开发路径，Lite Mode 可直接启动完整 Web API。",
             "实时语音链路已打通：浏览器 VAD、AudioWorklet 录音、WebSocket 双向流和边合成边播放。",
@@ -127,13 +130,14 @@ def get_project_status() -> ProjectStatusData:
             "🆕 主聊天流式输出已打通：`POST /orchestrator/turn/stream` 走 SSE，前端逐 token 渲染并保留 emotion / voice_url 元数据。",
             "🆕 记忆双层模型已落地：working memory 滚动 N 轮 + 结构化用户摘要，注入到 system prompt 的【当前对话状态】/【最近几轮对话】section。",
             "🆕 项目状态面板新增『本轮交付』分类卡片（feature / fix / docs / chore），交接时一眼看清当前分支改了什么。",
-            "🆕 行动执行器初始闭环已打通：5 个内置 handler、自然语言『3 分钟后提醒我喝水』、SQLite 持久化、后台轮询触发，前端 ReminderToast 通过 /actions/push SSE 接收。",
+            "🆕 行动执行器初始闭环已打通：5 个内置 handler、自然语言『3 分钟后提醒我喝水』、SQLite 持久化、后台轮询触发，前端 ReminderToast 通过 /actions/push SSE（及轮询兜底）接收。",
             "🆕 工程收尾：`.env` 固定从 `companion-ai/.env` 解析（与 cwd 无关）、`/actions/push/poll` 轮询兜底 + 前端 2.5s 轮询、SSE 首包 padding 4KB、状态面板可加载完整 system prompt。",
+            "🆕 编排调试：`POST /orchestrator/debug/prompt_preview` 可在不发 LLM 的情况下拼装与主路径一致的 conversation system prompt（意图分类 + 记忆召回）。",
         ],
         next_focus=[
             FocusItem(
-                title="Prompt 拼装可测化与对比",
-                detail="状态面板已可查看最近一次完整 system prompt；下一步把拼装逻辑抽到更可测的层，并视需要支持按会话 / 版本 diff。",
+                title="状态面板深度联动",
+                detail="后端已提供 `prompt_preview`；前端可在面板内直接输入用户句并展示结果，或做与「最近一轮」快照的并排 diff。",
             ),
             FocusItem(
                 title="working memory 摘要 LLM 化",
@@ -141,13 +145,13 @@ def get_project_status() -> ProjectStatusData:
             ),
             FocusItem(
                 title="action_executor 真实接入",
-                detail="天气 / 日历 API 当前是 stub，等外部 key 配置好后切换；同时把循环 / cron 风格的提醒调度补上。",
+                detail="天气仍为 stub（保留接入形状）；日历与 OAuth 未接。提醒为单次触发，循环 / cron 风格调度尚未实现。",
             ),
         ],
         risks=[
             FocusItem(
                 title="测试基线再上一档",
-                detail="2026-05-05 `pytest -q`：有 ffmpeg 时为 126 passed；无 ffmpeg 时 3 个 voice_layer 用例 skip（123 passed / 3 skipped）。含 push_bus 轮询用例。",
+                detail="2026-05-05 `pytest -q` 全量 **127 passed**（新增 `prompt_preview` ASGI 用例）；voice_layer 在无 ffmpeg 环境下历史上有 skip，以本机 pytest 输出为准。",
             ),
             FocusItem(
                 title="文档曾与代码漂移",
@@ -180,18 +184,18 @@ def get_project_status() -> ProjectStatusData:
             MilestoneInfo(
                 title="动作执行器与主动能力",
                 owner="action_executor",
-                status="queued",
-                detail="主动提醒、外部查询和插件式动作执行还处于规划阶段，暂未接入真实闭环。",
+                status="active",
+                detail="提醒 + 时间 + SSE/轮询推送已闭环；天气 stub、日历与重复调度仍为后续项。",
             ),
         ],
         test_snapshot=TestSnapshot(
             command="python -m pytest -q",
-            passed=126,
+            passed=127,
             failed=0,
             skipped=0,
             notes=[
-                "全量 126 条用例；其中 3 条 voice_layer（pydub 导出 MP3）在无 ffmpeg 的 PATH 下标记为 skip。",
-                "新增 15 个 action_executor 用例：registry / 内置 handler / reminders store / scheduler 与 push bus / NL 文本解析；另含 push_bus `poll_since` 轮询契约测试。",
+                "全量 **127 passed**（含 `POST /orchestrator/debug/prompt_preview` 集成测试）。",
+                "15+ action_executor 用例：registry / handler / reminders / scheduler / push_bus / NL 解析 / `poll_since`。",
                 "新增 9 个 working memory 用例覆盖 observe_turn / window 截断 / 名字 & 喜好抽取 / dominant topic / snapshot rebuild / 与 prompt 的渲染。",
                 "新增 4 个 streaming 测试覆盖 chunk_text_stream、stream_assistant_response 和 /orchestrator/turn/stream SSE 端点。",
                 "shared/tests/test_prompt_engine.py 的中英文断言已与 prompt_engine 的中文实现对齐。",
@@ -231,7 +235,7 @@ def get_project_status() -> ProjectStatusData:
                 name_zh="核心编排层",
                 description="LangGraph state machine, central coordination",
                 status=ModuleStatus.COMPLETED,
-                progress=93,
+                progress=94,
                 tech_stack=TechStack(
                     languages=["Python 3.11+"],
                     frameworks=["FastAPI", "LangGraph", "httpx"],
@@ -241,6 +245,7 @@ def get_project_status() -> ProjectStatusData:
                 key_features=[
                     "LangGraph 状态机编排 (意图→记忆→角色→语音→动作)",
                     "🆕 主聊天流式输出 (POST /orchestrator/turn/stream, SSE)",
+                    "🆕 POST /orchestrator/debug/prompt_preview — 不发 LLM 预览完整 conversation system prompt",
                     "微服务健康检查与熔断",
                     "事件总线 (Redis pub/sub)",
                     "LLM配置管理API (GET/POST /settings/llm)",
@@ -344,27 +349,27 @@ def get_project_status() -> ProjectStatusData:
                 id="action_executor",
                 name="Action Executor",
                 name_zh="行动执行器",
-                description="Pluggable handlers (reminders / time / weather stub) + 主动推送 SSE",
+                description="Pluggable handlers (reminders / time / weather stub) + proactive push (SSE + poll)",
                 status=ModuleStatus.IN_PROGRESS,
-                progress=55,
+                progress=62,
                 tech_stack=TechStack(
                     languages=["Python 3.11+"],
                     frameworks=["FastAPI", "asyncio", "SQLAlchemy"],
                     databases=["SQLite (lite mode) / PostgreSQL"],
-                    apis=["天气API（待接入）", "日历API（待接入）"],
+                    apis=["天气 stub（待真实 API）", "日历 API（待接入）", "GET /actions/push/poll"],
                 ),
                 key_features=[
                     "🆕 ActionRegistry：插件式 handler 注册（@register_action）",
                     "🆕 内置 5 个 handler：get_time / get_weather (stub) / set_reminder / list_reminders / cancel_reminder",
                     "🆕 自然语言提醒解析（'3 分钟后提醒我喝水'）",
                     "🆕 SQLite 持久化 reminders 表 + 后台 ReminderScheduler 轮询触发",
-                    "🆕 ProactivePushBus：进程内 pub/sub，提醒触发后通过 SSE 推到前端",
+                    "🆕 ProactivePushBus：进程内 pub/sub；GET /actions/push SSE + `/actions/push/poll` 轮询兜底（Cloudflare 友好）",
                     "🆕 GET /actions/push SSE 端点 + 前端 ReminderToast 浮窗",
                     "🆕 状态机集成：Intent.TOOL_USE 经关键字路由直接走 handler，无需 LLM",
                 ],
                 dependencies=["shared", "core_orchestrator"],
                 blockers=[
-                    "天气 / 日历 API 真实接入待外部 key",
+                    "天气 / 日历 API 真实接入待外部 key 或选型",
                     "提醒目前只是一次触发，循环 / cron 风格调度尚未实现",
                 ],
                 last_updated="2026-05-05",
@@ -394,6 +399,7 @@ def get_project_status() -> ProjectStatusData:
                 key_features=[
                     "实时聊天界面 (滚动加载)",
                     "🆕 主聊天 token 流式渲染 + 闪烁光标 (SSE 端点)",
+                    "🆕 项目状态面板：整体进度 / 测试快照 / Prompt 调试（最近 system prompt + 可扩展预览）",
                     "语音输入 (长按录音 + WebM→WAV 转换)",
                     "实时语音通话面板 (豆包风格)",
                     "AudioWorklet PCM 采集 (Int16 16kHz)",
@@ -404,7 +410,6 @@ def get_project_status() -> ProjectStatusData:
                     "Live2D 角色动画 (PixiJS 6 + pixi-live2d-display)",
                     "设置抽屉 (LLM配置 + 语音配置, 多Provider预设)",
                     "LLM 状态栏 (实时显示当前 Provider/模型)",
-                    "项目状态面板 (本页)",
                     "离线检测与错误提示",
                     "自适应布局 (PC/移动端)",
                 ],
@@ -420,102 +425,37 @@ def get_project_status() -> ProjectStatusData:
             "基础层": ["shared"],
         },
         release_notes=ReleaseSection(
-            title="本轮交付 · cursor/repo-issue-fixes-29a4",
-            pr_branch="cursor/repo-issue-fixes-29a4",
+            title="本轮交付 · 进度面板与 Prompt 预览",
+            pr_branch="cursor/project-status-viz-03ab",
             summary=(
-                "把 Phase 1.5 的“主聊天流式输出”和“记忆双层模型”两项 next_focus "
-                "并入主线，同时一次性收口前几轮发现的依赖、测试断言、文档基线、"
-                "Live2D 渲染和本地预览脚本问题。"
+                "同步 `project_status` 与当前测试基线；新增 "
+                "`POST /orchestrator/debug/prompt_preview`；前端状态面板增强 Prompt 调试区。"
             ),
             items=[
                 ReleaseNoteItem(
                     category="feature",
-                    title="主聊天 Token 流式输出",
-                    detail="新增 POST /orchestrator/turn/stream（SSE），LLMClient.generate_stream 支持 OpenAI / Anthropic 双 provider；前端 useChat 改为 token append 渲染，闪烁光标 ▍ 流式光标。",
-                    impact="主聊天和实时语音通话的“流式体验”完全统一，模型思考期不再有死寂卡顿。",
+                    title="POST /orchestrator/debug/prompt_preview",
+                    detail="对任意 `TurnRequest` 走意图分类 + 记忆召回后拼装 `build_conversation_system_prompt`，不调 LLM，便于对照主路径 prompt。",
+                    impact="工程可在不聊天的情况下验证 prompt 注入是否正确。",
                     refs=[
-                        "shared/llm_client.py",
-                        "core_orchestrator/state_machine.stream_assistant_response",
-                        "POST /orchestrator/turn/stream",
-                        "frontend_app/src/composables/useApi.streamTurn",
+                        "core_orchestrator/state_machine.build_prompt_preview",
+                        "POST /orchestrator/debug/prompt_preview",
+                        "core_orchestrator/tests/test_prompt_preview.py",
                     ],
                 ),
                 ReleaseNoteItem(
                     category="feature",
-                    title="记忆双层模型（working / persistent）",
-                    detail="新增 WorkingMemory：滚动 N 轮短期上下文 + 结构化用户摘要，与 recall_memory 的长期向量库正交；prompt 里以专门 section 注入。",
-                    impact="对话上下文不再混在一个抽象里，主聊天能保留“最近一段对话”记忆，长期事实仍走 pgvector。",
-                    refs=[
-                        "memory_system/working.py",
-                        "memory_system.recall.recall_memory",
-                        "shared/prompt_engine.build_conversation_system_prompt",
-                        "GET /memory/working/{session_id}",
-                    ],
-                ),
-                ReleaseNoteItem(
-                    category="feature",
-                    title="行动执行器初始闭环（提醒 / 时间 / 天气 stub）",
-                    detail="新增 action_executor 模块：插件式 ActionRegistry、5 个内置 handler、自然语言 '3 分钟后提醒我喝水' 解析、SQLite 持久化 reminders + 后台轮询 scheduler，触发后通过 ProactivePushBus 经 /actions/push SSE 推到前端。",
-                    impact="主聊天里说『3 分钟后提醒我喝水』就能跑通；时间到自动弹出 ReminderToast。action_layer 不再只是空架子。",
-                    refs=[
-                        "action_executor/registry.py",
-                        "action_executor/handlers.py",
-                        "action_executor/reminders.py",
-                        "action_executor/push_bus.py",
-                        "POST /actions/dispatch",
-                        "GET /actions/push",
-                        "frontend_app/src/components/ReminderToast.vue",
-                    ],
-                ),
-                ReleaseNoteItem(
-                    category="feature",
-                    title="项目状态面板：本轮交付卡片",
-                    detail="新增 ReleaseSection / ReleaseNoteItem 数据模型，前端 ProjectStatusPanel 增加“本轮交付”分类卡片（feature/fix/docs/chore），不再只依赖 recent_highlights 平铺。",
-                    impact="工程交接时可一眼看清当前分支真正改了什么、影响范围在哪。",
-                    refs=[
-                        "core_orchestrator/project_status.ReleaseSection",
-                        "frontend_app/src/components/ProjectStatusPanel.vue",
-                    ],
-                ),
-                ReleaseNoteItem(
-                    category="fix",
-                    title="Live2D 头像 ResizeObserver 上 scale 单调累积",
-                    detail="缓存 scale=1 内禀 bounds，移除对 Live2DModel 的 anchor.set 误用，改为按 getBounds() 平移居中；padding 系数 0.78。",
-                    impact="头像不再越缩越大、不再被裁成半张脸。",
-                    refs=["frontend_app/src/composables/useLive2D.ts"],
-                ),
-                ReleaseNoteItem(
-                    category="fix",
-                    title="pyproject.toml 缺失 numpy",
-                    detail="voice_layer.local_asr 顶层 import numpy；干净 venv 运行 pytest 会让 voice_layer 整组 collect 失败。",
-                    impact="pip install -e . 后 pytest 可直接全跑通，不再卡 ModuleNotFoundError。",
-                    refs=["companion-ai/pyproject.toml"],
-                ),
-                ReleaseNoteItem(
-                    category="fix",
-                    title="prompt_engine 测试漂移",
-                    detail="shared/prompt_engine.py 已改写为中文 prompt，但 test 还在断英文片段。改为断中文 section header（性格特点 / 沟通方式 / 当前情绪 / 用户概况 / ...）。",
-                    impact="2 个长期红测转绿，测试基线从 89 / 7 -> 101 / 0。",
-                    refs=["shared/tests/test_prompt_engine.py"],
+                    title="项目状态面板 · Prompt 调试增强",
+                    detail="保留「最近 system prompt」加载；增加示例用户句、一键预览（调用 prompt_preview）、复制与下载 .txt。",
+                    impact="交接与联调时更少切终端 / Postman。",
+                    refs=["frontend_app/src/components/ProjectStatusPanel.vue"],
                 ),
                 ReleaseNoteItem(
                     category="docs",
-                    title="测试基线 / 启动文档同口径",
-                    detail="project_status.py / AI_HANDOFF.md / PROJECT_PLAN.md / README.md 全量同步至最新通过数；README 新增『前端 Web App（本地预览）』完整章节。",
-                    impact="page / handoff / plan / readme 不再四套真相。",
-                    refs=[
-                        "AI_HANDOFF.md",
-                        "PROJECT_PLAN.md",
-                        "companion-ai/README.md",
-                        "companion-ai/core_orchestrator/project_status.py",
-                    ],
-                ),
-                ReleaseNoteItem(
-                    category="chore",
-                    title="start_mvp.ps1 / start_mvp.bat 干净 clone 可用",
-                    detail="启动 Vite 前自动检测 frontend_app/node_modules，缺失就先 npm install；缺 Node.js 时打印明确错误。",
-                    impact="本地从 git clone 到打开 http://localhost:5173 一条命令搞定，不再因 node_modules 缺失闪退。",
-                    refs=["companion-ai/start_mvp.ps1", "companion-ai/start_mvp.bat"],
+                    title="project_status 数据刷新",
+                    detail="overall_progress、highlights、next_focus、milestones、test_snapshot、模块卡片与 master 能力对齐（含 push poll、prompt 预览）。",
+                    impact="`/orchestrator/project_status` 与面板展示一致。",
+                    refs=["companion-ai/core_orchestrator/project_status.py"],
                 ),
             ],
         ),

@@ -145,16 +145,71 @@
           <div class="section-head prompt-debug-head">
             <div>
               <span class="section-label">Prompt 调试</span>
-              <p class="muted small">最近一次主流程组装的完整 system prompt（含 working memory 注入）</p>
+              <p class="muted small">
+                「最近一轮」来自主聊天写入的快照；「假设用户句」调用
+                <code>POST /orchestrator/debug/prompt_preview</code>，走意图 + 记忆召回后拼装
+                system prompt（不调 LLM）。
+              </p>
             </div>
-            <button
-              class="ghost-btn"
-              type="button"
-              :disabled="promptLoading"
-              @click="loadDebugPrompt"
-            >
-              {{ promptLoading ? '加载中…' : '加载最近 system prompt' }}
+            <div class="prompt-debug-actions">
+              <button
+                class="ghost-btn"
+                type="button"
+                :disabled="promptLoading"
+                @click="loadDebugPrompt"
+              >
+                {{ promptLoading ? '加载中…' : '加载最近 system prompt' }}
+              </button>
+              <button
+                class="ghost-btn"
+                type="button"
+                :disabled="!promptText || promptCopying"
+                @click="copyPromptToClipboard"
+              >
+                {{ promptCopying ? '已复制' : '复制全文' }}
+              </button>
+              <button
+                class="ghost-btn"
+                type="button"
+                :disabled="!promptText"
+                @click="downloadPromptTxt"
+              >
+                下载 .txt
+              </button>
+            </div>
+          </div>
+          <div class="prompt-preview-controls">
+            <label class="prompt-field">
+              <span class="prompt-field-label">session_id</span>
+              <input v-model="promptPreviewSessionId" type="text" autocomplete="off" />
+            </label>
+            <label class="prompt-field">
+              <span class="prompt-field-label">user_id</span>
+              <input v-model="promptPreviewUserId" type="text" autocomplete="off" />
+            </label>
+            <button class="ghost-btn prompt-fill-btn" type="button" @click="fillExamplePreview">
+              填入示例句
             </button>
+          </div>
+          <label class="prompt-field prompt-field-block">
+            <span class="prompt-field-label">假设用户消息</span>
+            <textarea
+              v-model="promptPreviewMessage"
+              rows="3"
+              class="prompt-preview-textarea"
+              spellcheck="false"
+            ></textarea>
+          </label>
+          <div class="prompt-preview-row">
+            <button
+              class="ghost-btn primary-ghost"
+              type="button"
+              :disabled="previewLoading"
+              @click="loadPromptPreview"
+            >
+              {{ previewLoading ? '拼装中…' : '预览拼装 prompt' }}
+            </button>
+            <span v-if="promptSource" class="muted small prompt-source-hint">{{ promptSourceLabel }}</span>
           </div>
           <p v-if="promptError" class="callout error compact-callout">
             <strong>加载失败</strong>
@@ -490,10 +545,22 @@ const error = ref('');
 const promptText = ref('');
 const promptMeta = ref('');
 const promptLoading = ref(false);
+const previewLoading = ref(false);
+const promptCopying = ref(false);
 const promptError = ref('');
 const promptHint = ref(
   '打开本面板后点击按钮；若尚未聊天，接口会返回提示。发送一条主聊天消息后再加载可看到完整 prompt。',
 );
+const promptSource = ref<'snapshot' | 'preview' | null>(null);
+const promptPreviewSessionId = ref('status-panel-preview');
+const promptPreviewUserId = ref('status-panel-user');
+const promptPreviewMessage = ref('');
+
+const promptSourceLabel = computed(() => {
+  if (promptSource.value === 'preview') return '来源：prompt_preview（假设用户句）';
+  if (promptSource.value === 'snapshot') return '来源：最近一轮主聊天快照';
+  return '';
+});
 
 const testSnapshot = computed<TestSnapshot>(() => {
   return (
@@ -532,8 +599,10 @@ const releaseCategoryCounts = computed<Record<string, number>>(() => {
 
 async function loadDebugPrompt() {
   promptLoading.value = true;
+  previewLoading.value = false;
   promptError.value = '';
   promptHint.value = '';
+  promptSource.value = 'snapshot';
   try {
     const response = await fetch(`${API_BASE_URL}/orchestrator/debug/system_prompt`);
     if (!response.ok) {
@@ -569,6 +638,88 @@ async function loadDebugPrompt() {
   } finally {
     promptLoading.value = false;
   }
+}
+
+function fillExamplePreview() {
+  promptPreviewSessionId.value = 'status-panel-preview';
+  promptPreviewUserId.value = 'status-panel-user';
+  promptPreviewMessage.value = '我叫阿暖测试员，我喜欢喝燕麦拿铁。今天北京天气怎么样？';
+}
+
+async function loadPromptPreview() {
+  const msg = promptPreviewMessage.value.trim();
+  if (!msg) {
+    promptError.value = '请先填写「假设用户消息」';
+    return;
+  }
+  previewLoading.value = true;
+  promptLoading.value = false;
+  promptError.value = '';
+  promptHint.value = '';
+  promptSource.value = 'preview';
+  try {
+    const response = await fetch(`${API_BASE_URL}/orchestrator/debug/prompt_preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: promptPreviewSessionId.value.trim() || 'status-panel-preview',
+        user: { user_id: promptPreviewUserId.value.trim() || 'anonymous' },
+        user_message: msg,
+        platform: 'app',
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const data = (await response.json()) as {
+      system_prompt?: string;
+      prompt_length?: number;
+      session_id?: string;
+      user_id?: string;
+      turn_id?: string;
+    };
+    promptText.value = data.system_prompt ?? '';
+    const parts: string[] = [];
+    if (data.turn_id) parts.push(`turn ${data.turn_id}`);
+    if (data.session_id) parts.push(`session ${data.session_id}`);
+    if (data.user_id) parts.push(`user ${data.user_id}`);
+    if (typeof data.prompt_length === 'number') parts.push(`${data.prompt_length} 字符`);
+    promptMeta.value = parts.join(' · ');
+    if (!promptText.value) {
+      promptHint.value = '接口返回空 prompt。';
+    }
+  } catch (fetchError) {
+    promptError.value =
+      fetchError instanceof Error ? fetchError.message : '未能加载预览数据';
+  } finally {
+    previewLoading.value = false;
+  }
+}
+
+async function copyPromptToClipboard() {
+  if (!promptText.value) return;
+  promptCopying.value = true;
+  try {
+    await navigator.clipboard.writeText(promptText.value);
+  } catch {
+    promptError.value = '复制失败：浏览器未授权剪贴板';
+  } finally {
+    setTimeout(() => {
+      promptCopying.value = false;
+    }, 1200);
+  }
+}
+
+function downloadPromptTxt() {
+  if (!promptText.value) return;
+  const blob = new Blob([promptText.value], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  a.href = url;
+  a.download = `system-prompt-${stamp}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 async function loadStatus() {
@@ -673,6 +824,81 @@ onMounted(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+.prompt-debug-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.prompt-preview-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: flex-end;
+  margin-top: 12px;
+}
+
+.prompt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+}
+
+.prompt-field-block {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.prompt-field-label {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.prompt-field input {
+  min-width: 180px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+  font-size: 0.85rem;
+}
+
+.prompt-preview-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.prompt-preview-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.primary-ghost {
+  border-color: rgba(96, 165, 250, 0.45);
+  color: #bfdbfe;
+}
+
+.prompt-source-hint {
+  font-size: 0.8rem;
+}
+
+.prompt-fill-btn {
+  align-self: flex-end;
 }
 
 .prompt-debug-head .small {
