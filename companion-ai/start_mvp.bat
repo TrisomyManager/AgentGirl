@@ -27,6 +27,20 @@ start "Companion AI Backend" cmd /k "cd /d "%~dp0" && set COMPANION_LITE_MODE=tr
 echo  Waiting 3 seconds for backend to start...
 timeout /t 3 /nobreak >nul
 
+REM Ensure frontend deps are installed before launching Vite
+if not exist "%~dp0frontend_app\node_modules" (
+    echo  [1.5/2] frontend_app\node_modules not found — running 'npm install' first time only...
+    pushd "%~dp0frontend_app"
+    call npm install
+    if errorlevel 1 (
+        echo  npm install failed. Install Node.js ^>= 18 and re-run this script.
+        popd
+        pause
+        exit /b 1
+    )
+    popd
+)
+
 echo.
 echo  [2/2] Starting Vue frontend dev server
 echo        Open: http://localhost:5173

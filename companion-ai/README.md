@@ -90,7 +90,41 @@ uvicorn gateway_adapter.main:app --reload --port 8006
 celery -A memory_system.pipeline worker --loglevel=info
 ```
 
-### 7. 前端 SDK
+### 7. 前端 Web App（本地预览）
+
+`frontend_app/` 是默认的本地调试 / 预览界面（Vue 3 + Vite）。先确保你本机装好了
+Node.js（≥ 18）+ npm，然后：
+
+```bash
+cd frontend_app
+npm install            # 第一次必须先装依赖
+npm run dev            # 默认 http://localhost:5173
+```
+
+如果后端不是默认的 `http://127.0.0.1:8000`，可以用环境变量覆盖：
+
+```bash
+# PowerShell
+$env:VITE_API_BASE_URL="http://127.0.0.1:8000"; npm run dev
+
+# bash / zsh
+VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
+```
+
+或者直接用根目录提供的一键脚本同时拉起后端 + 前端：
+
+```bash
+# Windows PowerShell
+.\start_mvp.ps1
+# Windows cmd
+start_mvp.bat
+```
+
+> 这两个脚本会自动在 `frontend_app/` 下做一次 `npm install`（仅当
+> `node_modules/` 缺失时），然后 `npm run dev`，避免干净 clone 后第二个窗口
+> 直接 `npm run dev` 报错。
+
+### 8. 前端 SDK（独立 App 集成时使用）
 
 ```bash
 cd frontend_sdk
@@ -108,7 +142,7 @@ npm run build
 ## 当前状态
 
 - 单体入口 `main.py` 已可用，Lite Mode 下 `/health` 可正常返回
-- 全量 Python 测试已通过：`93 passed`
+- 全量 Python 测试已通过：`97 passed / 0 failed`（2026-05-05）
 - 计划文档仍保留中长期目标，但以仓库实际实现为准
 
 ## 模块间通信
