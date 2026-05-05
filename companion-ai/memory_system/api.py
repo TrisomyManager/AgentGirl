@@ -24,6 +24,7 @@ from memory_system.vector_store import (
     list_user_memories,
     store_memory,
 )
+from memory_system.working import get_working_memory
 
 logger = structlog.get_logger(__name__)
 
@@ -255,3 +256,31 @@ async def run_decay_maintenance(session: AsyncSession = Depends(get_db)) -> Dict
     decayed = await decay_low_importance(session)
     logger.info("api.maintenance_run", expired=expired, decayed=decayed)
     return {"expired_deleted": expired, "decayed": decayed}
+
+
+# ---------------------------------------------------------------------------
+# Working memory — per-session layer-1 cache (debugging / inspection)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/working/{session_id}")
+async def get_working_memory_state(session_id: str) -> Dict[str, Any]:
+    """Return the live working-memory snapshot for a session.
+
+    Useful to debug what the prompt builder sees in the
+    "【当前对话状态】" section without having to dump the whole turn
+    pipeline. Empty payload (turn_count=0) is a perfectly normal state
+    for a session that has not produced any turns yet in this process.
+    """
+    wm = get_working_memory()
+    state = await wm.snapshot(session_id)
+    return state.to_dict()
+
+
+@router.delete("/working/{session_id}")
+async def clear_working_memory_state(session_id: str) -> Dict[str, bool]:
+    """Wipe working memory for a session (also clears short-term backend)."""
+    wm = get_working_memory()
+    await wm.clear(session_id)
+    logger.info("api.working_memory_cleared", session_id=session_id)
+    return {"cleared": True}

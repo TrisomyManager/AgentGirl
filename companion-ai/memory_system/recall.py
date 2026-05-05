@@ -7,10 +7,17 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.config import get_settings
-from shared.models import MemoryCategory, MemoryEntry, MemoryRecallResult, RelationshipMetrics
+from shared.models import (
+    MemoryCategory,
+    MemoryEntry,
+    MemoryRecallResult,
+    RelationshipMetrics,
+    WorkingMemorySnapshot,
+)
 
 from memory_system.graph_store import graph_store
 from memory_system.vector_store import search_similar
+from memory_system.working import get_working_memory
 
 logger = structlog.get_logger(__name__)
 
@@ -88,11 +95,51 @@ async def recall_memory(
             f"Key facts: {', '.join(graph_facts[:3])}"
         )
 
+    # 5. Working memory: rolling per-session context + structured live summary.
+    #    Sits orthogonal to the persistent vector / graph layers above. Only
+    #    populated when a session_id is known — recall calls without a session
+    #    (e.g. cron / batch jobs) will still get persistent-only results.
+    working_memory_snapshot: Optional[WorkingMemorySnapshot] = None
+    if session_id:
+        try:
+            wm_state = await get_working_memory().snapshot(session_id)
+            if wm_state.turns:
+                working_memory_snapshot = WorkingMemorySnapshot(
+                    session_id=wm_state.session_id,
+                    turn_count=len(wm_state.turns),
+                    user_name=wm_state.user_name,
+                    user_role=wm_state.user_role,
+                    likes=list(wm_state.likes),
+                    dislikes=list(wm_state.dislikes),
+                    dominant_topic=wm_state.dominant_topic,
+                    last_user_emotion=wm_state.last_user_emotion,
+                    last_assistant_preview=wm_state.last_assistant_preview,
+                    recent_turns=[
+                        {
+                            "turn_id": t.turn_id,
+                            "user_message": t.user_message,
+                            "assistant_message": t.assistant_message,
+                            "emotion": t.emotion,
+                            "intent": t.intent,
+                            "timestamp": t.timestamp,
+                        }
+                        for t in wm_state.turns
+                    ],
+                )
+        except Exception as exc:
+            logger.warning(
+                "recall.working_memory_failed",
+                user_id=user_id,
+                session_id=session_id,
+                error=str(exc),
+            )
+
     result = MemoryRecallResult(
         entries=entries,
         graph_facts=graph_facts,
         relationship_snapshot=relationship_snapshot,
         user_profile_summary=user_profile_summary,
+        working_memory=working_memory_snapshot,
     )
     logger.info(
         "recall.done",
@@ -100,5 +147,6 @@ async def recall_memory(
         vector_results=len(entries),
         graph_facts=len(graph_facts),
         has_relationship=relationship_snapshot is not None,
+        working_memory_turns=working_memory_snapshot.turn_count if working_memory_snapshot else 0,
     )
     return result

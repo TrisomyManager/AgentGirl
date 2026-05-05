@@ -613,10 +613,31 @@ async def node_sync_memory(state: OrchestratorState) -> OrchestratorState:
     if tc is None:
         return state
 
+    log = logger.bind(turn_id=tc.turn_id)
+
+    # Working memory is layer-1 short-term context; we ALWAYS observe a
+    # turn into it (even when the rich pipeline is disabled), because
+    # this is what feeds the next turn's prompt's "【当前对话状态】"
+    # section. Failing to record working memory degrades to "amnesia
+    # between turns" — much more visible than missing long-term storage.
+    try:
+        from memory_system.working import get_working_memory
+
+        wm = get_working_memory()
+        emotion = state.get("emotion_state")
+        await wm.observe_turn(
+            session_id=tc.session_id,
+            turn_id=tc.turn_id,
+            user_message=tc.user_message,
+            assistant_message=state.get("assistant_message") or "",
+            emotion=emotion.primary.value if emotion else None,
+            intent=state.get("intent"),
+        )
+    except Exception as exc:
+        log.warning("working_memory.observe_failed", error=str(exc))
+
     if not get_settings().enable_memory_pipeline:
         return state
-
-    log = logger.bind(turn_id=tc.turn_id)
 
     # Heuristic stash — fast, runs even without LLM key
     for payload in _build_memory_payloads(tc, state):

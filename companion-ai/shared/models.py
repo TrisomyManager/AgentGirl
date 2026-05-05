@@ -159,12 +159,37 @@ class MemoryEntry(BaseModel):
     expires_at: Optional[datetime] = Field(default=None)
 
 
+class WorkingMemorySnapshot(BaseModel):
+    """Compact representation of a session's working memory for prompt use.
+
+    See ``memory_system/working.py`` for the producer side.
+    """
+
+    session_id: str
+    turn_count: int = 0
+    user_name: Optional[str] = Field(default=None)
+    user_role: Optional[str] = Field(default=None)
+    likes: List[str] = Field(default_factory=list)
+    dislikes: List[str] = Field(default_factory=list)
+    dominant_topic: Optional[str] = Field(default=None)
+    last_user_emotion: Optional[str] = Field(default=None)
+    last_assistant_preview: Optional[str] = Field(default=None)
+    recent_turns: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Oldest → newest list of {user_message, assistant_message, ...}.",
+    )
+
+
 class MemoryRecallResult(BaseModel):
     """Result of a memory recall query."""
     entries: List[MemoryEntry]
     graph_facts: List[str] = Field(default_factory=list)
     relationship_snapshot: Optional[RelationshipMetrics] = Field(default=None)
     user_profile_summary: Optional[str] = Field(default=None)
+    working_memory: Optional[WorkingMemorySnapshot] = Field(
+        default=None,
+        description="Per-session rolling context surfaced from working memory.",
+    )
 
 
 class ActionFrame(BaseModel):
