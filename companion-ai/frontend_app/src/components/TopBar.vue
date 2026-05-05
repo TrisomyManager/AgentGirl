@@ -1,6 +1,6 @@
 <template>
   <header class="top-bar">
-    <div class="top-bar-left">
+    <div class="identity-block">
       <div class="avatar-wrapper">
         <img
           src="https://placehold.co/48x48/e94560/FFF?text=暖"
@@ -9,25 +9,29 @@
         />
         <div class="avatar-status"></div>
       </div>
-      <div class="companion-info">
+
+      <div class="identity-copy">
         <span class="companion-name">小暖</span>
-        <span v-if="serverAvailable === false" class="offline-badge">离线</span>
+        <div class="identity-meta">
+          <span class="companion-role">Companion Console</span>
+          <span v-if="serverAvailable === false" class="offline-badge">离线</span>
+        </div>
       </div>
     </div>
 
-    <div class="top-bar-center">
+    <div class="center-pill">
       <div class="emotion-tag" :class="emotionClass">
         <span class="emotion-dot"></span>
         <span>{{ emotionLabel }}</span>
       </div>
     </div>
 
-    <div class="top-bar-right">
+    <nav class="action-strip" aria-label="主操作">
       <button class="icon-btn call-btn" @click="$emit('open-call')" title="语音通话">
-        <span class="icon-call">📞</span>
+        <span>📞</span>
       </button>
       <button class="icon-btn memory-btn" @click="$emit('open-memory')" title="记忆库">
-        <span class="icon-memory">🧠</span>
+        <span>🧠</span>
       </button>
       <button
         class="icon-btn"
@@ -40,12 +44,12 @@
         </span>
       </button>
       <button class="icon-btn" @click="$emit('open-status')" title="项目状态">
-        <span class="icon-status">📊</span>
+        <span>📊</span>
       </button>
       <button class="icon-btn" @click="$emit('open-settings')" title="设置">
-        <span class="icon-gear">⚙️</span>
+        <span>⚙️</span>
       </button>
-    </div>
+    </nav>
   </header>
 </template>
 
@@ -83,86 +87,104 @@ const emotionClass = computed(() => {
 
 <style scoped>
 .top-bar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
-  padding: 12px 20px;
-  background: rgba(26, 26, 46, 0.8);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  gap: 18px;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0));
   flex-shrink: 0;
 }
 
-.top-bar-left {
+.identity-block {
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex: 1;
+  gap: 14px;
+  min-width: 0;
 }
 
 .avatar-wrapper {
   position: relative;
-  width: 40px;
-  height: 40px;
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
 }
 
 .avatar-img {
-  width: 40px;
-  height: 40px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   object-fit: cover;
-  border: 2px solid rgba(233, 69, 96, 0.5);
+  border: 2px solid rgba(251, 113, 133, 0.55);
+  box-shadow: 0 0 24px rgba(233, 69, 96, 0.18);
 }
 
 .avatar-status {
   position: absolute;
-  bottom: 2px;
   right: 2px;
-  width: 10px;
-  height: 10px;
-  background: #4ade80;
+  bottom: 2px;
+  width: 11px;
+  height: 11px;
+  border: 2px solid #101626;
   border-radius: 50%;
-  border: 2px solid #1a1a2e;
+  background: #4ade80;
 }
 
-.companion-info {
+.identity-copy {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  min-width: 0;
 }
 
 .companion-name {
-  font-size: 15px;
+  color: #f8fafc;
+  font-size: 18px;
   font-weight: 600;
-  color: #fff;
+  line-height: 1.1;
+}
+
+.identity-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  min-width: 0;
+}
+
+.companion-role {
+  color: #94a3b8;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .offline-badge {
+  padding: 2px 8px;
+  border: 1px solid rgba(248, 113, 113, 0.2);
+  border-radius: 999px;
+  background: rgba(127, 29, 29, 0.28);
+  color: #fca5a5;
   font-size: 11px;
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.15);
-  padding: 1px 6px;
-  border-radius: 10px;
-  width: fit-content;
 }
 
-.top-bar-center {
-  flex: 1;
+.center-pill {
   display: flex;
   justify-content: center;
 }
 
 .emotion-tag {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 14px;
-  border-radius: 20px;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 999px;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   background: rgba(255, 255, 255, 0.05);
-  color: #ccc;
-  transition: all 0.3s ease;
+  color: #cbd5e1;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .emotion-dot {
@@ -178,74 +200,68 @@ const emotionClass = computed(() => {
 }
 
 .emotion-sad {
-  color: #60a5fa;
-  background: rgba(96, 165, 250, 0.12);
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.12);
 }
 
 .emotion-angry {
-  color: #f87171;
+  color: #fca5a5;
   background: rgba(248, 113, 113, 0.12);
 }
 
 .emotion-surprised {
-  color: #c084fc;
+  color: #d8b4fe;
   background: rgba(192, 132, 252, 0.12);
 }
 
 .emotion-calm {
-  color: #6ee7b7;
-  background: rgba(110, 231, 183, 0.12);
+  color: #86efac;
+  background: rgba(74, 222, 128, 0.12);
 }
 
-.top-bar-right {
+.action-strip {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
   justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .icon-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  border: none;
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.05);
-  color: #aaa;
+  color: #cbd5e1;
   cursor: pointer;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 16px;
-  transition: all 0.2s ease;
+  transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease;
 }
 
 .icon-btn:hover {
-  background: rgba(233, 69, 96, 0.2);
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.14);
   color: #fff;
 }
 
 .icon-btn.active {
-  background: rgba(233, 69, 96, 0.2);
-  color: #e94560;
+  background: rgba(233, 69, 96, 0.18);
+  border-color: rgba(251, 113, 133, 0.24);
+  color: #fda4af;
 }
 
 .call-btn {
-  background: rgba(74, 222, 128, 0.15);
-  color: #4ade80;
-}
-.call-btn:hover {
-  background: rgba(74, 222, 128, 0.3);
-  color: #fff;
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.12);
 }
 
 .memory-btn {
-  background: rgba(167, 139, 250, 0.15);
-  color: #a78bfa;
-}
-.memory-btn:hover {
-  background: rgba(167, 139, 250, 0.3);
-  color: #fff;
+  color: #c4b5fd;
+  background: rgba(139, 92, 246, 0.12);
 }
 
 .icon-sound.playing {
@@ -253,7 +269,55 @@ const emotionClass = computed(() => {
 }
 
 @keyframes soundPulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.2); }
+  0%, 100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.18);
+  }
+}
+
+@media (max-width: 960px) {
+  .top-bar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'identity actions'
+      'center center';
+    padding: 16px 16px 14px;
+  }
+
+  .identity-block {
+    grid-area: identity;
+  }
+
+  .center-pill {
+    grid-area: center;
+    justify-content: flex-start;
+  }
+
+  .action-strip {
+    grid-area: actions;
+  }
+}
+
+@media (max-width: 640px) {
+  .top-bar {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      'identity'
+      'center'
+      'actions';
+    gap: 12px;
+    padding: 14px 14px 12px;
+  }
+
+  .action-strip {
+    justify-content: flex-start;
+  }
+
+  .companion-name {
+    font-size: 17px;
+  }
 }
 </style>

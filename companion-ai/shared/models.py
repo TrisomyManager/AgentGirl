@@ -138,6 +138,7 @@ class TurnContext(BaseModel):
     platform: Platform
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     has_voice: bool = Field(default=False)
+    request_voice_reply: bool = Field(default=False)
     voice_duration_ms: Optional[int] = Field(default=None)
     has_image: bool = Field(default=False)
     image_urls: List[str] = Field(default_factory=list)

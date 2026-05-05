@@ -90,8 +90,13 @@ class TestVectorStore:
 
 class TestShortTermMemory:
     @pytest.fixture
-    def stm(self):
-        return ShortTermMemory(max_entries=10, default_ttl=3600)
+    def stm(self, monkeypatch):
+        # Force the redis-backed code path even when conftest enables lite_mode.
+        import memory_system.short_term as st_mod
+        monkeypatch.setattr(st_mod.settings, "lite_mode", False, raising=False)
+        s = ShortTermMemory(max_entries=10, default_ttl=3600)
+        s._backend = None
+        return s
 
     @patch("memory_system.short_term._get_redis")
     async def test_add_and_get_turns(self, mock_redis_factory, stm):

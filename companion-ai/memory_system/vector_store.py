@@ -59,6 +59,11 @@ def _resolve_embedding_config() -> Tuple[Optional[str], str, str, int]:
     return api_key, base_url, model, dim
 
 
+def resolve_embedding_dim() -> int:
+    """Public helper: return the embedding dim for the current provider."""
+    return _resolve_embedding_config()[3]
+
+
 def _local_fallback_embedding(text_content: str, dim: int = LOCAL_FALLBACK_DIM) -> List[float]:
     """Deterministic hash-based pseudo-embedding for offline dev / no API key.
 

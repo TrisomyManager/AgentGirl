@@ -1,77 +1,73 @@
 <template>
   <div class="app-root">
-    <!-- Top bar -->
-    <TopBar
-      :emotion-label="emotionLabel"
-      :emotion="currentEmotion"
-      :server-available="serverAvailable"
-      :voice="voice"
-      @open-settings="settingsVisible = true"
-      @open-status="statusVisible = true"
-      @open-call="callVisible = true"
-      @open-memory="memoryVisible = true"
-    />
+    <div class="app-backdrop"></div>
 
-    <!-- Offline banner -->
-    <div v-if="serverAvailable === false" class="banner banner-offline">
-      <span>⚠️ 离线模式 - 服务器未连接，部分功能不可用</span>
-    </div>
+    <main class="app-shell">
+      <TopBar
+        :emotion-label="emotionLabel"
+        :emotion="currentEmotion"
+        :server-available="serverAvailable"
+        :voice="voice"
+        @open-settings="settingsVisible = true"
+        @open-status="statusVisible = true"
+        @open-call="callVisible = true"
+        @open-memory="memoryVisible = true"
+      />
 
-    <!-- Error banner -->
-    <div v-if="error" class="banner banner-error">
-      <span>{{ error }}</span>
-      <button class="banner-close" @click="clearError">✕</button>
-    </div>
+      <div v-if="serverAvailable === false" class="banner banner-offline">
+        <span>⚠️ 离线模式，服务器暂未连接，部分能力会降级。</span>
+      </div>
 
-    <!-- Main layout -->
-    <div class="main-layout">
-      <!-- Left sidebar: avatar -->
-      <aside class="sidebar">
-        <AvatarDisplay
-          :emotion-label="emotionLabel"
-          :emotion="currentEmotion"
-          :action-label="actionLabel"
-          :is-typing="isTyping"
-        />
-      </aside>
+      <div v-if="error" class="banner banner-error">
+        <span>{{ error }}</span>
+        <button class="banner-close" @click="clearError">✕</button>
+      </div>
 
-      <!-- Right chat area -->
-      <section class="chat-area">
-        <div class="messages-container" ref="messagesContainerRef">
-          <div class="messages-inner">
-            <ChatMessage
-              v-for="msg in messages"
-              :key="msg.id"
-              :message="msg"
-            />
+      <div class="main-layout">
+        <aside class="sidebar">
+          <AvatarDisplay
+            :emotion-label="emotionLabel"
+            :emotion="currentEmotion"
+            :action-label="actionLabel"
+            :is-typing="isTyping"
+          />
+        </aside>
 
-            <!-- Typing indicator -->
-            <div v-if="isTyping" class="typing-row">
-              <div class="msg-avatar">
-                <img
-                  src="https://placehold.co/36x36/e94560/FFF?text=暖"
-                  alt="小暖"
-                />
-              </div>
-              <div class="typing-bubble">
-                <span></span>
-                <span></span>
-                <span></span>
+        <section class="chat-area">
+          <div class="messages-container" ref="messagesContainerRef">
+            <div class="messages-inner">
+              <ChatMessage
+                v-for="msg in messages"
+                :key="msg.id"
+                :message="msg"
+              />
+
+              <div v-if="isTyping" class="typing-row">
+                <div class="msg-avatar">
+                  <img
+                    src="https://placehold.co/36x36/e94560/FFF?text=暖"
+                    alt="小暖"
+                  />
+                </div>
+                <div class="typing-bubble">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
-        <LlmStatusBar />
-        <ChatInput
-          :is-loading="isLoading"
-          :voice="voice"
-          @send="sendMessage"
-        />
-      </section>
-    </div>
+          <LlmStatusBar />
+          <ChatInput
+            :is-loading="isLoading"
+            :voice="voice"
+            @send="sendMessage"
+          />
+        </section>
+      </div>
+    </main>
 
-    <!-- Settings drawer -->
     <SettingsDrawer
       :visible="settingsVisible"
       :user-name="userName"
@@ -82,19 +78,16 @@
       @clear="clearHistory"
     />
 
-    <!-- Project status panel -->
     <ProjectStatusPanel
       :visible="statusVisible"
       @close="statusVisible = false"
     />
 
-    <!-- Voice call panel -->
     <VoiceCallPanel
       :visible="callVisible"
       @close="callVisible = false"
     />
 
-    <!-- Memory viewer -->
     <MemoryViewer
       :visible="memoryVisible"
       :user-id="userId"
@@ -104,7 +97,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted } from 'vue';
+import { nextTick, onMounted, ref, watch } from 'vue';
 import TopBar from './components/TopBar.vue';
 import ChatMessage from './components/ChatMessage.vue';
 import ChatInput from './components/ChatInput.vue';
@@ -144,14 +137,13 @@ const messagesContainerRef = ref<HTMLElement | null>(null);
 
 function scrollToBottom() {
   nextTick(() => {
-    const el = messagesContainerRef.value;
-    if (el) {
-      el.scrollTop = el.scrollHeight;
+    const element = messagesContainerRef.value;
+    if (element) {
+      element.scrollTop = element.scrollHeight;
     }
   });
 }
 
-// Auto-scroll when messages change or typing state changes
 watch(messages, scrollToBottom, { deep: true });
 watch(isTyping, scrollToBottom);
 
@@ -162,85 +154,143 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.app-root {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  width: 100vw;
-  background: #0d0d1a;
-  color: #e2e8f0;
-  font-family: 'Inter', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
-    sans-serif;
-  overflow: hidden;
+:global(html, body, #app) {
+  width: 100%;
+  height: 100%;
+  min-height: 100dvh;
+  margin: 0;
 }
 
-/* Banners */
+:global(body) {
+  overflow: hidden;
+  background: #060913;
+}
+
+.app-root {
+  --frame-gap: clamp(10px, 1.8vw, 24px);
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100dvh;
+  min-height: 100dvh;
+  width: 100%;
+  padding: var(--frame-gap);
+  overflow: hidden;
+  color: #e2e8f0;
+  font-family: 'Avenir Next', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(233, 69, 96, 0.18), transparent 26%),
+    radial-gradient(circle at top right, rgba(96, 165, 250, 0.18), transparent 24%),
+    linear-gradient(180deg, #060913 0%, #0b1020 46%, #080c17 100%);
+}
+
+.app-backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(130deg, rgba(255, 255, 255, 0.03), transparent 32%),
+    radial-gradient(circle at 20% 18%, rgba(255, 255, 255, 0.05), transparent 16%);
+}
+
+.app-shell {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: calc(100vw - (var(--frame-gap) * 2));
+  max-width: none;
+  height: calc(100dvh - (var(--frame-gap) * 2));
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 32px;
+  background:
+    linear-gradient(180deg, rgba(15, 21, 37, 0.96), rgba(8, 12, 24, 0.98));
+  box-shadow:
+    0 28px 80px rgba(0, 0, 0, 0.46),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(16px);
+}
+
 .banner {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 20px;
+  gap: 12px;
+  padding: 10px 24px;
   font-size: 13px;
   flex-shrink: 0;
-  gap: 12px;
 }
 
 .banner-offline {
-  background: rgba(245, 158, 11, 0.12);
-  border-bottom: 1px solid rgba(245, 158, 11, 0.25);
-  color: #fbbf24;
+  color: #fcd34d;
+  background: rgba(120, 53, 15, 0.22);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.18);
 }
 
 .banner-error {
-  background: rgba(239, 68, 68, 0.12);
-  border-bottom: 1px solid rgba(239, 68, 68, 0.25);
-  color: #f87171;
+  color: #fca5a5;
+  background: rgba(127, 29, 29, 0.24);
+  border-bottom: 1px solid rgba(248, 113, 113, 0.16);
 }
 
 .banner-close {
-  background: none;
   border: none;
+  background: transparent;
   color: inherit;
   cursor: pointer;
+  opacity: 0.78;
   font-size: 13px;
   padding: 2px 6px;
-  border-radius: 4px;
-  opacity: 0.7;
-  transition: opacity 0.15s ease;
-  flex-shrink: 0;
 }
 
 .banner-close:hover {
   opacity: 1;
 }
 
-/* Main layout */
 .main-layout {
   display: flex;
   flex: 1;
+  gap: 14px;
+  min-height: 0;
+  height: 100%;
+  padding: 14px;
   overflow: hidden;
 }
 
-/* Left sidebar */
 .sidebar {
-  width: 320px;
+  width: clamp(240px, 25vw, 340px);
+  min-width: 240px;
   flex-shrink: 0;
-  background: rgba(13, 13, 30, 0.6);
-  border-right: 1px solid rgba(255, 255, 255, 0.05);
   overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 26px;
+  background:
+    linear-gradient(180deg, rgba(20, 26, 42, 0.92), rgba(11, 16, 29, 0.94));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
-/* Right chat area */
 .chat-area {
-  flex: 1;
   display: flex;
+  flex: 1;
   flex-direction: column;
+  min-width: 0;
   overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 26px;
+  background:
+    linear-gradient(180deg, rgba(12, 18, 31, 0.9), rgba(8, 12, 22, 0.97));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
-/* Messages scroll container */
 .messages-container {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   scroll-behavior: smooth;
 }
@@ -254,21 +304,20 @@ onMounted(() => {
 }
 
 .messages-container::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
 }
 
 .messages-container::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .messages-inner {
-  padding: 20px 16px;
   display: flex;
   flex-direction: column;
+  padding: 28px 22px 18px;
 }
 
-/* Typing indicator row */
 .typing-row {
   display: flex;
   align-items: flex-end;
@@ -278,9 +327,9 @@ onMounted(() => {
 }
 
 .msg-avatar {
-  flex-shrink: 0;
   width: 36px;
   height: 36px;
+  flex-shrink: 0;
 }
 
 .msg-avatar img {
@@ -295,17 +344,16 @@ onMounted(() => {
   align-items: center;
   gap: 4px;
   padding: 12px 16px;
-  background: #1a1a2e;
-  border-radius: 16px;
-  border-bottom-left-radius: 4px;
   border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 16px 16px 16px 4px;
+  background: rgba(27, 34, 54, 0.92);
 }
 
 .typing-bubble span {
   width: 8px;
   height: 8px;
-  background: #64748b;
   border-radius: 50%;
+  background: #64748b;
   animation: typingBounce 1.4s ease-in-out infinite;
 }
 
@@ -321,6 +369,7 @@ onMounted(() => {
   0%, 60%, 100% {
     transform: translateY(0);
   }
+
   30% {
     transform: translateY(-6px);
   }
@@ -331,16 +380,63 @@ onMounted(() => {
     opacity: 0;
     transform: translateY(10px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
   }
 }
 
-/* Responsive: collapse sidebar on narrow screens */
-@media (max-width: 768px) {
+@media (max-width: 960px) {
+  .app-root {
+    --frame-gap: 10px;
+  }
+
+  .app-shell {
+    border-radius: 24px;
+  }
+
+  .main-layout {
+    padding: 10px;
+    gap: 10px;
+  }
+
   .sidebar {
     display: none;
+  }
+
+  .chat-area {
+    border-radius: 22px;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-root {
+    --frame-gap: 0px;
+  }
+
+  .app-shell {
+    width: 100%;
+    height: 100dvh;
+    border: none;
+    border-radius: 0;
+  }
+
+  .banner {
+    padding: 10px 14px;
+    font-size: 12px;
+  }
+
+  .main-layout {
+    padding: 8px;
+  }
+
+  .chat-area {
+    border-radius: 20px;
+  }
+
+  .messages-inner {
+    padding: 18px 14px 14px;
   }
 }
 </style>

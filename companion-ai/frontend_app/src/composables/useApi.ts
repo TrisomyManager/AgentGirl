@@ -12,6 +12,9 @@ export interface TurnRequest {
   };
   user_message: string;
   platform: string;
+  has_voice?: boolean;
+  request_voice_reply?: boolean;
+  voice_duration_ms?: number;
 }
 
 export interface TurnResponse {

@@ -151,15 +151,21 @@ const emotionIcon = computed(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: clamp(12px, 2vh, 24px);
   height: 100%;
-  padding: 20px;
+  width: 100%;
+  min-height: 0;
+  padding: clamp(14px, 1.8vw, 20px);
   overflow: hidden;
 }
 
 .avatar-container {
   position: relative;
-  width: 260px;
-  height: 390px;
+  flex: 0 1 auto;
+  width: min(100%, clamp(180px, 19vw, 280px));
+  aspect-ratio: 2 / 3;
+  height: auto;
+  max-height: min(52vh, 420px);
   border-radius: 20px;
   overflow: hidden;
   transition: transform 0.3s ease;
@@ -269,7 +275,6 @@ const emotionIcon = computed(() => {
 }
 
 .avatar-info {
-  margin-top: 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -393,5 +398,26 @@ const emotionIcon = computed(() => {
 @keyframes orbMove3 {
   0%, 100% { transform: translate(0, 0); }
   50% { transform: translate(10px, -15px); }
+}
+
+@media (max-height: 780px) {
+  .avatar-display {
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .avatar-container {
+    width: min(100%, 210px);
+    max-height: min(38vh, 315px);
+  }
+
+  .avatar-info {
+    gap: 8px;
+  }
+
+  .emotion-badge {
+    padding: 7px 16px;
+    font-size: 13px;
+  }
 }
 </style>

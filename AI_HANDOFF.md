@@ -1,163 +1,161 @@
 # AI 工程交接文档
 
-> 写给接手本工程的 AI（或新开对话的自己）。  
-> 更新日期：2026-04-30
+> 写给下一位接手本工程的 AI，或者下一轮对话里的自己。  
+> 更新日期：2026-05-04
 
 ---
 
-## 一、项目是什么
+## 1. 先看结论
 
-**目标产品**：陪伴类 AI 智能体 / 数字生命系统
+当前真正活跃、应该优先推进的工程是 **[companion-ai](companion-ai/)**。  
+`hermes-agent/` 仍然是重要底座和参考实现，但本轮交接应默认以 `companion-ai` 的代码现状为准，而不是以根目录的历史规划为准。
 
-不是普通聊天机器人，核心差异点：
+目前项目所处阶段可以概括为：
 
-| 能力维度 | 说明 |
-|---|---|
-| 稳定人格 + OOC 边界 | 角色不跳戏，有明确的角色扮演边界规则 |
-| 长短期记忆 + 用户画像 | 跨会话记忆、关系状态、情感指标 |
-| 多模型路由 | 云端 API（GPT/Claude/Gemini）+ 本地模型（Llama/Qwen）可切换 |
-| 语音全链路 | ASR → 情感分析 → LLM → TTS → 情绪语音输出 |
-| 角色表现层 | Unity/Web/移动端，支持口型、表情、动作、3D骨骼同步 |
-| 工具能力 | 文件/代码/表格/搜索，带安全沙箱 |
-| 跨设备协同 | 多端注册、心跳、任务下发、状态同步 |
-| 可观测性 | Prometheus + Grafana + LangSmith 链路追踪 |
+- **Phase 1.5：实时语音 MVP 已打通**
+- **单体 FastAPI 入口已成为默认开发模式**
+- **前端调试能力已明显领先于后端收敛度**
+- **记忆系统、Prompt 组装和测试稳定性是下一阶段的主战场**
 
 ---
 
-## 二、技术底座
+## 2. 当前状态快照
 
-工程核心是 **[hermes-agent](hermes-agent/)** —— NousResearch 出品的开源自改进 AI Agent 框架（MIT 协议）。  
-我们把它作为底座，在上层叠加陪伴类产品所需的能力。
+### 已经比较成型的部分
 
-### hermes-agent 核心文件索引
+- `companion-ai/main.py`
+  - 单体入口可挂载全部 router，适合作为本地开发默认入口。
+- `companion-ai/frontend_app/`
+  - 已有聊天界面、设置抽屉、记忆库、项目状态面板、实时语音通话面板。
+- `companion-ai/voice_layer/`
+  - 已打通浏览器端 VAD、AudioWorklet PCM 录音、WebSocket 双向流、边合成边播放、barge-in 打断。
+- `companion-ai/shared/`
+  - 已有统一 LLM 配置、运行时配置持久化、共享模型与日志基础设施。
+- `companion-ai/core_orchestrator/project_status.py`
+  - 目前是“项目当前实现状态”的最准入口之一，前端状态页直接消费它。
 
-| 文件/目录 | 作用 |
-|---|---|
-| [hermes-agent/run_agent.py](hermes-agent/run_agent.py) | `AIAgent` 核心对话循环（~12k LOC） |
-| [hermes-agent/model_tools.py](hermes-agent/model_tools.py) | 工具编排，`handle_function_call()` |
-| [hermes-agent/cli.py](hermes-agent/cli.py) | 交互式 CLI（`HermesCLI`，~11k LOC） |
-| [hermes-agent/hermes_state.py](hermes-agent/hermes_state.py) | SQLite 会话存储（FTS5 搜索） |
-| [hermes-agent/agent/](hermes-agent/agent/) | 各模型适配器、记忆、缓存、压缩 |
-| [hermes-agent/gateway/](hermes-agent/gateway/) | 消息网关（Telegram/Discord/Slack/API服务器…） |
-| [hermes-agent/tools/](hermes-agent/tools/) | 工具实现，含终端后端（local/docker/ssh/modal…） |
-| [hermes-agent/plugins/](hermes-agent/plugins/) | 插件系统（记忆提供者、图像生成…） |
-| [hermes-agent/cron/](hermes-agent/cron/) | 定时任务调度器 |
-| [hermes-agent/environments/](hermes-agent/environments/) | RL 训练环境（Atropos 框架） |
+### 还没真正收口的部分
 
-用户配置在 `~/.hermes/config.yaml`，API Key 在 `~/.hermes/.env`。
+- `memory_system`
+  - 仍偏“长期记忆仓库”，working memory / persistent memory 分层尚未完成。
+- `state_machine.py` / Prompt 体系
+  - system prompt 仍需要从硬编码抽到共享层，便于人格文件、关系摘要、调试台复用。
+- 主聊天文本流式输出
+  - 语音通话链路已经流式，主聊天消息区还没有真正接上 token streaming。
+- `action_layer` / `device_coordination`
+  - 产品闭环仍未完成，更多是架子和边界预留。
 
 ---
 
-## 三、架构规划（已定稿）
+## 3. 现在代码里“真实存在”的能力
 
-完整架构分 9 层，详见 [陪伴类 AI 智能体 – 完整项目架构与技术选型文档.md](陪伴类%20AI%20智能体%20–%20完整项目架构与技术选型文档.md)。
+### companion-ai
 
-**分层概览**：
+- 运行模式
+  - 单体模式：`uvicorn main:app --reload --port 8000`
+  - Lite Mode：`COMPANION_LITE_MODE=true`，使用 SQLite + 内存替代，适合无 Docker 环境
+- 前端能力
+  - 文本聊天
+  - 语音输入
+  - 实时语音通话
+  - Live2D 展示
+  - LLM / Voice Provider 运行时切换
+  - 项目状态可视化
+- 运行时配置
+  - `companion_llm_config.json`
+  - `companion_voice_config.json`
+- 状态接口
+  - `/health`
+  - `/orchestrator/project_status`
+  - `/orchestrator/settings/llm`
+  - `/orchestrator/settings/voice`
 
+### hermes-agent
+
+- 仍然适合作为这些方向的参考和复用来源：
+  - gateway adapter
+  - tools 体系
+  - prompt_builder / context_compressor 的设计思路
+  - cron / 自动化调度
+- 但不要默认认为 hermes-agent 的 `.plans/` 就等于 companion-ai 当前优先级。
+
+---
+
+## 4. 先读哪些文件
+
+如果要在最短时间内恢复上下文，建议按这个顺序：
+
+1. [companion-ai/main.py](D:/DeskTop/AgentGril/companion-ai/main.py)
+2. [companion-ai/core_orchestrator/project_status.py](D:/DeskTop/AgentGril/companion-ai/core_orchestrator/project_status.py)
+3. [companion-ai/core_orchestrator/api.py](D:/DeskTop/AgentGril/companion-ai/core_orchestrator/api.py)
+4. [companion-ai/core_orchestrator/state_machine.py](D:/DeskTop/AgentGril/companion-ai/core_orchestrator/state_machine.py)
+5. [companion-ai/frontend_app/src/App.vue](D:/DeskTop/AgentGril/companion-ai/frontend_app/src/App.vue)
+6. [companion-ai/frontend_app/src/components/ProjectStatusPanel.vue](D:/DeskTop/AgentGril/companion-ai/frontend_app/src/components/ProjectStatusPanel.vue)
+7. [companion-ai/voice_layer/realtime.py](D:/DeskTop/AgentGril/companion-ai/voice_layer/realtime.py)
+8. [companion-ai/shared/llm_client.py](D:/DeskTop/AgentGril/companion-ai/shared/llm_client.py)
+
+---
+
+## 5. 本地验证建议
+
+### 最小验证路径
+
+在 `companion-ai/` 目录执行：
+
+```powershell
+python -m pytest -q
+uvicorn main:app --reload --port 8000
 ```
-客户端层（Flutter/Unity/WebGL）
-    ↓
-接入网关层（Kong/Traefik + Redis + WebSocket）
-    ↓
-控制编排层（LangGraph 状态机 + 工具调度 + 跨设备编排）
-    ↕
-语音动作协同层（ASR→TTS→动作生成→口型同步）
-    ↕
-记忆系统层（长期: pgvector+Neo4j+Mem0 / 短期: Redis）
-    ↓
-模型推理层（LiteLLM 网关 → 云端API / 本地LoRA）
-    ↓
-异步记忆沉淀层（Celery 五阶段流水线）
-    ↕
-跨设备协同层（RocketMQ/MQTT + 端到端加密）
-    ↕
-持久化与运维（PostgreSQL + MinIO + Prometheus）
+
+前端单独验证：
+
+```powershell
+cd frontend_app
+npm run build
 ```
 
-**技术选型原则**：60% 开源 + 30% 集成 + 10% 自研（核心壁垒）。
+### 2026-05-04 的实际验证结果
+
+- `python -m pytest -q`
+  - **89 passed / 7 failed**
+- 失败主要分两类
+  - `memory_system/tests/test_memory.py`
+    - SQLite 环境下向量字段插入参数绑定数量不匹配
+  - `voice_layer/tests/test_voice.py`
+    - 当前机器缺少 `ffmpeg`，导致音频时长、转码、转写相关测试失败
+
+所以不要再把“93 passed”当成当前真实基线。
 
 ---
 
-## 四、三阶段落地计划
+## 6. 下一步推荐动作
 
-| 阶段 | 周期 | 重点 | 状态 |
-|---|---|---|---|
-| **阶段一：MVP** | 1-2 个月 | 以 hermes-agent 为底座，实现记忆、对话、基础工具 | 🚧 进行中 |
-| **阶段二：体验增强** | 2-3 个月 | 集成 ASR/TTS、动作生成、办公能力 | ⏳ 待启动 |
-| **阶段三：生态构建** | 2-3 个月 | 完善跨设备协同、安全防护、运维体系 | ⏳ 待启动 |
+优先级建议如下：
 
----
-
-## 五、当前活跃开发计划（.plans/）
-
-### 5.1 OpenAI 兼容 API 服务器
-
-文件：[hermes-agent/.plans/openai-api-server.md](hermes-agent/.plans/openai-api-server.md)
-
-**动机**：让 hermes-agent 能被 Open WebUI、LobeChat、LibreChat 等主流前端直接对接，无需定制适配器。
-
-**三个阶段**：
-
-| 阶段 | 内容 | 状态 |
-|---|---|---|
-| Phase 1 (MVP) | `gateway/platforms/api_server.py`，非流式响应，Bearer Token 鉴权，`/v1/chat/completions` + `/v1/models` + `/health` | ⏳ 待实现 |
-| Phase 2 | SSE 真流式输出，`AIAgent.run_conversation()` 加 `stream_callback` 参数 | ⏳ 待实现 |
-| Phase 3 | 工具透传模式、模型 passthrough、并发限制、CORS、用量统计 | ⏳ 待实现 |
-
-**关键设计决策**：
-- 采用 Option A（Gateway Platform Adapter），复用网关基础设施，不重复造轮子
-- 默认无状态（messages 数组即会话），`X-Session-ID` 头开启持久化会话
-- 服务端口默认 `8642`，配置键 `api_server.enabled`
-
-**需要新建/修改的文件**：
-
-| 文件 | 变更 |
-|---|---|
-| `gateway/platforms/api_server.py` | 新建，~300 行 |
-| `gateway/config.py` | 加 `Platform.API_SERVER` 枚举 |
-| `gateway/run.py` | 注册新适配器 |
-| `tests/gateway/test_api_server.py` | 新建测试 |
-
-### 5.2 流式 LLM 响应支持
-
-文件：[hermes-agent/.plans/streaming-support.md](hermes-agent/.plans/streaming-support.md)
-
-**动机**：用户看到逐 token 生成而不是等待全量响应。
-
-**核心设计**：
-- 功能标志控制：`streaming.enabled: true`（默认 off，零风险）
-- `stream_callback(text_delta: str)` 注入到 `AIAgent`，平台无关
-- 提供者不支持时自动降级，不影响现有路径
-
-**当前状态**：计划文档已写，尚未开始实现。此功能是 API 服务器 Phase 2 的前置依赖。
+1. **先修 Prompt Engine 收敛**
+   - 目标：把 `state_machine.py` 内的 system prompt 硬编码抽到共享层。
+2. **再修记忆系统测试与模型分层**
+   - 目标：先把 sqlite 测试跑稳，再推进 working / persistent memory 分层。
+3. **补主聊天流式输出**
+   - 目标：让主聊天 UI 和实时语音通话在“流式体验”上不再分裂。
+4. **最后考虑主动能力**
+   - 目标：等前 3 项稳定后，再认真推进 `action_layer` / `device_coordination`。
 
 ---
 
-## 六、预算与团队参考
+## 7. 容易踩坑的点
 
-详见 [陪伴类AI智能体_分模块预算与团队执行方案.md](陪伴类AI智能体_分模块预算与团队执行方案.md)
-
-- 核心角色：技术架构师、AI 后端、记忆系统、Unity 客户端、语音多模态、DevOps
-- MVP 阶段非人力云成本估算：0.5-2 万/月（服务器+存储+LLM API）
-- 全栈完整平台：30 万+/月（规模化后）
-
----
-
-## 七、接手时的优先动作
-
-1. **先从 `companion-ai` 当前入口验证现状**：进入 `companion-ai/` 后优先运行 `python -m pytest -q` 和 `uvicorn main:app --reload --port 8000`
-2. **读懂 `companion-ai` 当前单体入口与状态机**：先看 [companion-ai/main.py](companion-ai/main.py) 和 [companion-ai/core_orchestrator/state_machine.py](companion-ai/core_orchestrator/state_machine.py)
-3. **读懂 hermes-agent 核心循环与网关参考实现**：再回看 [run_agent.py](hermes-agent/run_agent.py)、[model_tools.py](hermes-agent/model_tools.py) 以及 `gateway/` 下现有 adapter
-4. **优先补 `prompt_engine` 与去硬编码 prompt**：这是 companion-ai 继续推进 MVP 前最值得先收敛的点
-5. **再处理 hermes-agent 的 OpenAI 兼容 API 计划**：`.plans/openai-api-server.md` 和 `.plans/streaming-support.md` 仍然有效，但不应覆盖 companion-ai 当前 Phase 0/1 收敛工作
+- `hermes-agent` 更偏 WSL2/Linux/macOS 工作流；在这台 Windows 机器上不要默认先从它启动。
+- `companion-ai` 才是当前本机最顺手的开发入口。
+- 根目录旧文档里很多内容是“长期目标”，不是“今天已经实现”。
+- 页面状态展示以 `core_orchestrator/project_status.py` 为准；如果代码实现变化了，优先同步这里，再同步文档。
+- 当前仓库是脏工作区：
+  - `.gitignore` 已有用户改动
+  - `companion-ai/.env.lite` 是未跟踪文件
+  - 不要误清理
 
 ---
 
-## 八、当前已知未解决问题 / 注意事项
+## 8. 一句话交接
 
-- hermes-agent 是 **WSL2/Linux/macOS** 项目，原生 Windows 不支持。本机开发需在 WSL2 中运行。
-- `companion-ai` 当前可直接在 Windows + Python 3.11 下运行和测试；Lite Mode 健康检查已通过。
-- `ENABLE_TOOL_SEARCH=false` 必须设置，否则 Kimi Code 端点会报 400 错误（详见 `~/.claude/CLAUDE.md`）。
-- `.plans/` 目录下的计划文件均为**意图文档**，尚未产生实际代码变更，不要误以为功能已实现。
-- hermes-agent 测试套件约 15k 个测试，改动核心路径时务必在本地跑 `scripts/run_tests.sh`。
-- `companion-ai` 当前 Python 测试基线为 **93 passed**；如果这条失效，优先检查最近是否改了 Lite Mode、memory pipeline、device registry 或事件模型。
+这不是一个“从零开始搭骨架”的项目了，而是一个 **实时语音体验先跑出来、现在需要把记忆、提示词和工程稳定性补齐** 的项目。接手时请把注意力放在 `companion-ai`，并优先相信代码与状态接口，而不是旧规划文本。

@@ -80,7 +80,7 @@ onMounted(() => {
 <style scoped>
 .llm-status-bar {
   border-top: 1px solid rgba(255, 255, 255, 0.05);
-  background: rgba(13, 13, 30, 0.4);
+  background: rgba(11, 15, 27, 0.58);
   backdrop-filter: blur(8px);
 }
 
@@ -88,7 +88,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 8px 16px;
   font-size: 12px;
   color: #94a3b8;
   transition: background 0.2s ease;
@@ -181,5 +181,11 @@ onMounted(() => {
 .refresh-icon {
   display: inline-block;
   font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .status-content {
+    padding: 8px 12px;
+  }
 }
 </style>

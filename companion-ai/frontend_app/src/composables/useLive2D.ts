@@ -1,8 +1,7 @@
-import { ref, onMounted, onUnmounted, Ref } from 'vue';
+import { ref, onMounted, onUnmounted, type Ref } from 'vue';
 import * as PIXI from 'pixi.js';
 import { Live2DModel } from 'pixi-live2d-display';
 
-// 注册全局PIXI（pixi-live2d-display需要）
 if (typeof window !== 'undefined') {
   (window as any).PIXI = PIXI;
 }
@@ -23,6 +22,42 @@ export function useLive2D(
   const isLoading = ref(true);
   const error = ref<string | null>(null);
 
+  let resizeObserver: ResizeObserver | null = null;
+
+  function getContainerSize() {
+    const fallbackWidth = Math.max(options.width, 1);
+    const fallbackHeight = Math.max(options.height, 1);
+    const el = containerRef.value;
+
+    if (!el) {
+      return { width: fallbackWidth, height: fallbackHeight };
+    }
+
+    const rect = el.getBoundingClientRect();
+    return {
+      width: Math.max(Math.round(rect.width || fallbackWidth), 1),
+      height: Math.max(Math.round(rect.height || fallbackHeight), 1),
+    };
+  }
+
+  function layoutModel(targetModel = model.value) {
+    if (!app.value || !targetModel) {
+      return;
+    }
+
+    const { width, height } = getContainerSize();
+    app.value.renderer.resize(width, height);
+
+    const scaleX = width / targetModel.width;
+    const scaleY = height / targetModel.height;
+    const scale = Math.min(scaleX, scaleY) * 0.8;
+
+    targetModel.scale.set(scale);
+    targetModel.anchor.set(0.5, 0.5);
+    targetModel.x = width / 2;
+    targetModel.y = height / 2;
+  }
+
   async function initLive2D() {
     if (!containerRef.value) {
       error.value = 'Container element not found';
@@ -31,47 +66,40 @@ export function useLive2D(
     }
 
     try {
-      // 直接使用静态导入的Live2DModel
+      const initialSize = getContainerSize();
 
-      // 创建PixiJS应用
       app.value = new PIXI.Application({
-        width: options.width,
-        height: options.height,
+        width: initialSize.width,
+        height: initialSize.height,
         backgroundAlpha: 0,
         antialias: true,
         resolution: window.devicePixelRatio || 1,
         autoDensity: true,
       });
 
-      // 将canvas添加到容器
       const canvas = app.value.view as HTMLCanvasElement;
       canvas.style.width = '100%';
       canvas.style.height = '100%';
       containerRef.value.appendChild(canvas);
 
-      // 加载Live2D模型
       const loadedModel = await Live2DModel.from(options.modelPath, {
         autoInteract: options.autoInteract ?? true,
       });
 
       model.value = loadedModel;
-
-      // 模型缩放适配 - 居中显示
-      const scaleX = options.width / loadedModel.width;
-      const scaleY = options.height / loadedModel.height;
-      const scale = Math.min(scaleX, scaleY) * 0.8;
-
-      loadedModel.scale.set(scale);
-      loadedModel.x = options.width / 2;
-      loadedModel.y = options.height / 2;
-      loadedModel.anchor.set(0.5, 0.5);
-
       app.value.stage.addChild(loadedModel as any);
+      layoutModel(loadedModel);
 
-      // 监听点击事件
       loadedModel.on('hit', (hitAreas: string[]) => {
         console.log('Live2D hit areas:', hitAreas);
       });
+
+      if (typeof ResizeObserver !== 'undefined' && containerRef.value) {
+        resizeObserver = new ResizeObserver(() => {
+          layoutModel();
+        });
+        resizeObserver.observe(containerRef.value);
+      }
 
       isLoading.value = false;
       console.log('Live2D model loaded successfully');
@@ -82,39 +110,30 @@ export function useLive2D(
     }
   }
 
-  /**
-   * 播放动作
-   * @param group 动作组名称（如 'idle', 'tap_body'）
-   * @param index 动作索引，默认0
-   * @param priority 优先级，默认2（普通）
-   */
   function playMotion(group: string, index = 0, priority = 2) {
-    if (model.value) {
-      try {
-        model.value.motion(group, index, priority);
-      } catch (err) {
-        console.warn(`Failed to play motion ${group}[${index}]:`, err);
-      }
+    if (!model.value) {
+      return;
+    }
+
+    try {
+      model.value.motion(group, index, priority);
+    } catch (err) {
+      console.warn(`Failed to play motion ${group}[${index}]:`, err);
     }
   }
 
-  /**
-   * 设置表情
-   * @param name 表情名称或索引
-   */
   function setExpression(name: string | number) {
-    if (model.value) {
-      try {
-        model.value.expression(name);
-      } catch (err) {
-        console.warn(`Failed to set expression ${name}:`, err);
-      }
+    if (!model.value) {
+      return;
+    }
+
+    try {
+      model.value.expression(name);
+    } catch (err) {
+      console.warn(`Failed to set expression ${name}:`, err);
     }
   }
 
-  /**
-   * 获取可用的动作组列表
-   */
   function getMotionGroups(): string[] {
     if (model.value && model.value.internalModel?.motionManager) {
       const motionManager = model.value.internalModel.motionManager as any;
@@ -123,9 +142,6 @@ export function useLive2D(
     return [];
   }
 
-  /**
-   * 获取可用的表情列表
-   */
   function getExpressions(): string[] {
     if (model.value && model.value.internalModel?.motionManager) {
       const motionManager = model.value.internalModel.motionManager as any;
@@ -137,10 +153,15 @@ export function useLive2D(
   }
 
   onMounted(() => {
-    initLive2D();
+    void initLive2D();
   });
 
   onUnmounted(() => {
+    if (resizeObserver) {
+      resizeObserver.disconnect();
+      resizeObserver = null;
+    }
+
     if (app.value) {
       app.value.destroy(true, { children: true });
     }

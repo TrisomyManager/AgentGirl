@@ -13,6 +13,12 @@ export interface ChatMessage {
   isTyping?: boolean;
 }
 
+interface SendMessageOptions {
+  hasVoiceInput?: boolean;
+  requestVoiceReply?: boolean;
+  voiceDurationMs?: number;
+}
+
 const STORAGE_KEY = 'companion_chat_history';
 const STORAGE_SESSION_KEY = 'companion_session_id';
 const STORAGE_USER_KEY = 'companion_user_name';
@@ -118,7 +124,7 @@ export function useChat() {
     currentAction.value = '';
   }
 
-  async function sendMessage(content: string) {
+  async function sendMessage(content: string, options: SendMessageOptions = {}) {
     const trimmed = content.trim();
     if (!trimmed) {
       return;
@@ -141,6 +147,9 @@ export function useChat() {
       },
       user_message: trimmed,
       platform: 'app',
+      has_voice: options.hasVoiceInput ?? false,
+      request_voice_reply: options.requestVoiceReply ?? voice.autoPlayEnabled.value,
+      voice_duration_ms: options.voiceDurationMs,
     });
     isTyping.value = false;
 
@@ -189,7 +198,10 @@ export function useChat() {
     isTyping.value = false;
 
     if (text) {
-      await sendMessage(text);
+      await sendMessage(text, {
+        hasVoiceInput: true,
+        requestVoiceReply: true,
+      });
       return;
     }
 

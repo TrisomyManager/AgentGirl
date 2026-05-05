@@ -109,10 +109,10 @@ function stopVoice() {
 
 <style scoped>
 .chat-input-area {
-  padding: 12px 16px;
-  background: rgba(26, 26, 46, 0.9);
+  padding: 14px 16px 16px;
+  background: rgba(15, 20, 34, 0.92);
   backdrop-filter: blur(12px);
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
   flex-shrink: 0;
 }
 
@@ -120,6 +120,10 @@ function stopVoice() {
   display: flex;
   align-items: flex-end;
   gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .voice-btn {
@@ -191,7 +195,8 @@ function stopVoice() {
 
 .text-input-wrapper {
   flex: 1;
-  background: rgba(15, 15, 30, 0.6);
+  min-width: 0;
+  background: rgba(8, 12, 24, 0.52);
   border-radius: 20px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   padding: 8px 16px;
@@ -270,5 +275,31 @@ function stopVoice() {
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
+}
+
+@media (max-width: 640px) {
+  .chat-input-area {
+    padding: 10px 10px 12px;
+  }
+
+  .input-wrapper {
+    gap: 8px;
+    padding: 8px;
+    border-radius: 18px;
+  }
+
+  .voice-btn,
+  .send-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .text-input-wrapper {
+    padding: 7px 12px;
+  }
+
+  .text-input-wrapper textarea {
+    font-size: 13px;
+  }
 }
 </style>

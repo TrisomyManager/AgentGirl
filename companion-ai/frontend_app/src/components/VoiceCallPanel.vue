@@ -158,13 +158,15 @@ watch(
 .call-panel {
   width: 100%;
   max-width: 540px;
-  height: 100vh;
+  height: 100dvh;
+  max-height: 100dvh;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 28px 24px 32px;
+  padding: clamp(18px, 3vh, 28px) clamp(16px, 3vw, 24px) clamp(20px, 4vh, 32px);
   position: relative;
   color: #e2e8f0;
+  overflow: hidden;
 }
 
 .close-btn {
@@ -186,9 +188,9 @@ watch(
 /* Avatar with reactive rings */
 .avatar-wrap {
   position: relative;
-  width: 220px;
-  height: 220px;
-  margin: 32px 0 16px;
+  width: clamp(150px, 26vh, 220px);
+  height: clamp(150px, 26vh, 220px);
+  margin: clamp(18px, 4vh, 32px) 0 16px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -199,13 +201,13 @@ watch(
   border-radius: 50%;
   border: 2px solid rgba(233, 69, 96, 0.25);
 }
-.ring-1 { width: 220px; height: 220px; }
-.ring-2 { width: 180px; height: 180px; }
-.ring-3 { width: 140px; height: 140px; }
+.ring-1 { width: 100%; height: 100%; }
+.ring-2 { width: 82%; height: 82%; }
+.ring-3 { width: 64%; height: 64%; }
 
 .avatar-core {
-  width: 110px;
-  height: 110px;
+  width: 50%;
+  height: 50%;
   border-radius: 50%;
   background: linear-gradient(135deg, #e94560, #8b5cf6);
   display: flex;
@@ -262,7 +264,7 @@ watch(
 
 .state-label {
   margin-top: 8px;
-  font-size: 18px;
+  font-size: clamp(16px, 2.4vh, 18px);
   font-weight: 600;
   color: #fff;
 }
@@ -372,4 +374,25 @@ watch(
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.3s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+
+@media (max-height: 760px) {
+  .call-panel {
+    padding-top: 16px;
+    padding-bottom: 18px;
+  }
+
+  .avatar-wrap {
+    width: clamp(132px, 22vh, 180px);
+    height: clamp(132px, 22vh, 180px);
+    margin: 16px 0 10px;
+  }
+
+  .transcript-area {
+    margin: 16px 0;
+  }
+
+  .primary-btn {
+    padding: 12px 24px;
+  }
+}
 </style>

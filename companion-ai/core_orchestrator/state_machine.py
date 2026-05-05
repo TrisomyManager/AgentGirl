@@ -252,7 +252,12 @@ async def node_receive(state: OrchestratorState) -> OrchestratorState:
         return state
 
     log = logger.bind(turn_id=tc.turn_id, session_id=tc.session_id)
-    log.info("state_machine_receive", user_id=tc.user.user_id, has_voice=tc.has_voice)
+    log.info(
+        "state_machine_receive",
+        user_id=tc.user.user_id,
+        has_voice=tc.has_voice,
+        request_voice_reply=tc.request_voice_reply,
+    )
 
     if tc.has_voice and tc.user_message.strip() == "":
         try:
@@ -394,6 +399,12 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
         relationship=relationship,
         memory=memory,
     )
+    if settings.enable_voice:
+        system_prompt += (
+            "\n\n【能力说明】你支持语音播报。"
+            "当用户希望你“说一句”“念出来”或“用语音回复”时，不要声称自己无法发声；"
+            "直接正常给出要说的内容，系统会按需合成语音。"
+        )
     messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
     for msg in state["messages"]:
         if not isinstance(msg, SystemMessage):
@@ -468,7 +479,7 @@ async def node_synthesize_voice(state: OrchestratorState) -> OrchestratorState:
     if not settings.enable_voice:
         state["skip_voice"] = True
         return state
-    if not tc.has_voice:
+    if not (tc.request_voice_reply or tc.has_voice):
         state["skip_voice"] = True
         return state
 

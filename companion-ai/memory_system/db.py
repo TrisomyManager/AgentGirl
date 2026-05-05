@@ -75,11 +75,15 @@ async def init_schema() -> None:
     if settings.lite_mode:
         return
 
+    from memory_system.vector_store import resolve_embedding_dim
+
+    embedding_dim = resolve_embedding_dim()
+
     # pgvector-specific: ensure embedding column is vector type with index
     async with engine.begin() as conn:
         await conn.execute(
             text(
-                """
+                f"""
                 DO $$
                 BEGIN
                     IF NOT EXISTS (
@@ -88,7 +92,7 @@ async def init_schema() -> None:
                         AND data_type = 'USER-DEFINED'
                     ) THEN
                         ALTER TABLE memories DROP COLUMN IF EXISTS embedding;
-                        ALTER TABLE memories ADD COLUMN embedding vector(1536);
+                        ALTER TABLE memories ADD COLUMN embedding vector({embedding_dim});
                     END IF;
                 END $$;
                 """

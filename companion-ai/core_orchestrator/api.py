@@ -26,6 +26,7 @@ from shared.models import (
 
 from core_orchestrator.orchestrator import get_orchestrator
 from core_orchestrator.project_status import get_project_status, ProjectStatusData
+from shared.config import get_settings
 from shared.llm_client import get_runtime_llm_config, update_runtime_llm_config, save_llm_config_to_disk
 from shared.voice_runtime_config import (
     get_runtime_voice_config,
@@ -51,6 +52,7 @@ class TurnRequest(BaseModel):
     user_message: str
     platform: Platform = Platform.APP
     has_voice: bool = False
+    request_voice_reply: bool = False
     voice_duration_ms: Optional[int] = None
     has_image: bool = False
     image_urls: List[str] = []
@@ -126,6 +128,7 @@ async def process_turn(request: TurnRequest) -> TurnResponse:
         user_message=request.user_message,
         platform=request.platform,
         has_voice=request.has_voice,
+        request_voice_reply=request.request_voice_reply,
         voice_duration_ms=request.voice_duration_ms,
         has_image=request.has_image,
         image_urls=request.image_urls,
@@ -302,6 +305,17 @@ def _reload_voice_clients() -> None:
         logger.warning("voice_clients_reload_failed", error=str(exc))
 
 
+def _infer_effective_tts_provider(base_url: str, provider_hint: str = "") -> str:
+    lowered = (base_url or "").lower()
+    if "dashscope" in lowered:
+        return "dashscope"
+    if "siliconflow" in lowered:
+        return "siliconflow"
+    if provider_hint in {"openai", "openai_compatible"}:
+        return "openai"
+    return "openai"
+
+
 @router.get(
     "/settings/voice",
     response_model=VoiceConfigResponse,
@@ -310,15 +324,36 @@ def _reload_voice_clients() -> None:
 )
 async def get_voice_settings() -> VoiceConfigResponse:
     rt = get_runtime_voice_config()
+    settings = get_settings()
+    llm_rt = get_runtime_llm_config()
+
+    tts_provider = rt.get("tts_provider") or settings.tts_provider or ""
+    tts_api_key = rt.get("tts_api_key") or settings.tts_api_key or settings.openai_api_key or ""
+    tts_base_url = rt.get("tts_base_url") or settings.tts_base_url or settings.openai_base_url or ""
+    tts_model = rt.get("tts_model") or ""
+
+    if not rt.get("tts_provider") and not tts_api_key and llm_rt.get("openai_api_key"):
+        tts_base_url = (llm_rt.get("openai_base_url") or tts_base_url or "").rstrip("/")
+        if "/compatible-mode/" in tts_base_url:
+            tts_base_url = tts_base_url.replace("/compatible-mode/v1", "/api/v1")
+        tts_provider = _infer_effective_tts_provider(tts_base_url, llm_rt.get("provider") or "")
+        tts_api_key = llm_rt.get("openai_api_key") or ""
+        if not tts_model and tts_provider == "dashscope":
+            tts_model = "cosyvoice-v3-flash"
+
+    tts_voice_id = rt.get("tts_voice_id") or settings.default_voice_id or ""
+    if tts_provider == "dashscope" and not rt.get("tts_voice_id") and tts_voice_id == settings.default_voice_id:
+        tts_voice_id = "longxiaochun"
+
     return VoiceConfigResponse(
         asr_api_key_set=bool(rt.get("asr_api_key")),
         asr_base_url=rt.get("asr_base_url") or "",
         asr_model=rt.get("asr_model") or "",
-        tts_provider=rt.get("tts_provider") or "",
-        tts_api_key_set=bool(rt.get("tts_api_key")),
-        tts_base_url=rt.get("tts_base_url") or "",
-        tts_model=rt.get("tts_model") or "",
-        tts_voice_id=rt.get("tts_voice_id") or "",
+        tts_provider=tts_provider,
+        tts_api_key_set=bool(tts_api_key),
+        tts_base_url=tts_base_url,
+        tts_model=tts_model,
+        tts_voice_id=tts_voice_id,
     )
 
 

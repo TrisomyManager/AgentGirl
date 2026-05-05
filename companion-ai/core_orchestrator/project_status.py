@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
 from enum import Enum
+from typing import Dict, List
+
 from pydantic import BaseModel, Field
 
 
@@ -17,10 +18,10 @@ class ModuleStatus(str, Enum):
 
 class TechStack(BaseModel):
     """Technology stack for a module."""
-    languages: List[str] = []
-    frameworks: List[str] = []
-    databases: List[str] = []
-    apis: List[str] = []
+    languages: List[str] = Field(default_factory=list)
+    frameworks: List[str] = Field(default_factory=list)
+    databases: List[str] = Field(default_factory=list)
+    apis: List[str] = Field(default_factory=list)
 
 
 class ModuleInfo(BaseModel):
@@ -32,17 +33,50 @@ class ModuleInfo(BaseModel):
     status: ModuleStatus
     progress: int = Field(..., ge=0, le=100, description="Completion percentage")
     tech_stack: TechStack
-    key_features: List[str] = []
-    dependencies: List[str] = []
-    blockers: List[str] = []
+    key_features: List[str] = Field(default_factory=list)
+    dependencies: List[str] = Field(default_factory=list)
+    blockers: List[str] = Field(default_factory=list)
     last_updated: str = ""
+
+
+class MilestoneInfo(BaseModel):
+    """Cross-module milestone snapshot for the current release."""
+
+    title: str
+    owner: str
+    status: str
+    detail: str
+
+
+class TestSnapshot(BaseModel):
+    """Verification snapshot shown in handoff docs and UI."""
+
+    command: str
+    passed: int
+    failed: int
+    notes: List[str] = Field(default_factory=list)
+
+
+class FocusItem(BaseModel):
+    """A single current focus or risk item."""
+
+    title: str
+    detail: str
 
 
 class ProjectStatusData(BaseModel):
     """Complete project status data."""
     project_name: str
     version: str
+    current_phase: str
+    summary: str
+    last_updated: str
     overall_progress: int
+    recent_highlights: List[str]
+    next_focus: List[FocusItem]
+    risks: List[FocusItem]
+    milestones: List[MilestoneInfo]
+    test_snapshot: TestSnapshot
     modules: List[ModuleInfo]
     architecture_layers: Dict[str, List[str]]
 
@@ -51,8 +85,80 @@ def get_project_status() -> ProjectStatusData:
     """Return current project development status."""
     return ProjectStatusData(
         project_name="Companion AI - 小暖",
-        version="0.2.0-Realtime",
-        overall_progress=85,
+        version="0.2.0-realtime",
+        current_phase="Phase 1.5 · 实时语音 MVP 收敛期",
+        summary="单体 FastAPI 入口、实时语音通话链路、运行时配置面板都已落地；当前重心转向记忆模型收敛、主聊天流式输出和测试稳定性。",
+        last_updated="2026-05-04",
+        overall_progress=84,
+        recent_highlights=[
+            "单体入口 `main.py` 已成为默认开发路径，Lite Mode 可直接启动完整 Web API。",
+            "实时语音链路已打通：浏览器 VAD、AudioWorklet 录音、WebSocket 双向流和边合成边播放。",
+            "LLM / Voice Provider 已支持运行时切换与配置持久化，无需改代码即可调参。",
+            "前端已具备聊天、记忆库、语音通话、状态面板四个核心调试入口。",
+        ],
+        next_focus=[
+            FocusItem(
+                title="收敛 Prompt Engine",
+                detail="把 `state_machine.py` 中的 system prompt 硬编码抽到共享层，方便人格文件、关系摘要和调试台复用。",
+            ),
+            FocusItem(
+                title="补齐主聊天流式输出",
+                detail="语音通话链路已支持流式，主聊天 REST 路径还没有把 token streaming 接到消息区。",
+            ),
+            FocusItem(
+                title="重构记忆双层模型",
+                detail="当前记忆层仍偏向“长期库”，下一步要补 working / persistent memory 分层和更稳定的摘要策略。",
+            ),
+        ],
+        risks=[
+            FocusItem(
+                title="测试基线已回落",
+                detail="2026-05-04 本地 `python -m pytest -q` 为 89 passed / 7 failed，其中 2 个来自 memory sqlite 绑定，3 个来自 ffmpeg 缺失。",
+            ),
+            FocusItem(
+                title="文档曾与代码漂移",
+                detail="根目录 handoff / plan 长期滞后于 `companion-ai` 实现，接手时需要优先以代码和状态接口为准。",
+            ),
+            FocusItem(
+                title="动作与设备层仍是骨架",
+                detail="实时语音体验已领先，但 action / device_coordination 仍未进入真正的产品闭环。",
+            ),
+        ],
+        milestones=[
+            MilestoneInfo(
+                title="单体入口与 Lite Mode",
+                owner="平台基线",
+                status="done",
+                detail="本地开发默认走 `uvicorn main:app --reload --port 8000`，并保留微服务模式作为后续拆分边界。",
+            ),
+            MilestoneInfo(
+                title="实时语音通话",
+                owner="voice_layer + frontend_app",
+                status="done",
+                detail="浏览器端已支持 VAD、PCM 采集、打断和链式 TTS 播放，是当前最成熟的用户体验模块。",
+            ),
+            MilestoneInfo(
+                title="记忆系统收敛",
+                owner="memory_system",
+                status="active",
+                detail="向量检索和情感标签已在，但工作记忆 / 长期记忆分层、摘要质量和 sqlite 测试兼容还需继续补。",
+            ),
+            MilestoneInfo(
+                title="动作执行器与主动能力",
+                owner="action_executor",
+                status="queued",
+                detail="主动提醒、外部查询和插件式动作执行还处于规划阶段，暂未接入真实闭环。",
+            ),
+        ],
+        test_snapshot=TestSnapshot(
+            command="python -m pytest -q",
+            passed=89,
+            failed=7,
+            notes=[
+                "memory_system: sqlite 插入向量字段的参数绑定数量不匹配。",
+                "voice_layer: 当前机器缺少 ffmpeg，导致音频时长/转码/转写相关测试失败。",
+            ],
+        ),
         modules=[
             ModuleInfo(
                 id="shared",
@@ -68,7 +174,7 @@ def get_project_status() -> ProjectStatusData:
                     apis=["OpenAI API", "Anthropic API", "DashScope API"],
                 ),
                 key_features=[
-                    "多Provider LLM客户端 (OpenAI/Anthropic/兼容接口)",
+                    "多 Provider LLM 客户端 (OpenAI/Anthropic/兼容接口)",
                     "运行时配置热更新 (无需重启)",
                     "配置持久化 (companion_llm_config.json + companion_voice_config.json)",
                     "语音运行时配置模块 (ASR/TTS provider 热切换)",
@@ -85,7 +191,7 @@ def get_project_status() -> ProjectStatusData:
                 name_zh="核心编排层",
                 description="LangGraph state machine, central coordination",
                 status=ModuleStatus.COMPLETED,
-                progress=95,
+                progress=93,
                 tech_stack=TechStack(
                     languages=["Python 3.11+"],
                     frameworks=["FastAPI", "LangGraph", "httpx"],
@@ -93,7 +199,7 @@ def get_project_status() -> ProjectStatusData:
                     apis=["内部微服务调用"],
                 ),
                 key_features=[
-                    "LangGraph状态机编排 (意图→记忆→角色→语音→动作)",
+                    "LangGraph 状态机编排 (意图→记忆→角色→语音→动作)",
                     "微服务健康检查与熔断",
                     "事件总线 (Redis pub/sub)",
                     "LLM配置管理API (GET/POST /settings/llm)",
@@ -135,7 +241,7 @@ def get_project_status() -> ProjectStatusData:
                 name_zh="记忆系统",
                 description="Semantic/factual/emotional memory with vector search",
                 status=ModuleStatus.IN_PROGRESS,
-                progress=70,
+                progress=68,
                 tech_stack=TechStack(
                     languages=["Python 3.11+"],
                     frameworks=["FastAPI", "SQLAlchemy 2.x"],
@@ -153,8 +259,9 @@ def get_project_status() -> ProjectStatusData:
                 blockers=[
                     "需实现 working/persistent memory 二分模型 (参考AIRI)",
                     "记忆摘要质量依赖LLM",
+                    "SQLite 测试环境下向量字段插入仍有兼容问题",
                 ],
-                last_updated="2026-04-30",
+                last_updated="2026-05-04",
             ),
             ModuleInfo(
                 id="voice_layer",
@@ -187,7 +294,9 @@ def get_project_status() -> ProjectStatusData:
                     "REST降级入口 (/voice/transcribe + /voice/synthesize)",
                 ],
                 dependencies=["shared", "persona_engine"],
-                blockers=[],
+                blockers=[
+                    "音频工具链依赖 ffmpeg；在未安装环境下相关自动化测试会失败。",
+                ],
                 last_updated="2026-05-04",
             ),
             ModuleInfo(
@@ -221,7 +330,7 @@ def get_project_status() -> ProjectStatusData:
                 name_zh="前端应用",
                 description="Vue 3 web interface with real-time voice call",
                 status=ModuleStatus.COMPLETED,
-                progress=92,
+                progress=94,
                 tech_stack=TechStack(
                     languages=["TypeScript", "HTML", "CSS"],
                     frameworks=[
