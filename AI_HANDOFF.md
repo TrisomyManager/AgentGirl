@@ -136,13 +136,14 @@ npm run build
 
 ## 6. 下一步推荐动作
 
-> 上一轮 Phase 1.5 的 next_focus 已经推进了三项（主聊天流式输出 + 记忆双层模型 + 行动执行器初始闭环），本轮的状态见下面 9 节"待续工作"。新的优先级建议如下：
+> 已收口：`companion-ai/.env` 路径固定为包根目录（`shared/config.py` 中 `_COMPANION_ROOT / ".env"`），避免 uvicorn cwd 导致 lite_mode 丢失；`GET /actions/push/poll` + 前端 2.5s 轮询作为 Cloudflare / nginx 缓冲场景下的兜底；SSE 首包 padding 提至 4KB；状态面板「Prompt 调试」可拉取 `GET /orchestrator/debug/system_prompt`；无 ffmpeg 时 3 个 voice_layer 用例自动 skip。
 
-1. **完成 action_executor 的 lite-mode 兼容修复**（见 9 节，这是离收口最近的一项）。
-2. **`/actions/push` SSE 在 Cloudflare 隧道下的稳定推送**（见 9 节，已加 padding + heartbeat，但远端实测还没拿到完整闭环）。
-3. **调试台暴露完整 Prompt 链路** —— 在状态面板里给一个"看一眼最终 system prompt"的 inspector。
-4. **working memory 摘要 LLM 化** —— 当前 dominant_topic 是 bag-of-words 启发式，等成本/延迟可控时换 LLM。
-5. **persona_engine 微服务模式接 SSE** —— 去掉 `state_machine.stream_assistant_response` 中针对该路径的"非流式 fallback"。
+仍建议优先：
+
+1. **远端 Cloudflared 路径上复测** `/actions/push` 与 `/actions/push/poll`（首字节 <2s、ReminderToast 弹出）。
+2. **working memory 摘要 LLM 化** —— 当前 dominant_topic 仍是 bag-of-words 启发式。
+3. **persona_engine 微服务模式接 SSE** —— 去掉 `state_machine.stream_assistant_response` 中针对该路径的"非流式 fallback"。
+4. **action_executor**：天气 / 日历真实 API、cron 风格调度。
 
 ---
 

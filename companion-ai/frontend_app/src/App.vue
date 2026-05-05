@@ -181,26 +181,40 @@ onMounted(() => {
 <style scoped>
 :global(html, body, #app) {
   width: 100%;
+  max-width: 100%;
   height: 100%;
   min-height: 100dvh;
   margin: 0;
+  box-sizing: border-box;
 }
 
 :global(body) {
   overflow: hidden;
+  overflow-x: clip;
   background: #060913;
+}
+
+:global(#app) {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100dvh;
+  min-width: 0;
 }
 
 .app-root {
   --frame-gap: clamp(10px, 1.8vw, 24px);
+  --shell-max: 1400px;
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   height: 100dvh;
   min-height: 100dvh;
-  width: 100%;
   padding: var(--frame-gap);
   overflow: hidden;
   color: #e2e8f0;
@@ -226,11 +240,15 @@ onMounted(() => {
   z-index: 1;
   display: flex;
   flex-direction: column;
-  width: calc(100vw - (var(--frame-gap) * 2));
-  max-width: none;
+  /* 用 100% 避免 100vw 含滚动条导致整体偏右 */
+  width: 100%;
+  max-width: min(var(--shell-max), 100%);
+  margin-inline: auto;
+  flex: 0 1 auto;
+  align-self: center;
   height: calc(100dvh - (var(--frame-gap) * 2));
+  max-height: calc(100dvh - (var(--frame-gap) * 2));
   min-height: 0;
-  max-height: 100%;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 32px;
@@ -283,9 +301,11 @@ onMounted(() => {
   flex: 1;
   gap: 14px;
   min-height: 0;
+  min-width: 0;
   height: 100%;
   padding: 14px;
   overflow: hidden;
+  align-items: stretch;
 }
 
 .sidebar {

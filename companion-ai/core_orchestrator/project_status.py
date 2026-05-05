@@ -54,6 +54,7 @@ class TestSnapshot(BaseModel):
     command: str
     passed: int
     failed: int
+    skipped: int = 0
     notes: List[str] = Field(default_factory=list)
 
 
@@ -127,11 +128,12 @@ def get_project_status() -> ProjectStatusData:
             "🆕 记忆双层模型已落地：working memory 滚动 N 轮 + 结构化用户摘要，注入到 system prompt 的【当前对话状态】/【最近几轮对话】section。",
             "🆕 项目状态面板新增『本轮交付』分类卡片（feature / fix / docs / chore），交接时一眼看清当前分支改了什么。",
             "🆕 行动执行器初始闭环已打通：5 个内置 handler、自然语言『3 分钟后提醒我喝水』、SQLite 持久化、后台轮询触发，前端 ReminderToast 通过 /actions/push SSE 接收。",
+            "🆕 工程收尾：`.env` 固定从 `companion-ai/.env` 解析（与 cwd 无关）、`/actions/push/poll` 轮询兜底 + 前端 2.5s 轮询、SSE 首包 padding 4KB、状态面板可加载完整 system prompt。",
         ],
         next_focus=[
             FocusItem(
-                title="人格摘要注入流式 Prompt",
-                detail="基础人格、关系摘要、记忆召回和 working memory 都能装配进 system prompt，但调试台还没暴露最终拼出的完整 prompt 链路。",
+                title="Prompt 拼装可测化与对比",
+                detail="状态面板已可查看最近一次完整 system prompt；下一步把拼装逻辑抽到更可测的层，并视需要支持按会话 / 版本 diff。",
             ),
             FocusItem(
                 title="working memory 摘要 LLM 化",
@@ -145,7 +147,7 @@ def get_project_status() -> ProjectStatusData:
         risks=[
             FocusItem(
                 title="测试基线再上一档",
-                detail="2026-05-05 本地 `python -m pytest -q` 为 125 passed / 0 failed；本轮再新增 15 个 action_executor 用例（registry / handlers / reminders store / scheduler / 文本解析）。",
+                detail="2026-05-05 `pytest -q`：有 ffmpeg 时为 126 passed；无 ffmpeg 时 3 个 voice_layer 用例 skip（123 passed / 3 skipped）。含 push_bus 轮询用例。",
             ),
             FocusItem(
                 title="文档曾与代码漂移",
@@ -184,10 +186,12 @@ def get_project_status() -> ProjectStatusData:
         ],
         test_snapshot=TestSnapshot(
             command="python -m pytest -q",
-            passed=125,
+            passed=126,
             failed=0,
+            skipped=0,
             notes=[
-                "新增 15 个 action_executor 用例：registry / 内置 handler / reminders store / scheduler 与 push bus / NL 文本解析。",
+                "全量 126 条用例；其中 3 条 voice_layer（pydub 导出 MP3）在无 ffmpeg 的 PATH 下标记为 skip。",
+                "新增 15 个 action_executor 用例：registry / 内置 handler / reminders store / scheduler 与 push bus / NL 文本解析；另含 push_bus `poll_since` 轮询契约测试。",
                 "新增 9 个 working memory 用例覆盖 observe_turn / window 截断 / 名字 & 喜好抽取 / dominant topic / snapshot rebuild / 与 prompt 的渲染。",
                 "新增 4 个 streaming 测试覆盖 chunk_text_stream、stream_assistant_response 和 /orchestrator/turn/stream SSE 端点。",
                 "shared/tests/test_prompt_engine.py 的中英文断言已与 prompt_engine 的中文实现对齐。",

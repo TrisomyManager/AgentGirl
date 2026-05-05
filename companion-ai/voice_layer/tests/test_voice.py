@@ -1,9 +1,15 @@
 """Tests for voice_layer — ASR, TTS, audio_utils, and API endpoints."""
 
 import io
+import shutil
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+_requires_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None,
+    reason="ffmpeg not on PATH (pydub export requires it)",
+)
 from fastapi.testclient import TestClient
 from httpx import Response
 
@@ -54,6 +60,7 @@ def client(mock_settings):
 # Audio utils
 # ---------------------------------------------------------------------------
 
+@_requires_ffmpeg
 @pytest.mark.asyncio
 async def test_get_audio_duration(mock_settings):
     """Test duration detection with a silent MP3."""
@@ -68,6 +75,7 @@ async def test_get_audio_duration(mock_settings):
     assert 0.9 <= duration <= 1.2
 
 
+@_requires_ffmpeg
 @pytest.mark.asyncio
 async def test_convert_audio_format(mock_settings):
     """Test audio format conversion."""
@@ -147,6 +155,7 @@ async def test_asr_transcribe(mock_settings):
 # API endpoints (mocked)
 # ---------------------------------------------------------------------------
 
+@_requires_ffmpeg
 def test_transcribe_endpoint(client):
     """Test POST /voice/transcribe."""
     mock_result = MagicMock()

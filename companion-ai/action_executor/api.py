@@ -8,6 +8,7 @@ Endpoints:
   POST /actions/reminders           — create a reminder explicitly.
   DELETE /actions/reminders/{id}    — cancel a reminder.
   GET  /actions/push                — SSE stream of proactive push events.
+  GET  /actions/push/poll           — Poll events since seq (SSE fallback for buffered proxies).
 """
 
 from __future__ import annotations
@@ -166,7 +167,7 @@ async def push_stream() -> StreamingResponse:
         # Send a hello frame immediately so client / proxies open the stream.
         # Pad it with a 2KB SSE comment so reverse proxies that still buffer
         # the first response fragment hit their flush threshold immediately.
-        comment_padding = b": " + b" " * 2048 + b"\n"
+        comment_padding = b": " + b" " * 4096 + b"\n"
         yield comment_padding + b"event: hello\ndata: {}\n\n"
 
         loop = asyncio.get_running_loop()
@@ -206,3 +207,15 @@ async def push_stream() -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/push/poll")
+async def push_poll(
+    since: int = Query(0, ge=0, description="Last seen event seq from a prior poll or 0"),
+) -> Dict[str, Any]:
+    """Long-poll friendly snapshot of proactive events after ``since``.
+
+    Use when ``GET /actions/push`` SSE is buffered by Cloudflare / nginx and
+    the browser never receives the first bytes in time.
+    """
+    return await get_proactive_push_bus().poll_since(since)

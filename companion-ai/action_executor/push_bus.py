@@ -19,9 +19,10 @@ need to know which is in play.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Deque, Dict, List, Optional
 
 import structlog
 
@@ -46,9 +47,21 @@ class ProactivePushBus:
     def __init__(self) -> None:
         self._subscribers: list[asyncio.Queue[PushEvent]] = []
         self._lock = asyncio.Lock()
+        self._seq: int = 0
+        self._history: Deque[Dict[str, Any]] = deque(maxlen=256)
 
     async def publish(self, event: PushEvent) -> int:
         async with self._lock:
+            self._seq += 1
+            seq = self._seq
+            self._history.append(
+                {
+                    "seq": seq,
+                    "kind": event.kind,
+                    "payload": dict(event.payload),
+                    "timestamp": event.timestamp,
+                }
+            )
             subs = list(self._subscribers)
         for q in subs:
             try:
@@ -74,6 +87,13 @@ class ProactivePushBus:
                 if q in self._subscribers:
                     self._subscribers.remove(q)
             logger.info("push_bus.unsubscribed", total=len(self._subscribers))
+
+    async def poll_since(self, since_seq: int) -> Dict[str, Any]:
+        """Return events with ``seq > since_seq`` for HTTP polling (Cloudflare SSE fallback)."""
+        async with self._lock:
+            latest = self._seq
+            events: List[Dict[str, Any]] = [dict(e) for e in self._history if e["seq"] > since_seq]
+        return {"latest_seq": latest, "events": events}
 
 
 _push_bus: Optional[ProactivePushBus] = None

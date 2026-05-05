@@ -479,3 +479,15 @@ async def save_voice_settings(req: VoiceConfigRequest) -> VoiceConfigResponse:
 async def project_status() -> ProjectStatusData:
     """Return current development status of all modules."""
     return get_project_status()
+
+
+@router.get(
+    "/debug/system_prompt",
+    tags=["development"],
+    summary="Last assembled conversation system prompt (debug)",
+)
+async def debug_system_prompt() -> Dict[str, Any]:
+    """Return the most recent ``build_conversation_system_prompt`` output from a turn."""
+    from core_orchestrator.state_machine import get_debug_system_prompt_snapshot
+
+    return get_debug_system_prompt_snapshot()

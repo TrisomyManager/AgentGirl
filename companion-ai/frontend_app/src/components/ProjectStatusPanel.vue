@@ -77,6 +77,10 @@
                 <strong>{{ testSnapshot.failed }}</strong>
                 <span>失败</span>
               </div>
+              <div v-if="(testSnapshot.skipped ?? 0) > 0" class="test-stat neutral">
+                <strong>{{ testSnapshot.skipped }}</strong>
+                <span>跳过</span>
+              </div>
             </div>
             <ul class="bullet-list compact">
               <li
@@ -135,6 +139,30 @@
               </div>
             </div>
           </article>
+        </section>
+
+        <section class="glass-card prompt-debug-card">
+          <div class="section-head prompt-debug-head">
+            <div>
+              <span class="section-label">Prompt 调试</span>
+              <p class="muted small">最近一次主流程组装的完整 system prompt（含 working memory 注入）</p>
+            </div>
+            <button
+              class="ghost-btn"
+              type="button"
+              :disabled="promptLoading"
+              @click="loadDebugPrompt"
+            >
+              {{ promptLoading ? '加载中…' : '加载最近 system prompt' }}
+            </button>
+          </div>
+          <p v-if="promptError" class="callout error compact-callout">
+            <strong>加载失败</strong>
+            <span>{{ promptError }}</span>
+          </p>
+          <p v-else-if="promptHint" class="muted">{{ promptHint }}</p>
+          <p v-if="promptMeta" class="prompt-meta muted">{{ promptMeta }}</p>
+          <pre v-if="promptText" class="prompt-debug-pre">{{ promptText }}</pre>
         </section>
 
         <section class="glass-card">
@@ -393,6 +421,7 @@ interface TestSnapshot {
   command: string;
   passed: number;
   failed: number;
+  skipped?: number;
   notes: string[];
 }
 
@@ -458,12 +487,21 @@ const statusData = ref<ProjectStatusData | null>(null);
 const loading = ref(false);
 const error = ref('');
 
+const promptText = ref('');
+const promptMeta = ref('');
+const promptLoading = ref(false);
+const promptError = ref('');
+const promptHint = ref(
+  '打开本面板后点击按钮；若尚未聊天，接口会返回提示。发送一条主聊天消息后再加载可看到完整 prompt。',
+);
+
 const testSnapshot = computed<TestSnapshot>(() => {
   return (
     statusData.value?.test_snapshot ?? {
       command: 'N/A',
       passed: 0,
       failed: 0,
+      skipped: 0,
       notes: [],
     }
   );
@@ -491,6 +529,47 @@ const releaseCategoryCounts = computed<Record<string, number>>(() => {
   }
   return counts;
 });
+
+async function loadDebugPrompt() {
+  promptLoading.value = true;
+  promptError.value = '';
+  promptHint.value = '';
+  try {
+    const response = await fetch(`${API_BASE_URL}/orchestrator/debug/system_prompt`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const data = (await response.json()) as {
+      system_prompt?: string | null;
+      updated_at?: string | null;
+      session_id?: string | null;
+      user_id?: string | null;
+      prompt_length?: number;
+      hint?: string;
+    };
+    if (data.hint && !data.system_prompt) {
+      promptHint.value = data.hint;
+      promptText.value = '';
+      promptMeta.value = '';
+      return;
+    }
+    promptText.value = data.system_prompt ?? '';
+    const parts: string[] = [];
+    if (data.updated_at) parts.push(`更新于 ${data.updated_at}`);
+    if (data.session_id) parts.push(`session ${data.session_id}`);
+    if (data.user_id) parts.push(`user ${data.user_id}`);
+    if (typeof data.prompt_length === 'number') parts.push(`${data.prompt_length} 字符`);
+    promptMeta.value = parts.join(' · ');
+    if (!promptText.value) {
+      promptHint.value = data.hint || '当前没有可用的 system prompt 快照。';
+    }
+  } catch (fetchError) {
+    promptError.value =
+      fetchError instanceof Error ? fetchError.message : '未能加载调试数据';
+  } finally {
+    promptLoading.value = false;
+  }
+}
 
 async function loadStatus() {
   loading.value = true;
@@ -590,6 +669,41 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.prompt-debug-head {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.prompt-debug-head .small {
+  margin: 4px 0 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.compact-callout {
+  margin-top: 0;
+}
+
+.prompt-meta {
+  margin: 8px 0 0;
+  font-size: 0.8rem;
+}
+
+.prompt-debug-pre {
+  margin: 12px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .status-overlay {
   position: fixed;
   inset: 0;
@@ -914,7 +1028,7 @@ onMounted(() => {
 
 .test-summary {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 14px;
   margin-bottom: 16px;
 }
@@ -941,6 +1055,10 @@ onMounted(() => {
 
 .test-stat.danger strong {
   color: #fca5a5;
+}
+
+.test-stat.neutral strong {
+  color: #94a3b8;
 }
 
 .bullet-list {

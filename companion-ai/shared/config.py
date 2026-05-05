@@ -1,10 +1,14 @@
 """Global configuration loaded from environment variables."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import List, Optional
 
 from pydantic import ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings
+
+# companion-ai/.env — absolute path so uvicorn cwd does not affect lite_mode / keys.
+_COMPANION_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
@@ -12,7 +16,7 @@ class Settings(BaseSettings):
 
     model_config = ConfigDict(
         env_prefix="COMPANION_",
-        env_file=".env",
+        env_file=_COMPANION_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="allow",
         str_strip_whitespace=True,

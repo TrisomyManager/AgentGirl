@@ -38,6 +38,36 @@ from shared.prompt_engine import build_base_system_prompt, build_conversation_sy
 
 logger = structlog.get_logger()
 
+# Last assembled conversation system prompt (for /orchestrator/debug/system_prompt).
+_DEBUG_SYSTEM_PROMPT_SNAPSHOT: Dict[str, Any] = {}
+
+
+def record_debug_system_prompt(session_id: str, user_id: str, system_prompt: str) -> None:
+    """Store the most recent full system prompt for engineering inspection."""
+    from datetime import datetime, timezone
+
+    global _DEBUG_SYSTEM_PROMPT_SNAPSHOT
+    _DEBUG_SYSTEM_PROMPT_SNAPSHOT = {
+        "session_id": session_id,
+        "user_id": user_id,
+        "system_prompt": system_prompt,
+        "prompt_length": len(system_prompt),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def get_debug_system_prompt_snapshot() -> Dict[str, Any]:
+    if not _DEBUG_SYSTEM_PROMPT_SNAPSHOT:
+        return {
+            "session_id": None,
+            "user_id": None,
+            "system_prompt": None,
+            "prompt_length": 0,
+            "updated_at": None,
+            "hint": "先通过主聊天发送一条消息，这里会显示最近一次组装的完整 system prompt（含记忆与 working memory 块）。",
+        }
+    return dict(_DEBUG_SYSTEM_PROMPT_SNAPSHOT)
+
 _NAME_PATTERN = re.compile(r"我叫([\w\u4e00-\u9fff·]{1,20})")
 _PREFERENCE_PATTERN = re.compile(r"我(?:很|最)?喜欢([^，。！？!?]{1,30})")
 
@@ -314,17 +344,196 @@ async def _stream_response_monolithic(
         yield chunk
 
 
-_NEGATIVE_TOKENS = ("难过", "伤心", "烦", "累", "生气", "焦虑", "害怕", "崩溃", "讨厌", "失眠", "孤独", "压力")
-_POSITIVE_TOKENS = ("开心", "高兴", "喜欢", "爱", "谢谢", "太好了", "不错", "棒", "期待", "哈哈", "幸福")
+_NEGATIVE_TOKENS = (
+    "难过",
+    "伤心",
+    "烦",
+    "好累",
+    "生气",
+    "焦虑",
+    "害怕",
+    "崩溃",
+    "讨厌",
+    "失眠",
+    "孤独",
+    "压力",
+    "郁闷",
+    "委屈",
+    "想哭",
+    "受不了",
+    "没意思",
+    "好烦",
+    "烦死了",
+    "低落",
+    "沮丧",
+    "失望",
+)
+_USER_DISTRESS = ("好累", "想哭", "受不了", "绝望", "撑不住", "好难", "扛不住", "心里堵")
+_POSITIVE_TOKENS = (
+    "开心",
+    "高兴",
+    "喜欢",
+    "爱",
+    "谢谢",
+    "太好了",
+    "不错",
+    "棒",
+    "期待",
+    "哈哈",
+    "幸福",
+    "耶",
+    "超爱",
+    "舒服",
+    "满足",
+    "惊喜",
+    "感动",
+)
+_USER_SURPRISED = ("居然", "真的假的", "天哪", "没想到", "这么神奇", "哇塞")
+_USER_ANGRY = ("气死", "气炸了", "讨厌", "混蛋", "烦死了", "恨", "凭什么")
+
+_ASSISTANT_WARM = ("抱抱", "陪着你", "一直在", "心疼", "摸摸头", "乖", "有我在", "不孤单")
+_ASSISTANT_HAPPY = ("哈哈", "太好啦", "真开心", "替你高兴", "棒极了", "真棒", "庆祝", "耶")
+_ASSISTANT_CONCERN = ("别担心", "没事的", "会好的", "慢慢来", "我在听", "不怪你", "别太累")
+_ASSISTANT_SURPRISED = ("真的吗", "居然", "没想到", "哇", "这么厉害", "原来如此")
+_ASSISTANT_APOLOGY = ("对不起", "抱歉", "是我不好", "让你久等")
 
 
-def _derive_emotion(user_message: str, current: Optional[EmotionState]) -> EmotionState:
-    """Infer an updated emotion state from the user's message sentiment."""
-    msg = user_message
+def _emotion_from_user_message(msg: str) -> Optional[EmotionState]:
+    """How the companion should feel when empathizing with the user's text."""
+    if not msg or not msg.strip():
+        return None
+    low = msg.lower()
+    if any(tok in msg for tok in _USER_DISTRESS):
+        return EmotionState(
+            primary=EmotionTag.CONCERNED,
+            intensity=0.68,
+            valence=-0.12,
+            arousal=0.48,
+            trigger="user_distress",
+        )
+    if any(tok in msg for tok in _USER_ANGRY):
+        return EmotionState(
+            primary=EmotionTag.CONCERNED,
+            intensity=0.62,
+            valence=-0.18,
+            arousal=0.52,
+            trigger="user_angry",
+        )
     if any(tok in msg for tok in _NEGATIVE_TOKENS):
-        return EmotionState(primary=EmotionTag.SAD, intensity=0.6, valence=-0.4, arousal=0.4)
+        return EmotionState(
+            primary=EmotionTag.SAD,
+            intensity=0.58,
+            valence=-0.38,
+            arousal=0.42,
+            trigger="user_negative",
+        )
     if any(tok in msg for tok in _POSITIVE_TOKENS):
-        return EmotionState(primary=EmotionTag.HAPPY, intensity=0.7, valence=0.6, arousal=0.5)
+        return EmotionState(
+            primary=EmotionTag.HAPPY,
+            intensity=0.72,
+            valence=0.58,
+            arousal=0.52,
+            trigger="user_positive",
+        )
+    if any(tok in msg for tok in _USER_SURPRISED):
+        return EmotionState(
+            primary=EmotionTag.SURPRISED,
+            intensity=0.55,
+            valence=0.18,
+            arousal=0.62,
+            trigger="user_surprise",
+        )
+    if any(w in low for w in ("sad", "depressed", "anxious", "tired of", "hate ", "angry")):
+        return EmotionState(
+            primary=EmotionTag.CONCERNED,
+            intensity=0.6,
+            valence=-0.22,
+            arousal=0.48,
+            trigger="user_en_negative",
+        )
+    if any(w in low for w in ("happy", "love you", "great", "thanks", "excited")):
+        return EmotionState(
+            primary=EmotionTag.HAPPY,
+            intensity=0.65,
+            valence=0.55,
+            arousal=0.5,
+            trigger="user_en_positive",
+        )
+    return None
+
+
+def _emotion_from_assistant_reply(reply: str) -> Optional[EmotionState]:
+    """Infer companion mood from her own reply (warmth / surprise / concern)."""
+    if not reply or len(reply.strip()) < 2:
+        return None
+    if any(tok in reply for tok in _ASSISTANT_APOLOGY):
+        return EmotionState(
+            primary=EmotionTag.SAD,
+            intensity=0.48,
+            valence=-0.12,
+            arousal=0.36,
+            trigger="reply_apology",
+        )
+    if any(tok in reply for tok in _ASSISTANT_SURPRISED):
+        return EmotionState(
+            primary=EmotionTag.SURPRISED,
+            intensity=0.52,
+            valence=0.12,
+            arousal=0.58,
+            trigger="reply_surprise",
+        )
+    if any(tok in reply for tok in _ASSISTANT_WARM):
+        return EmotionState(
+            primary=EmotionTag.AFFECTIONATE,
+            intensity=0.62,
+            valence=0.48,
+            arousal=0.42,
+            trigger="reply_warm",
+        )
+    if any(tok in reply for tok in _ASSISTANT_CONCERN):
+        return EmotionState(
+            primary=EmotionTag.CONCERNED,
+            intensity=0.58,
+            valence=0.05,
+            arousal=0.4,
+            trigger="reply_concern",
+        )
+    if any(tok in reply for tok in _ASSISTANT_HAPPY):
+        return EmotionState(
+            primary=EmotionTag.HAPPY,
+            intensity=0.64,
+            valence=0.52,
+            arousal=0.54,
+            trigger="reply_happy",
+        )
+    return None
+
+
+def _derive_emotion(
+    user_message: str,
+    assistant_message: str,
+    current: Optional[EmotionState],
+) -> EmotionState:
+    """Update companion emotion from user empathy, then from assistant reply tone, then baseline.
+
+    Order: user sentiment wins for empathy; otherwise use cues from the model's reply so the
+    UI moves off a permanent ``calm`` when the character uses warm or lively language.
+    """
+    user_hit = _emotion_from_user_message(user_message)
+    if user_hit is not None:
+        return user_hit
+    asst_hit = _emotion_from_assistant_reply(assistant_message)
+    if asst_hit is not None:
+        return asst_hit
+    um = user_message or ""
+    if "？" in um or "?" in um:
+        return EmotionState(
+            primary=EmotionTag.CALM,
+            intensity=0.52,
+            valence=0.28,
+            arousal=0.46,
+            trigger="user_question",
+        )
     return current or EmotionState(primary=EmotionTag.CALM, intensity=0.4, valence=0.3, arousal=0.3)
 
 
@@ -489,6 +698,7 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
             "当用户希望你“说一句”“念出来”或“用语音回复”时，不要声称自己无法发声；"
             "直接正常给出要说的内容，系统会按需合成语音。"
         )
+    record_debug_system_prompt(tc.session_id, tc.user.user_id, system_prompt)
     messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
     for msg in state["messages"]:
         if not isinstance(msg, SystemMessage):
@@ -506,12 +716,18 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
             state["device_command_sent"] = True
             state["assistant_message"] = assistant_msg
             state["messages"] = messages + [AIMessage(content=assistant_msg)]
+            state["emotion_state"] = _derive_emotion(
+                tc.user_message, assistant_msg, state.get("emotion_state")
+            )
             log.info("device_command_handled", command=command)
             return state
         except Exception as exc:
             log.warning("device_command_failed", error=str(exc))
             state["assistant_message"] = "设备指令发送失败了，你可以稍后再试一次。"
             state["messages"] = messages + [AIMessage(content=state["assistant_message"])]
+            state["emotion_state"] = _derive_emotion(
+                tc.user_message, state["assistant_message"], state.get("emotion_state")
+            )
             return state
 
     action_handled = await _try_action_executor(tc, intent)
@@ -519,6 +735,9 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
         assistant_msg = action_handled.get("message") or "好的。"
         state["assistant_message"] = assistant_msg
         state["messages"] = messages + [AIMessage(content=assistant_msg)]
+        state["emotion_state"] = _derive_emotion(
+            tc.user_message, assistant_msg, state.get("emotion_state")
+        )
         log.info("action_executor_handled", name=action_handled.get("name"))
         return state
 
@@ -528,10 +747,13 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
         assistant_msg = await _generate_response_monolithic(tc, system_prompt, persona_name)
         state["assistant_message"] = assistant_msg
         state["messages"] = messages + [AIMessage(content=assistant_msg)]
-        state["emotion_state"] = _derive_emotion(tc.user_message, state.get("emotion_state"))
+        state["emotion_state"] = _derive_emotion(
+            tc.user_message, assistant_msg, state.get("emotion_state")
+        )
         log.info("monolithic_response_generated", length=len(assistant_msg))
         return state
 
+    emotion_from_persona_api = False
     try:
         resp = await persona_client.post(
             "/persona/generate_response",
@@ -550,6 +772,7 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
         if isinstance(new_emotion_raw, dict):
             try:
                 state["emotion_state"] = EmotionState(**new_emotion_raw)
+                emotion_from_persona_api = True
             except Exception:
                 pass
     except Exception as exc:
@@ -558,6 +781,10 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
 
     state["assistant_message"] = assistant_msg
     state["messages"] = messages + [AIMessage(content=assistant_msg)]
+    if not emotion_from_persona_api:
+        state["emotion_state"] = _derive_emotion(
+            tc.user_message, assistant_msg, state.get("emotion_state")
+        )
     log.info("response_generated", intent=intent, length=len(assistant_msg))
     return state
 
@@ -842,6 +1069,7 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
             "当用户希望你“说一句”“念出来”或“用语音回复”时，不要声称自己无法发声；"
             "直接正常给出要说的内容，系统会按需合成语音。"
         )
+    record_debug_system_prompt(tc.session_id, tc.user.user_id, system_prompt)
 
     intent = state.get("intent") or Intent.CHAT.value
 
@@ -866,6 +1094,9 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
             yield {"event": "token", "text": assistant_msg}
         state["assistant_message"] = assistant_msg
         state["messages"] = list(state["messages"]) + [AIMessage(content=assistant_msg)]
+        state["emotion_state"] = _derive_emotion(
+            tc.user_message, assistant_msg, state.get("emotion_state")
+        )
     elif (action_handled := await _try_action_executor(tc, intent)) and action_handled.get("ok"):
         # Action executor handled it (set_reminder / get_time / ...). Stream
         # the deterministic reply through chunk_text_stream so the UI gets
@@ -880,9 +1111,11 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
         full = "".join(accumulated) or assistant_msg
         state["assistant_message"] = full
         state["messages"] = list(state["messages"]) + [AIMessage(content=full)]
+        state["emotion_state"] = _derive_emotion(tc.user_message, full, state.get("emotion_state"))
         logger.info("stream.action_executor_handled", name=action_handled.get("name"))
     else:
         accumulated: List[str] = []
+        emotion_from_persona_api = False
         try:
             if _is_monolithic():
                 persona_name = persona.name if persona else "小暖"
@@ -924,6 +1157,7 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
                         if isinstance(new_emotion_raw, dict):
                             try:
                                 state["emotion_state"] = EmotionState(**new_emotion_raw)
+                                emotion_from_persona_api = True
                             except Exception:
                                 pass
                     except Exception as inner_exc:
@@ -941,7 +1175,13 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
         state["messages"] = list(state["messages"]) + [AIMessage(content=assistant_msg)]
 
         if _is_monolithic():
-            state["emotion_state"] = _derive_emotion(tc.user_message, state.get("emotion_state"))
+            state["emotion_state"] = _derive_emotion(
+                tc.user_message, assistant_msg, state.get("emotion_state")
+            )
+        elif not emotion_from_persona_api:
+            state["emotion_state"] = _derive_emotion(
+                tc.user_message, assistant_msg, state.get("emotion_state")
+            )
 
     # Post-generate nodes (voice / action / send / memory sync) — same as
     # the non-streaming graph. Failures here only add to state["error"] and

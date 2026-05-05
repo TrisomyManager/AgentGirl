@@ -28,7 +28,7 @@ from action_executor.handlers import (
     list_reminders,
     set_reminder,
 )
-from action_executor.push_bus import ProactivePushBus
+from action_executor.push_bus import ProactivePushBus, PushEvent
 from action_executor.registry import ActionRegistry, ActionResult, get_registry
 from action_executor.reminders import (
     ReminderScheduler,
@@ -239,6 +239,29 @@ async def test_scheduler_tick_fires_due_reminders_into_push_bus() -> None:
     assert any(p.get("id") == fire_now.id for p in payloads), (
         f"target reminder not in fired events; saw: {payloads}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Push bus polling (SSE fallback)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_push_bus_poll_since_returns_incrementing_events() -> None:
+    bus = ProactivePushBus()
+    await bus.publish(PushEvent(kind="ping_test", payload={"x": 1}))
+    first = await bus.poll_since(0)
+    assert first["latest_seq"] == 1
+    assert len(first["events"]) == 1
+    assert first["events"][0]["kind"] == "ping_test"
+
+    empty = await bus.poll_since(first["latest_seq"])
+    assert empty["events"] == []
+
+    await bus.publish(PushEvent(kind="reminder_fired", payload={"id": "r-poll-1"}))
+    third = await bus.poll_since(first["latest_seq"])
+    assert len(third["events"]) == 1
+    assert third["events"][0]["payload"]["id"] == "r-poll-1"
 
 
 # ---------------------------------------------------------------------------

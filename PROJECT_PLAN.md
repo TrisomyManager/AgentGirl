@@ -117,7 +117,7 @@ npm run build
 2026-05-05 本地结果：
 
 - `python -m pytest -q`
-  - **125 passed / 0 failed**
+  - **126 条用例**：有 **ffmpeg** 时为 **126 passed / 0 failed**；无 ffmpeg 时 **3 条 voice_layer 用例 skip**（**123 passed / 3 skipped**）。
 
 修复点：
 

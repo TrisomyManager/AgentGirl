@@ -120,6 +120,10 @@ const emotionClass = computed(() => {
     sad: 'emotion-sad',
     angry: 'emotion-angry',
     surprised: 'emotion-surprised',
+    affectionate: 'emotion-affectionate',
+    concerned: 'emotion-concerned',
+    fearful: 'emotion-concerned',
+    disgusted: 'emotion-angry',
     calm: 'emotion-calm',
     neutral: 'emotion-calm',
   };
@@ -328,6 +332,18 @@ const emotionIcon = computed(() => {
   color: #6ee7b7;
   border-color: rgba(110, 231, 183, 0.2);
   background: rgba(110, 231, 183, 0.08);
+}
+
+.emotion-affectionate {
+  color: #fda4af;
+  border-color: rgba(251, 113, 133, 0.28);
+  background: rgba(244, 114, 182, 0.1);
+}
+
+.emotion-concerned {
+  color: #93c5fd;
+  border-color: rgba(147, 197, 253, 0.25);
+  background: rgba(59, 130, 246, 0.1);
 }
 
 .action-text {

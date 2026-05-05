@@ -32,6 +32,18 @@ export function useProactivePush() {
   let abort: AbortController | null = null;
   let stop = false;
   let reconnectTimer: number | null = null;
+  let pollTimer: number | null = null;
+  let sinceSeq = 0;
+  const seenReminderIds = new Set<string>();
+
+  function rememberReminderPayload(payload: ReminderFiredPayload | Record<string, unknown>) {
+    const id = (payload as ReminderFiredPayload).id;
+    if (id) {
+      if (seenReminderIds.has(id)) return;
+      seenReminderIds.add(id);
+    }
+    lastReminder.value = payload as ReminderFiredPayload;
+  }
 
   async function readStream(controller: AbortController) {
     try {
@@ -84,7 +96,7 @@ export function useProactivePush() {
           events.value.push(event);
           if (events.value.length > 64) events.value.splice(0, events.value.length - 64);
           if (eventName === 'reminder_fired') {
-            lastReminder.value = parsed as ReminderFiredPayload;
+            rememberReminderPayload(parsed as ReminderFiredPayload);
           }
         }
       }
@@ -93,6 +105,24 @@ export function useProactivePush() {
       const msg = err instanceof Error ? err.message : String(err);
       connected.value = false;
       error.value = msg;
+    }
+  }
+
+  async function pollOnce() {
+    if (stop) return;
+    try {
+      const resp = await fetch(`${API_BASE_URL}/actions/push/poll?since=${sinceSeq}`);
+      if (!resp.ok) return;
+      const body = (await resp.json()) as { latest_seq?: number; events?: Array<{ kind: string; payload: unknown }> };
+      if (typeof body.latest_seq === 'number') {
+        sinceSeq = body.latest_seq;
+      }
+      for (const ev of body.events ?? []) {
+        if (ev.kind !== 'reminder_fired' || !ev.payload || typeof ev.payload !== 'object') continue;
+        rememberReminderPayload(ev.payload as ReminderFiredPayload);
+      }
+    } catch {
+      /* ignore — SSE may still work */
     }
   }
 
@@ -119,11 +149,14 @@ export function useProactivePush() {
   onMounted(() => {
     stop = false;
     void connect();
+    pollTimer = window.setInterval(() => void pollOnce(), 2500);
+    void pollOnce();
   });
 
   onUnmounted(() => {
     stop = true;
     if (reconnectTimer) window.clearTimeout(reconnectTimer);
+    if (pollTimer) window.clearInterval(pollTimer);
     abort?.abort();
   });
 

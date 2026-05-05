@@ -78,6 +78,10 @@ const emotionClass = computed(() => {
     sad: 'emotion-sad',
     angry: 'emotion-angry',
     surprised: 'emotion-surprised',
+    affectionate: 'emotion-affectionate',
+    concerned: 'emotion-concerned',
+    fearful: 'emotion-concerned',
+    disgusted: 'emotion-angry',
     calm: 'emotion-calm',
     neutral: 'emotion-calm',
   };
@@ -87,15 +91,17 @@ const emotionClass = computed(() => {
 
 <style scoped>
 .top-bar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  position: relative;
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 18px;
   padding: 20px 24px 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0));
   flex-shrink: 0;
+  min-width: 0;
 }
 
 .identity-block {
@@ -103,6 +109,8 @@ const emotionClass = computed(() => {
   align-items: center;
   gap: 14px;
   min-width: 0;
+  flex: 1 1 0;
+  z-index: 3;
 }
 
 .avatar-wrapper {
@@ -170,8 +178,18 @@ const emotionClass = computed(() => {
 }
 
 .center-pill {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   display: flex;
   justify-content: center;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.center-pill .emotion-tag {
+  pointer-events: auto;
 }
 
 .emotion-tag {
@@ -219,11 +237,24 @@ const emotionClass = computed(() => {
   background: rgba(74, 222, 128, 0.12);
 }
 
+.emotion-affectionate {
+  color: #fda4af;
+  background: rgba(244, 114, 182, 0.14);
+}
+
+.emotion-concerned {
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.14);
+}
+
 .action-strip {
   display: flex;
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 8px;
+  flex: 1 1 0;
+  min-width: 0;
+  z-index: 3;
 }
 
 .icon-btn {
@@ -280,40 +311,55 @@ const emotionClass = computed(() => {
 
 @media (max-width: 960px) {
   .top-bar {
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      'identity actions'
-      'center center';
+    flex-wrap: wrap;
+    row-gap: 12px;
     padding: 16px 16px 14px;
   }
 
   .identity-block {
-    grid-area: identity;
+    flex: 1 1 auto;
+    min-width: min(100%, 200px);
   }
 
   .center-pill {
-    grid-area: center;
-    justify-content: flex-start;
+    position: static;
+    transform: none;
+    order: 3;
+    flex: 1 1 100%;
+    justify-content: center;
+    pointer-events: auto;
   }
 
   .action-strip {
-    grid-area: actions;
+    flex: 0 0 auto;
   }
 }
 
 @media (max-width: 640px) {
   .top-bar {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      'identity'
-      'center'
-      'actions';
-    gap: 12px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
     padding: 14px 14px 12px;
   }
 
+  .identity-block {
+    flex: none;
+    order: 1;
+  }
+
+  .center-pill {
+    position: static;
+    transform: none;
+    order: 2;
+    pointer-events: auto;
+  }
+
   .action-strip {
-    justify-content: flex-start;
+    flex: none;
+    justify-content: center;
+    flex-wrap: wrap;
+    order: 3;
   }
 
   .companion-name {
