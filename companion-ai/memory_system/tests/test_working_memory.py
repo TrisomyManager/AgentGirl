@@ -127,6 +127,7 @@ async def test_dominant_topic_picks_repeated_concept() -> None:
 
     state = await wm.snapshot(sid)
     assert state.dominant_topic == "考试"
+    assert state.dominant_topic_heuristic == "考试"
 
 
 @pytest.mark.asyncio
@@ -224,6 +225,69 @@ def test_prompt_renders_working_memory_section() -> None:
     assert "【最近几轮对话】" in prompt
     assert "用户：我今天又被改稿了" in prompt
     assert "你：我在认真听你说。" in prompt
+
+
+def test_prompt_renders_session_digest() -> None:
+    snap = WorkingMemorySnapshot(
+        session_id="sess-d",
+        turn_count=1,
+        dominant_topic="工作",
+        session_digest="用户刚被领导批评，需要安慰。",
+        recent_turns=[],
+    )
+    memory = MemoryRecallResult(entries=[], graph_facts=[], working_memory=snap)
+    prompt = build_conversation_system_prompt(persona=PersonaProfile(name="小暖"), memory=memory)
+    assert "本段对话摘要：用户刚被领导批评" in prompt
+
+
+@pytest.mark.asyncio
+async def test_llm_enrich_cache_avoids_duplicate_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two ``snapshot`` rebuilds with the same transcript only call ``generate`` once (TTL cache)."""
+
+    class _S:
+        working_memory_llm_summary = True
+        working_memory_llm_digest = True
+        working_memory_summary_model = None
+        working_memory_summary_ttl_seconds = 300.0
+
+    calls: List[int] = []
+
+    class _FakeLLM:
+        def has_configured_provider(self) -> bool:
+            return True
+
+        async def generate(self, **kwargs: object) -> dict:
+            calls.append(1)
+            return {"assistant_message": '{"topic":"工作压力","digest":"用户在倾诉工作烦恼"}'}
+
+    wm = WorkingMemory(window_size=6)
+    sid = f"sess-{uuid.uuid4()}"
+    await wm.observe_turn(sid, "t1", "老板今天又骂我", "我在听", emotion="sad", intent="chat")
+    await wm.observe_turn(sid, "t2", "我觉得干不下去了", "先深呼吸", emotion="sad", intent="chat")
+
+    monkeypatch.setattr("memory_system.working.get_settings", lambda: _S())
+    monkeypatch.setattr("shared.llm_client.LLMClient", lambda *a, **k: _FakeLLM())
+
+    wm._states.clear()  # noqa: SLF001
+    wm._llm_cache.clear()  # noqa: SLF001
+
+    s1 = await wm.snapshot(sid)
+    assert s1.dominant_topic == "工作压力"
+    assert "倾诉" in (s1.session_digest or "")
+    assert len(calls) == 1
+
+    wm._states.clear()  # noqa: SLF001
+    s2 = await wm.snapshot(sid)
+    assert s2.dominant_topic == "工作压力"
+    assert len(calls) == 1
+
+
+def test_parse_working_memory_llm_json() -> None:
+    t, d = WorkingMemory._parse_working_memory_llm_json('{"topic":"考试","digest":"备考压力大"}')
+    assert t == "考试"
+    assert d == "备考压力大"
+    t2, d2 = WorkingMemory._parse_working_memory_llm_json('{"topic": null, "digest": null}')
+    assert t2 is None and d2 is None
 
 
 def test_prompt_omits_section_when_no_working_memory() -> None:

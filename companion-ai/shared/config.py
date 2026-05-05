@@ -99,6 +99,21 @@ class Settings(BaseSettings):
     enable_knowledge_graph: bool = Field(default=True)
 
     # ------------------------------------------------------------------
+    # Working memory (per-session prompt context)
+    # ------------------------------------------------------------------
+    working_memory_llm_summary: bool = Field(default=False)
+    """When True and an LLM key is configured, refine ``dominant_topic`` via a tiny completion."""
+
+    working_memory_llm_digest: bool = Field(default=False)
+    """When True and an LLM key is configured, add a one-line ``session_digest`` for the prompt."""
+
+    working_memory_summary_model: Optional[str] = Field(default=None)
+    """Optional model override for working-memory LLM calls (defaults to ``default_llm_model``)."""
+
+    working_memory_summary_ttl_seconds: float = Field(default=45.0, ge=5.0, le=600.0)
+    """Skip repeat LLM calls for the same session when transcript fingerprint unchanged within TTL."""
+
+    # ------------------------------------------------------------------
     # Lite mode (local dev without Docker)
     # ------------------------------------------------------------------
     lite_mode: bool = Field(default=False)
