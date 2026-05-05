@@ -42,7 +42,7 @@
                 :message="msg"
               />
 
-              <div v-if="isTyping" class="typing-row">
+              <div v-if="isTyping && !hasStreamingContent" class="typing-row">
                 <div class="msg-avatar">
                   <img
                     src="https://placehold.co/36x36/e94560/FFF?text=暖"
@@ -97,7 +97,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import TopBar from './components/TopBar.vue';
 import ChatMessage from './components/ChatMessage.vue';
 import ChatInput from './components/ChatInput.vue';
@@ -128,6 +128,19 @@ const {
   clearError,
   checkServer,
 } = useChat();
+
+// Suppress the global typing dots once the streamed assistant bubble has
+// real content — the bubble itself shows incremental progress so the dots
+// would just be visual noise.
+const hasStreamingContent = computed(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const m = messages.value[i];
+    if (m.role !== 'assistant') break;
+    if (m.isTyping && (m.content || '').length > 0) return true;
+    if (!m.isTyping) break;
+  }
+  return false;
+});
 
 const settingsVisible = ref(false);
 const statusVisible = ref(false);
