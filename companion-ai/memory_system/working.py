@@ -33,24 +33,29 @@ Public surface
 - ``WorkingMemory.clear(session_id)`` — wipe a session's working
   memory; called when the user clicks 清空对话 in the UI.
 
-Behaviour rules (kept deliberately simple, all heuristic — no LLM call):
+Behaviour rules
+---------------
 
   1. Rolling buffer keeps the last ``window_size`` turns (default 6).
   2. Live summary is rebuilt on every ``observe_turn``:
 
      - latest user emotion tag (if available)
-     - dominant topic — bag-of-words pick over recent turns
+     - dominant topic — bag-of-words pick over recent turns, stored as
+       ``dominant_topic_heuristic``; when ``COMPANION_WORKING_MEMORY_LLM_SUMMARY=true``
+       and an LLM key is configured, a tiny completion may replace
+       ``dominant_topic`` with a clearer short label (JSON ``{"topic":"..."}``).
      - any "我叫X / 我喜欢X" facts surfaced via the same regexes
        state_machine already uses (``_NAME_PATTERN`` / ``_PREFERENCE_PATTERN``)
      - last assistant reply preview (first 60 chars)
 
-  Heuristics intentionally avoid LLM calls so working memory is free,
-  deterministic and survives lite-mode without a configured provider.
+  Without the LLM flag (default) there is **no** extra network call — the
+  path stays deterministic and Lite-Mode friendly.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -107,6 +112,7 @@ class WorkingMemoryState:
     likes: List[str] = field(default_factory=list)
     dislikes: List[str] = field(default_factory=list)
     dominant_topic: Optional[str] = None
+    dominant_topic_heuristic: Optional[str] = None
     last_user_emotion: Optional[str] = None
     last_assistant_preview: Optional[str] = None
 
@@ -119,6 +125,7 @@ class WorkingMemoryState:
             "likes": list(self.likes),
             "dislikes": list(self.dislikes),
             "dominant_topic": self.dominant_topic,
+            "dominant_topic_heuristic": self.dominant_topic_heuristic,
             "last_user_emotion": self.last_user_emotion,
             "last_assistant_preview": self.last_assistant_preview,
             "turns": [
@@ -264,7 +271,9 @@ class WorkingMemory:
                 if dislike and dislike not in state.dislikes:
                     state.dislikes.append(dislike)
 
-        state.dominant_topic = self._infer_topic(turns)
+        state.dominant_topic_heuristic = self._infer_topic(turns)
+        state.dominant_topic = state.dominant_topic_heuristic
+        await self._maybe_refine_topic_with_llm(state)
         return state
 
     @staticmethod
@@ -300,6 +309,100 @@ class WorkingMemory:
         # we'd pick a random bigram from a single short message.
         topic, count = counter.most_common(1)[0]
         if count < 2:
+            return None
+        return topic
+
+    async def _maybe_refine_topic_with_llm(self, state: WorkingMemoryState) -> None:
+        """Optionally replace ``dominant_topic`` with a short LLM label (config-gated)."""
+        settings = get_settings()
+        if not settings.working_memory_llm_summary:
+            return
+        if not state.turns:
+            return
+
+        try:
+            from shared.llm_client import LLMClient
+        except Exception as exc:
+            logger.warning("working_memory.llm_import_failed", error=str(exc))
+            return
+
+        llm = LLMClient()
+        if not llm.has_configured_provider():
+            return
+
+        lines: List[str] = []
+        for t in state.turns[-6:]:
+            u = (t.user_message or "").strip().replace("\n", " ")
+            if u:
+                lines.append(f"用户：{u[:200]}")
+            a = (t.assistant_message or "").strip().replace("\n", " ")
+            if a:
+                lines.append(f"助手：{a[:120]}")
+        if not lines:
+            return
+
+        transcript = "\n".join(lines)
+        heuristic = state.dominant_topic_heuristic or ""
+        sys = (
+            "你是对话分析助手。根据最近几轮用户与助手的中文对话，输出严格 JSON，"
+            "不要其它文字。字段：topic（字符串，2到12个汉字或常见英文词组，概括用户最关心的话题；"
+            "若无明确主题填 null）。"
+        )
+        user = (
+            f"启发式候选主题（可能不准）：{heuristic or '无'}\n\n"
+            f"对话摘录：\n{transcript}\n\n"
+            '只输出形如 {"topic":"考试压力"} 或 {"topic":null} 的 JSON。'
+        )
+        model = settings.working_memory_summary_model
+        try:
+            out = await llm.generate(
+                system_prompt=sys,
+                user_message=user,
+                model=model,
+                temperature=0.2,
+                max_tokens=80,
+            )
+            raw = (out.get("assistant_message") or "").strip()
+            topic = self._extract_topic_from_llm_json(raw)
+        except Exception as exc:
+            logger.warning("working_memory.llm_topic_failed", error=str(exc))
+            return
+
+        if topic:
+            state.dominant_topic = topic[:24]
+            logger.info(
+                "working_memory.llm_topic_applied",
+                topic=state.dominant_topic,
+                heuristic=heuristic or None,
+            )
+
+    @staticmethod
+    def _extract_topic_from_llm_json(raw: str) -> Optional[str]:
+        """Parse ``topic`` from model output; tolerate markdown fences."""
+        text = raw.strip()
+        if "```" in text:
+            m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+            if m:
+                text = m.group(1).strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            brace = re.search(r"\{[^{}]*\}", text)
+            if not brace:
+                return None
+            try:
+                data = json.loads(brace.group(0))
+            except json.JSONDecodeError:
+                return None
+        if not isinstance(data, dict):
+            return None
+        topic = data.get("topic")
+        if topic is None:
+            return None
+        if not isinstance(topic, str):
+            return None
+        topic = topic.strip()
+        if not topic or topic.lower() == "null":
             return None
         return topic
 

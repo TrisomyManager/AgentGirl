@@ -172,6 +172,10 @@ class WorkingMemorySnapshot(BaseModel):
     likes: List[str] = Field(default_factory=list)
     dislikes: List[str] = Field(default_factory=list)
     dominant_topic: Optional[str] = Field(default=None)
+    dominant_topic_heuristic: Optional[str] = Field(
+        default=None,
+        description="Bag-of-words topic before optional LLM refinement (debug / UI).",
+    )
     last_user_emotion: Optional[str] = Field(default=None)
     last_assistant_preview: Optional[str] = Field(default=None)
     recent_turns: List[Dict[str, Any]] = Field(

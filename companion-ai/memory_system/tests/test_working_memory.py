@@ -127,6 +127,7 @@ async def test_dominant_topic_picks_repeated_concept() -> None:
 
     state = await wm.snapshot(sid)
     assert state.dominant_topic == "考试"
+    assert state.dominant_topic_heuristic == "考试"
 
 
 @pytest.mark.asyncio
@@ -224,6 +225,28 @@ def test_prompt_renders_working_memory_section() -> None:
     assert "【最近几轮对话】" in prompt
     assert "用户：我今天又被改稿了" in prompt
     assert "你：我在认真听你说。" in prompt
+
+
+def test_prompt_shows_heuristic_when_topic_differs_from_llm() -> None:
+    snap = WorkingMemorySnapshot(
+        session_id="sess-x",
+        turn_count=1,
+        dominant_topic="升学焦虑",
+        dominant_topic_heuristic="考试",
+        recent_turns=[],
+    )
+    memory = MemoryRecallResult(entries=[], graph_facts=[], working_memory=snap)
+    persona = PersonaProfile(name="小暖")
+    prompt = build_conversation_system_prompt(persona=persona, memory=memory)
+    assert "近段聊的主题：升学焦虑" in prompt
+    assert "启发式主题参考：考试" in prompt
+
+
+def test_extract_topic_from_llm_json_parses_plain_and_fenced() -> None:
+    assert WorkingMemory._extract_topic_from_llm_json('{"topic":"工作压力"}') == "工作压力"
+    assert WorkingMemory._extract_topic_from_llm_json('```json\n{"topic": "考试"}\n```') == "考试"
+    assert WorkingMemory._extract_topic_from_llm_json('{"topic": null}') is None
+    assert WorkingMemory._extract_topic_from_llm_json("not json") is None
 
 
 def test_prompt_omits_section_when_no_working_memory() -> None:

@@ -99,6 +99,8 @@ def build_conversation_system_prompt(
             wm_bits.append(f"用户身份：{wm.user_role}")
         if wm.dominant_topic:
             wm_bits.append(f"近段聊的主题：{wm.dominant_topic}")
+        if wm.dominant_topic_heuristic and wm.dominant_topic_heuristic != wm.dominant_topic:
+            wm_bits.append(f"（启发式主题参考：{wm.dominant_topic_heuristic}）")
         if wm.last_user_emotion:
             wm_bits.append(f"用户上一句的情绪：{_emotion_zh(wm.last_user_emotion)}")
         if wm.likes:

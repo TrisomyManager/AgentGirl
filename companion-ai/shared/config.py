@@ -99,6 +99,15 @@ class Settings(BaseSettings):
     enable_knowledge_graph: bool = Field(default=True)
 
     # ------------------------------------------------------------------
+    # Working memory (per-session prompt context)
+    # ------------------------------------------------------------------
+    working_memory_llm_summary: bool = Field(default=False)
+    """When True and an LLM key is configured, refine ``dominant_topic`` via a tiny completion."""
+
+    working_memory_summary_model: Optional[str] = Field(default=None)
+    """Optional model override for working-memory topic refinement (defaults to ``default_llm_model``)."""
+
+    # ------------------------------------------------------------------
     # Lite mode (local dev without Docker)
     # ------------------------------------------------------------------
     lite_mode: bool = Field(default=False)
