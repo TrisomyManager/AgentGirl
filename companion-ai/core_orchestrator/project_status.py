@@ -117,7 +117,7 @@ def get_project_status() -> ProjectStatusData:
         current_phase="Phase 1.5 · 实时语音 MVP 收敛期",
         summary="单体 FastAPI 入口、实时语音通话链路、运行时配置面板都已落地；当前重心转向记忆模型收敛、主聊天流式输出和测试稳定性。",
         last_updated="2026-05-05",
-        overall_progress=90,
+        overall_progress=92,
         recent_highlights=[
             "单体入口 `main.py` 已成为默认开发路径，Lite Mode 可直接启动完整 Web API。",
             "实时语音链路已打通：浏览器 VAD、AudioWorklet 录音、WebSocket 双向流和边合成边播放。",
@@ -126,12 +126,9 @@ def get_project_status() -> ProjectStatusData:
             "🆕 主聊天流式输出已打通：`POST /orchestrator/turn/stream` 走 SSE，前端逐 token 渲染并保留 emotion / voice_url 元数据。",
             "🆕 记忆双层模型已落地：working memory 滚动 N 轮 + 结构化用户摘要，注入到 system prompt 的【当前对话状态】/【最近几轮对话】section。",
             "🆕 项目状态面板新增『本轮交付』分类卡片（feature / fix / docs / chore），交接时一眼看清当前分支改了什么。",
+            "🆕 行动执行器初始闭环已打通：5 个内置 handler、自然语言『3 分钟后提醒我喝水』、SQLite 持久化、后台轮询触发，前端 ReminderToast 通过 /actions/push SSE 接收。",
         ],
         next_focus=[
-            FocusItem(
-                title="动作执行器初始闭环",
-                detail="实时语音体验已领先，但 action / device_coordination 仍未进入真正的产品闭环；下一步先把主动提醒 + 1-2 个外部查询动作打通。",
-            ),
             FocusItem(
                 title="人格摘要注入流式 Prompt",
                 detail="基础人格、关系摘要、记忆召回和 working memory 都能装配进 system prompt，但调试台还没暴露最终拼出的完整 prompt 链路。",
@@ -140,11 +137,15 @@ def get_project_status() -> ProjectStatusData:
                 title="working memory 摘要 LLM 化",
                 detail="当前 working memory 的 dominant_topic / 摘要是 bag-of-words 启发式，等成本/延迟可控后再切换到 LLM 摘要器。",
             ),
+            FocusItem(
+                title="action_executor 真实接入",
+                detail="天气 / 日历 API 当前是 stub，等外部 key 配置好后切换；同时把循环 / cron 风格的提醒调度补上。",
+            ),
         ],
         risks=[
             FocusItem(
                 title="测试基线再上一档",
-                detail="2026-05-05 本地 `python -m pytest -q` 为 110 passed / 0 failed；本轮新增 4 个 streaming + 9 个 working memory 用例，sqlite 向量绑定与 prompt 用例漂移已修复，未安装 ffmpeg 时仍需注意 voice_layer 的真实集成测试。",
+                detail="2026-05-05 本地 `python -m pytest -q` 为 125 passed / 0 failed；本轮再新增 15 个 action_executor 用例（registry / handlers / reminders store / scheduler / 文本解析）。",
             ),
             FocusItem(
                 title="文档曾与代码漂移",
@@ -183,9 +184,10 @@ def get_project_status() -> ProjectStatusData:
         ],
         test_snapshot=TestSnapshot(
             command="python -m pytest -q",
-            passed=110,
+            passed=125,
             failed=0,
             notes=[
+                "新增 15 个 action_executor 用例：registry / 内置 handler / reminders store / scheduler 与 push bus / NL 文本解析。",
                 "新增 9 个 working memory 用例覆盖 observe_turn / window 截断 / 名字 & 喜好抽取 / dominant topic / snapshot rebuild / 与 prompt 的渲染。",
                 "新增 4 个 streaming 测试覆盖 chunk_text_stream、stream_assistant_response 和 /orchestrator/turn/stream SSE 端点。",
                 "shared/tests/test_prompt_engine.py 的中英文断言已与 prompt_engine 的中文实现对齐。",
@@ -338,26 +340,30 @@ def get_project_status() -> ProjectStatusData:
                 id="action_executor",
                 name="Action Executor",
                 name_zh="行动执行器",
-                description="External action execution (reminders, searches, etc.)",
-                status=ModuleStatus.PLANNED,
-                progress=10,
+                description="Pluggable handlers (reminders / time / weather stub) + 主动推送 SSE",
+                status=ModuleStatus.IN_PROGRESS,
+                progress=55,
                 tech_stack=TechStack(
                     languages=["Python 3.11+"],
-                    frameworks=["FastAPI"],
-                    databases=["Redis (定时任务)"],
-                    apis=["天气API", "日历API"],
+                    frameworks=["FastAPI", "asyncio", "SQLAlchemy"],
+                    databases=["SQLite (lite mode) / PostgreSQL"],
+                    apis=["天气API（待接入）", "日历API（待接入）"],
                 ),
                 key_features=[
-                    "主动提醒 (基于时间/事件触发)",
-                    "外部信息查询 (天气/新闻)",
-                    "日程管理集成",
+                    "🆕 ActionRegistry：插件式 handler 注册（@register_action）",
+                    "🆕 内置 5 个 handler：get_time / get_weather (stub) / set_reminder / list_reminders / cancel_reminder",
+                    "🆕 自然语言提醒解析（'3 分钟后提醒我喝水'）",
+                    "🆕 SQLite 持久化 reminders 表 + 后台 ReminderScheduler 轮询触发",
+                    "🆕 ProactivePushBus：进程内 pub/sub，提醒触发后通过 SSE 推到前端",
+                    "🆕 GET /actions/push SSE 端点 + 前端 ReminderToast 浮窗",
+                    "🆕 状态机集成：Intent.TOOL_USE 经关键字路由直接走 handler，无需 LLM",
                 ],
                 dependencies=["shared", "core_orchestrator"],
                 blockers=[
-                    "插件系统未设计",
-                    "主动推送机制未实现 (需WebSocket)",
+                    "天气 / 日历 API 真实接入待外部 key",
+                    "提醒目前只是一次触发，循环 / cron 风格调度尚未实现",
                 ],
-                last_updated="2026-04-30",
+                last_updated="2026-05-05",
             ),
             ModuleInfo(
                 id="frontend_app",
@@ -406,7 +412,7 @@ def get_project_status() -> ProjectStatusData:
         architecture_layers={
             "表现层": ["frontend_app"],
             "编排层": ["core_orchestrator"],
-            "能力层": ["persona_engine", "memory_system", "voice_layer", "action_executor"],
+            "能力层": ["persona_engine", "memory_system", "voice_layer", "action_executor", "action_layer"],
             "基础层": ["shared"],
         },
         release_notes=ReleaseSection(
@@ -440,6 +446,21 @@ def get_project_status() -> ProjectStatusData:
                         "memory_system.recall.recall_memory",
                         "shared/prompt_engine.build_conversation_system_prompt",
                         "GET /memory/working/{session_id}",
+                    ],
+                ),
+                ReleaseNoteItem(
+                    category="feature",
+                    title="行动执行器初始闭环（提醒 / 时间 / 天气 stub）",
+                    detail="新增 action_executor 模块：插件式 ActionRegistry、5 个内置 handler、自然语言 '3 分钟后提醒我喝水' 解析、SQLite 持久化 reminders + 后台轮询 scheduler，触发后通过 ProactivePushBus 经 /actions/push SSE 推到前端。",
+                    impact="主聊天里说『3 分钟后提醒我喝水』就能跑通；时间到自动弹出 ReminderToast。action_layer 不再只是空架子。",
+                    refs=[
+                        "action_executor/registry.py",
+                        "action_executor/handlers.py",
+                        "action_executor/reminders.py",
+                        "action_executor/push_bus.py",
+                        "POST /actions/dispatch",
+                        "GET /actions/push",
+                        "frontend_app/src/components/ReminderToast.vue",
                     ],
                 ),
                 ReleaseNoteItem(

@@ -39,8 +39,10 @@
 
 ### 还没真正收口的部分
 
+- `action_executor` 真实接入
+  - 已经有 5 个内置 handler 和提醒 SSE 推送，但天气 / 日历是 stub，等外部 key 配置；循环 / cron 风格调度尚未实现。
 - `action_layer` / `device_coordination`
-  - 产品闭环仍未完成，更多是架子和边界预留。
+  - 2D 动作生成 + 设备协同仍是占位。
 - 调试台 / Prompt 可视化
   - `state_machine.py` 装配出的最终 system prompt（含 working memory 注入的【当前对话状态】section）尚未在调试台呈现。
 - working memory 摘要质量
@@ -118,7 +120,7 @@ npm run build
 ### 2026-05-05 的实际验证结果
 
 - `python -m pytest -q`
-  - **110 passed / 0 failed**（在 streaming 4 用例之上又新增 9 个 working memory 用例覆盖滚动 buffer / 用户摘要 / topic / prompt 渲染）
+  - **125 passed / 0 failed**（streaming 4 + working memory 9 + action_executor 15）
 - 修复要点
   - `pyproject.toml` 现在显式声明 `numpy` 依赖，`voice_layer` 不再因
     `ModuleNotFoundError: numpy` 在干净 venv 中整组 collect 失败。
@@ -134,16 +136,13 @@ npm run build
 
 ## 6. 下一步推荐动作
 
-> Phase 1.5 的 next_focus 已经推进到第 3 项（主聊天流式输出已经打通），新的优先级如下：
+> 上一轮 Phase 1.5 的 next_focus 已经推进了三项（主聊天流式输出 + 记忆双层模型 + 行动执行器初始闭环），本轮的状态见下面 9 节"待续工作"。新的优先级建议如下：
 
-1. **重构记忆双层模型**
-   - 目标：把 working memory / persistent memory 拆开，给短期对话上下文和长期沉淀两条独立路径。
-2. **动作执行器初始闭环**
-   - 目标：先把"主动提醒 + 1-2 个外部查询动作"接到 LangGraph，让 `action_layer` 不再是空架子。
-3. **调试台暴露完整 Prompt 链路**
-   - 目标：在前端的项目状态/调试面板里能看见最终拼出的 system prompt（基础人格 + 关系摘要 + 召回记忆）。
-4. **persona_engine 也接 SSE**
-   - 目标：让微服务模式下 `/persona/generate_response_stream` 也能流式返回，去掉当前 `state_machine.stream_assistant_response` 在该路径下的"非流式 fallback"。
+1. **完成 action_executor 的 lite-mode 兼容修复**（见 9 节，这是离收口最近的一项）。
+2. **`/actions/push` SSE 在 Cloudflare 隧道下的稳定推送**（见 9 节，已加 padding + heartbeat，但远端实测还没拿到完整闭环）。
+3. **调试台暴露完整 Prompt 链路** —— 在状态面板里给一个"看一眼最终 system prompt"的 inspector。
+4. **working memory 摘要 LLM 化** —— 当前 dominant_topic 是 bag-of-words 启发式，等成本/延迟可控时换 LLM。
+5. **persona_engine 微服务模式接 SSE** —— 去掉 `state_machine.stream_assistant_response` 中针对该路径的"非流式 fallback"。
 
 ---
 
@@ -163,3 +162,101 @@ npm run build
 ## 8. 一句话交接
 
 这不是一个“从零开始搭骨架”的项目了，而是一个 **实时语音体验先跑出来、现在需要把记忆、提示词和工程稳定性补齐** 的项目。接手时请把注意力放在 `companion-ai`，并优先相信代码与状态接口，而不是旧规划文本。
+
+---
+
+## 9. 本轮待续工作（2026-05-05 中段交接）
+
+> 这一轮 token 用尽前正在做"动作执行器初始闭环"。已经 push 到 `cursor/repo-issue-fixes-29a4` 的代码处于"测试全绿，但远端 lite/CF 路径下端到端 demo 没完全走通"的状态。下一轮接手请按这里的清单收口。
+
+### 已完成（已合入分支）
+
+- `action_executor/` 新模块：
+  - `registry.py` —— `ActionRegistry` + `ActionResult` + `register_action` 装饰器。
+  - `handlers.py` —— 5 个内置 handler：`get_time` / `get_weather`(stub) / `set_reminder` / `list_reminders` / `cancel_reminder`。`set_reminder` 会解析 "3 分钟后"、"in 5 minutes" 等自然语言延迟。
+  - `reminders.py` —— `ReminderORM`（SQLAlchemy 表）+ `RemindersStore`（add / list / due / mark_fired / cancel）+ `ReminderScheduler`（默认 1s 轮询；用 `_tick_once` 在测试中可手动驱动）。
+  - `push_bus.py` —— 进程内 pub/sub `ProactivePushBus`，每个 subscriber 一条 `asyncio.Queue`。
+  - `api.py` —— `/actions/list` / `/actions/dispatch` / `/actions/reminders/{user_id}` (GET / POST) / `/actions/reminders/{id}` (DELETE) / `/actions/push` (SSE)。
+  - `main.py` —— 微服务模式 lifespan（启动 / 停止 scheduler），同时被 monolithic `companion-ai/main.py` 复用。
+- `core_orchestrator/state_machine.py`：
+  - 新增 `_try_action_executor(tc, intent)`：当 intent 是 `TOOL_USE` 时按关键字匹配 handler 并 dispatch。
+  - 在 `node_generate_response`（非流式）和 `stream_assistant_response`（流式）两条路径里都接入了这个分支：handler 命中后跳过 LLM，直接渲染 handler 返回的文本。流式分支用 `chunk_text_stream` 切片 SSE。
+- `core_orchestrator/intent_router.py` 的 `_TOOL_KEYWORDS` 加了「提醒我 / 帮我提醒 / 待办提醒 / 取消提醒 / remind me / set reminder」等。
+- `frontend_app/`：
+  - `useApi.ts` 新增 `listReminders` / `cancelReminder` / `listActions`。
+  - 新建 `composables/useProactivePush.ts`：用 `fetch + ReadableStream + TextDecoder` 解析 `/actions/push` SSE，自动断线重连，对外暴露 `lastReminder` ref。
+  - 新建 `components/ReminderToast.vue`：粉色 ⏰ 浮窗，3-4 行内显示提醒文字 + 点 `×` 关闭。
+  - `App.vue` 装载 `useProactivePush()` + `<ReminderToast :reminder="lastReminder" @dismiss="...">`。
+- `companion-ai/main.py`：把 `action_executor` 加进了 `_ENABLED_MODULES`，挂载 router，按反向顺序卸载 lifespan。
+- `pyproject.toml.tool.setuptools.packages.find` 也加上 `action_executor*`。
+- `core_orchestrator/project_status.py`：
+  - `action_executor` 模块卡片从 PLANNED 10% 升到 IN_PROGRESS 55%，加了 7 条 🆕 key_features。
+  - 顶层 `recent_highlights` / `next_focus` / `risks` / `test_snapshot` / `release_notes.items` 全部同步。
+  - `architecture_layers["能力层"]` 把 `action_executor` 和 `action_layer` 都列上。
+  - `overall_progress=92`、`test_snapshot.passed=125`。
+- `action_executor/tests/test_action_executor.py`：15 个用例，**全绿**。覆盖 registry / 内置 handler / reminders store / scheduler 与 push bus / NL 文本解析。
+- 文档：`AI_HANDOFF.md` / `PROJECT_PLAN.md` 同步基线 110 → 125 / 0。
+- `pytest -q` —— **125 passed, 0 failed**。
+- 本地直连后端的 curl 端到端实测：「8 秒后提醒我喝水」→ intent_router 路由到 `tool_use` → `_try_action_executor` 选中 `set_reminder` → 持久化到 `reminders` 表 → 后台 scheduler 触发 → `ProactivePushBus.publish` → `/actions/push` SSE 上看到 `event: reminder_fired`。流程完整。
+
+### 还没收口的两件事
+
+#### 9.1 `/actions/push` 在 Cloudflare 隧道下首字节延迟太长
+
+**症状**：直连本机 `127.0.0.1:8000/actions/push` 一切正常；同样的请求经 Cloudflare Quick Tunnel 转发后，**首字节迟迟不到**（在浏览器 DevTools 探针脚本中等了 15s 也收不到 `event: hello`）。直接结果：浏览器 `useProactivePush` 永远拿不到 `reminder_fired` 事件，前端 `ReminderToast` 不显示。
+
+**已经做了的修补**：在 `action_executor/api.py::push_stream` 里：
+- 头先发一个 ~2KB 的 SSE comment padding（`":" + " "*2048 + "\n"`），强制 cloudflared 立刻 flush 第一段。
+- 主循环用 `asyncio.wait_for` 包 subscriber 的 `__anext__()`，没事件时每 2s 发一帧 `event: ping\ndata: {}\n\n` 心跳，避免 CF / nginx 在长时间没数据时挤压缓冲。
+- 响应头已经有 `Cache-Control: no-cache, no-transform`、`Connection: keep-alive`、`X-Accel-Buffering: no`。
+
+**还没做完**：远端 VM 上重启 backend 之后，**没来得及做完整端到端实测**就让 token 用完了。lite-mode 验证（见 9.2）也撞到下面的问题，所以现在 push_stream 改完之后是**只在测试里被静态调用过，没在真实 cloudflared 路径上走通**。
+
+下一步建议：
+1. 用 lite-mode 重启 backend（见 9.2）。
+2. `curl -sN https://<cf-tunnel>/actions/push` 看首字节是否 < 2s 到达。
+3. 若到达 → 用浏览器探针脚本（在我的对话历史里有完整版本）订阅 `/actions/push` 同时通过 `/orchestrator/turn` 触发 `8 秒后提醒我喝水`，看 `event: reminder_fired` 是否到。
+4. 若仍不到 → 继续把 padding 加到 4KB / 把 ping 间隔降到 1s；再不行就考虑用 polling fallback (`GET /actions/push/poll?since=...`) 替换 SSE 那条路径。
+
+#### 9.2 lite-mode 兼容：`reminder_scheduler.tick_failed [Errno 111]`
+
+**症状**：在云端 VM 上 `pkill uvicorn` 后用 tmux 重启时，monolithic 模式 `lite_mode=False` 是默认，所以 `reminders.RemindersStore.list_due()` 试图连 PostgreSQL → Connection refused → scheduler 每秒 spam warning。
+
+**已经做了的修补**：当前的 `companion-ai/main.py` 已经在 lifespan 里调 `init_database_schema()`，shared engine 是按 `settings.lite_mode` 选 SQLite 或 Postgres 的，所以**只要启动时 export `COMPANION_LITE_MODE=true`，scheduler 就会走 SQLite，不会再有 Connection refused**。
+
+**还没做完**：我在最后两轮 restart 时手动 export 了 `COMPANION_LITE_MODE=true` 但 tmux send-keys 似乎没把 env 真正传进 uvicorn 进程，导致还是 lite_mode=False。下一轮接手务必一次性确认：
+
+```bash
+tmux -f /exec-daemon/tmux.portal.conf kill-session -t companion-backend 2>/dev/null
+tmux -f /exec-daemon/tmux.portal.conf new-session -d -s companion-backend -c /workspace/companion-ai -- bash -l
+tmux -f /exec-daemon/tmux.portal.conf send-keys -t companion-backend:0.0 \
+  "export COMPANION_LITE_MODE=true COMPANION_MONOLITHIC=true COMPANION_ENABLE_VOICE=false COMPANION_ENABLE_ACTION_2D=false COMPANION_ENABLE_DEVICE_COORDINATION=false COMPANION_ENABLE_MEMORY_PIPELINE=false" C-m
+tmux -f /exec-daemon/tmux.portal.conf send-keys -t companion-backend:0.0 \
+  "/workspace/companion-ai/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000 2>&1 | tee /tmp/backend.log" C-m
+sleep 6
+grep "lite_mode=" /tmp/backend.log    # 必须看到 lite_mode=True
+```
+
+或者更稳的做法：把 `COMPANION_LITE_MODE=true` 写到 `companion-ai/.env`，让 pydantic-settings 直接 pick up，避免 env 注入问题。
+
+### Cloud preview URL（可能已失效）
+
+- 前端：<https://condos-behind-weekend-synthesis.trycloudflare.com>
+- 后端：<https://ambient-rent-immigrants-face.trycloudflare.com>
+
+这两个 URL 是上一轮跑的 `cloudflared` quick tunnel，**会随 cloud agent VM 关机而消失**。下一轮接手如果要复用预览，建议：
+
+1. `/opt/tools/cloudflared` 已装好；`/opt/tools/node` 是 Node 20。
+2. 重启后用上面 9.2 的命令拉起后端，再 `tmux new-session -d -s cf-backend "cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8000 2>&1 | tee /tmp/cf-backend.log"`，从日志里抓 `https://*.trycloudflare.com` URL。
+3. 前端类似：`tmux new-session -d -s companion-frontend -c /workspace/companion-ai/frontend_app -- bash -l`，发 `export VITE_API_BASE_URL=<刚才的后端 URL>` + `npm run dev -- --host 127.0.0.1 --port 5173`，再起一条 cloudflared 转 5173。
+4. **Vite 5 的 `server.allowedHosts` 必须设**：本地我把 `vite.config.ts` 改成 `allowedHosts: true` 用于云端预览，但这个改动**没有提交**（避免污染本地路径）。下一轮接手如果要再次走 cloudflared，记得手动在 VM 上加上同样一行。
+
+### 仓库当前状态
+
+- 分支：`cursor/repo-issue-fixes-29a4`，已 push 到 `origin`。
+- PR：[#2](https://github.com/TrisomyManager/AgentGirl/pull/2)。
+- 累计 commit：见 `git log master..HEAD --oneline`。
+- 工作树有一些**未提交**的本地状态（详见 PR 描述底部「已知限制」）：
+  - `companion-ai/frontend_app/vite.config.ts` 的 `allowedHosts: true`（云端预览专用）。
+  - `companion-ai/frontend_app/package-lock.json`（npm install 副产品）。
+  - 远端 `companion_lite.db` 已经存了几条 fired/cancelled 测试 reminder（用户应当 ignore，下次本地启动会自己生成新的）。
