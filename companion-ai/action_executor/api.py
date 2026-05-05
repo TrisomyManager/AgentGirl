@@ -70,6 +70,7 @@ class ReminderResponse(BaseModel):
     fired_at: Optional[str]
     cancelled_at: Optional[str]
     status: str
+    repeat_interval_seconds: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------

@@ -344,6 +344,51 @@ async def _stream_response_monolithic(
         yield chunk
 
 
+async def build_prompt_preview(
+    tc: TurnContext,
+    *,
+    intent: Optional[str] = None,
+    intent_confidence: Optional[float] = None,
+    intent_entities: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Assemble the same conversation system prompt used at reply time (debug).
+
+    Runs the lightweight intent + memory recall path so working-memory /
+    recall sections match a real turn without invoking the LLM.
+    """
+    state: OrchestratorState = build_initial_state(tc)
+    if intent is not None:
+        state["intent"] = intent
+        state["intent_confidence"] = intent_confidence
+        state["intent_entities"] = intent_entities or {}
+    else:
+        state = await node_classify_intent(state)
+    if state.get("error"):
+        return build_base_system_prompt()
+    state = await node_recall_memory(state)
+    if state.get("error"):
+        return build_base_system_prompt()
+
+    persona = state.get("persona_profile") or _default_persona()
+    memory = state.get("memory_result")
+    emotion = state.get("emotion_state")
+    relationship = state.get("relationship_metrics")
+    system_prompt = build_conversation_system_prompt(
+        persona=persona,
+        emotion=emotion,
+        relationship=relationship,
+        memory=memory,
+    )
+    settings = get_settings()
+    if settings.enable_voice:
+        system_prompt += (
+            "\n\n【能力说明】你支持语音播报。"
+            "当用户希望你“说一句”“念出来”或“用语音回复”时，不要声称自己无法发声；"
+            "直接正常给出要说的内容，系统会按需合成语音。"
+        )
+    return system_prompt
+
+
 _NEGATIVE_TOKENS = (
     "难过",
     "伤心",

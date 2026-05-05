@@ -31,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import structlog
-from sqlalchemy import Column, DateTime, String, Text, select, update
+from sqlalchemy import Column, DateTime, Integer, String, Text, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import and_
 
@@ -63,6 +63,7 @@ class ReminderORM(Base):
     )
     fired_at = Column(DateTime(timezone=True), nullable=True)
     cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    repeat_interval_seconds = Column(Integer, nullable=True)
 
 
 @dataclass
@@ -77,6 +78,7 @@ class Reminder:
     created_at: datetime
     fired_at: Optional[datetime] = None
     cancelled_at: Optional[datetime] = None
+    repeat_interval_seconds: Optional[int] = None
 
     @classmethod
     def from_orm(cls, row: ReminderORM) -> "Reminder":
@@ -89,6 +91,7 @@ class Reminder:
             created_at=_ensure_aware(row.created_at),
             fired_at=_ensure_aware(row.fired_at) if row.fired_at else None,
             cancelled_at=_ensure_aware(row.cancelled_at) if row.cancelled_at else None,
+            repeat_interval_seconds=row.repeat_interval_seconds,
         )
 
     def to_dict(self) -> dict:
@@ -101,6 +104,7 @@ class Reminder:
             "created_at": self.created_at.isoformat(),
             "fired_at": self.fired_at.isoformat() if self.fired_at else None,
             "cancelled_at": self.cancelled_at.isoformat() if self.cancelled_at else None,
+            "repeat_interval_seconds": self.repeat_interval_seconds,
             "status": self.status,
         }
 
@@ -128,14 +132,25 @@ def _ensure_aware(dt: datetime) -> datetime:
 
 
 _DELAY_PATTERNS = [
-    (re.compile(r"(\d+)\s*秒[钟]?(?:后|以后)?"), "seconds"),
-    (re.compile(r"(\d+)\s*分[钟]?(?:后|以后)?"), "minutes"),
-    (re.compile(r"(\d+)\s*小时(?:后|以后)?"), "hours"),
-    (re.compile(r"(\d+)\s*天(?:后|以后)?"), "days"),
+    (re.compile(r"(\d+)\s*秒[钟]?(?:后|以后|之后)"), "seconds"),
+    (re.compile(r"(\d+)\s*分[钟]?(?:后|以后|之后)"), "minutes"),
+    (re.compile(r"(\d+)\s*小时(?:后|以后|之后)"), "hours"),
+    (re.compile(r"(\d+)\s*天(?:后|以后|之后)"), "days"),
     (re.compile(r"(?:in\s+)?(\d+)\s*seconds?"), "seconds"),
     (re.compile(r"(?:in\s+)?(\d+)\s*minutes?"), "minutes"),
     (re.compile(r"(?:in\s+)?(\d+)\s*hours?"), "hours"),
     (re.compile(r"(?:in\s+)?(\d+)\s*days?"), "days"),
+]
+
+_REPEAT_EVERY_PATTERNS = [
+    (re.compile(r"每\s*(\d+)\s*秒[钟]?"), "seconds"),
+    (re.compile(r"每\s*(\d+)\s*分[钟]?"), "minutes"),
+    (re.compile(r"每\s*(\d+)\s*小时"), "hours"),
+    (re.compile(r"每\s*(\d+)\s*天"), "days"),
+    (re.compile(r"(?:every\s+)(\d+)\s*seconds?"), "seconds"),
+    (re.compile(r"(?:every\s+)(\d+)\s*minutes?"), "minutes"),
+    (re.compile(r"(?:every\s+)(\d+)\s*hours?"), "hours"),
+    (re.compile(r"(?:every\s+)(\d+)\s*days?"), "days"),
 ]
 
 
@@ -147,6 +162,23 @@ def parse_relative_delay(text: str) -> Optional[timedelta]:
     if not text:
         return None
     for pattern, unit in _DELAY_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            try:
+                value = int(match.group(1))
+            except (ValueError, IndexError):
+                continue
+            if value <= 0:
+                continue
+            return timedelta(**{unit: value})
+    return None
+
+
+def parse_repeat_interval(text: str) -> Optional[timedelta]:
+    """Extract a fixed repeat cadence like '每 5 分钟' from free-form text."""
+    if not text:
+        return None
+    for pattern, unit in _REPEAT_EVERY_PATTERNS:
         match = pattern.search(text)
         if match:
             try:
@@ -189,6 +221,8 @@ def extract_reminder_body(text: str) -> str:
     # 1. Remove the relative-delay clause from anywhere in the string.
     for pattern, _unit in _DELAY_PATTERNS:
         cleaned = pattern.sub("", cleaned).strip(" ，,。.")
+    for pattern, _unit in _REPEAT_EVERY_PATTERNS:
+        cleaned = pattern.sub("", cleaned).strip(" ，,。.")
 
     # 2. Remove an imperative prefix if it now sits at the start, OR
     #    anywhere in the body if the delay used to be in front of it.
@@ -226,6 +260,7 @@ class RemindersStore:
         text: str,
         fire_at: datetime,
         session_id: Optional[str] = None,
+        repeat_interval_seconds: Optional[int] = None,
     ) -> Reminder:
         """Insert a fresh reminder and return its dataclass form."""
         row = ReminderORM(
@@ -234,6 +269,7 @@ class RemindersStore:
             session_id=session_id,
             text=text,
             fire_at=_ensure_aware(fire_at),
+            repeat_interval_seconds=repeat_interval_seconds,
         )
         async with AsyncSessionLocal() as session:
             session.add(row)
@@ -303,6 +339,24 @@ class RemindersStore:
                 update(ReminderORM)
                 .where(and_(*where_clauses))
                 .values(cancelled_at=datetime.now(timezone.utc))
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            return (result.rowcount or 0) > 0
+
+    async def bump_next_repeat(self, reminder_id: str, interval_seconds: int) -> bool:
+        """Advance ``fire_at`` for a repeating reminder without marking it fired."""
+        if interval_seconds < 60:
+            return False
+        async with AsyncSessionLocal() as session:
+            stmt = (
+                update(ReminderORM)
+                .where(
+                    ReminderORM.id == reminder_id,
+                    ReminderORM.fired_at.is_(None),
+                    ReminderORM.cancelled_at.is_(None),
+                )
+                .values(fire_at=datetime.now(timezone.utc) + timedelta(seconds=interval_seconds))
             )
             result = await session.execute(stmt)
             await session.commit()
@@ -379,9 +433,13 @@ class ReminderScheduler:
             return 0
         fired = 0
         for reminder in due:
-            ok = await self._store.mark_fired(reminder.id)
+            interval = reminder.repeat_interval_seconds or 0
+            if interval >= 60:
+                ok = await self._store.bump_next_repeat(reminder.id, interval)
+            else:
+                ok = await self._store.mark_fired(reminder.id)
             if not ok:
-                continue  # someone else fired it
+                continue  # someone else fired it or race
             await self._bus.publish(
                 PushEvent(
                     kind="reminder_fired",
@@ -391,6 +449,8 @@ class ReminderScheduler:
                         "session_id": reminder.session_id,
                         "text": reminder.text,
                         "fire_at": reminder.fire_at.isoformat(),
+                        "repeating": interval >= 60,
+                        "repeat_interval_seconds": interval if interval >= 60 else None,
                     },
                 )
             )
