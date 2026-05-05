@@ -1,8 +1,8 @@
 # 陪伴类 AI 智能体项目执行计划
 
-> 版本：V2.3  
+> 版本：V2.4  
 > 日期：2026-05-05  
-> 当前阶段：Phase 1.5 · 实时语音 MVP 收敛期
+> 当前阶段：Phase 1.5 · 实时语音 MVP 收敛期（流式主聊天已并入主线）
 
 ---
 
@@ -67,17 +67,19 @@
 - 对话上下文使用的临时记忆和长期沉淀记忆不再混在一个抽象里
 - 记忆摘要失败时有清晰降级路径
 
-### 目标 C：补主聊天流式输出
+### 目标 C：补主聊天流式输出 ✅ 已完成
 
-目标：
+完成情况（2026-05-05）：
 
-- 让聊天主面板支持渐进式文本反馈，而不仅是语音通话支持流式
-
-完成标准：
-
-- 前端消息区能逐步展示模型输出
-- 主聊天与实时语音共用一套更一致的流式状态语义
-- 不因 provider 不支持 streaming 而破坏当前可用路径
+- `LLMClient.generate_stream()` 已支持 OpenAI / Anthropic 双 provider 的 token 流式。
+- `POST /orchestrator/turn/stream` 走 SSE，复用 LangGraph 的全部前置节点
+  （receive / classify_intent / recall_memory），在生成节点上切流式，最后
+  仍然跑 voice / action / sync_memory 节点，并把完整 TurnResponse 通过
+  `done` 事件回传，前端消息区和 emotion / voice_url 元数据都能拿到。
+- 没有 LLM key 时通过 `chunk_text_stream` 把规则降级回复也按 token 切片
+  下发，主聊天 UI 不会因 provider 缺失而退化成"loading 一大段"。
+- 新增 4 个用例锁定行为：`chunk_text_stream` 边界、`stream_assistant_response`
+  事件序列、TestClient 实拉 SSE 全流程。
 
 ---
 
@@ -115,7 +117,7 @@ npm run build
 2026-05-05 本地结果：
 
 - `python -m pytest -q`
-  - **97 passed / 0 failed**
+  - **101 passed / 0 failed**
 
 修复点：
 
@@ -137,12 +139,12 @@ npm run build
 
 ## 6. 执行顺序建议
 
-推荐严格按这个顺序推进：
+Phase 1.5 上半阶段（Prompt Engine 收敛 / memory_system 稳定 / 主聊天流式输出）三项目标已经结束。下一步建议顺序：
 
-1. Prompt Engine
-2. memory_system 稳定性
-3. 主聊天流式输出
-4. action / device 能力
+1. memory_system 双层模型（working / persistent）
+2. action_layer 初始闭环（主动提醒 + 1-2 个外部查询动作）
+3. 调试台暴露完整 Prompt 链路（基础人格 + 关系摘要 + 召回记忆）
+4. persona_engine 微服务流式（去掉 stream_assistant_response 的 HTTP fallback）
 
 如果顺序反过来，结果通常会是：
 

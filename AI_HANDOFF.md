@@ -31,6 +31,9 @@
   - 已打通浏览器端 VAD、AudioWorklet PCM 录音、WebSocket 双向流、边合成边播放、barge-in 打断。
 - `companion-ai/shared/`
   - 已有统一 LLM 配置、运行时配置持久化、共享模型与日志基础设施。
+  - `LLMClient.generate_stream()` 已就位，OpenAI / Anthropic 双 provider 都支持 token 级流式。
+- `companion-ai/core_orchestrator/`
+  - LangGraph 状态机 + `POST /orchestrator/turn/stream` SSE 端点已打通，主聊天和实时语音的"流式语义"已经统一。
 - `companion-ai/core_orchestrator/project_status.py`
   - 目前是“项目当前实现状态”的最准入口之一，前端状态页直接消费它。
 
@@ -38,12 +41,10 @@
 
 - `memory_system`
   - 仍偏“长期记忆仓库”，working memory / persistent memory 分层尚未完成。
-- `state_machine.py` / Prompt 体系
-  - system prompt 仍需要从硬编码抽到共享层，便于人格文件、关系摘要、调试台复用。
-- 主聊天文本流式输出
-  - 语音通话链路已经流式，主聊天消息区还没有真正接上 token streaming。
 - `action_layer` / `device_coordination`
   - 产品闭环仍未完成，更多是架子和边界预留。
+- 调试台 / Prompt 可视化
+  - `state_machine.py` 装配出的最终 system prompt 没有在调试台呈现。
 
 ---
 
@@ -117,7 +118,7 @@ npm run build
 ### 2026-05-05 的实际验证结果
 
 - `python -m pytest -q`
-  - **97 passed / 0 failed**
+  - **101 passed / 0 failed**（新增 4 个 streaming 用例：`chunk_text_stream` / `stream_assistant_response` / `/orchestrator/turn/stream`）
 - 修复要点
   - `pyproject.toml` 现在显式声明 `numpy` 依赖，`voice_layer` 不再因
     `ModuleNotFoundError: numpy` 在干净 venv 中整组 collect 失败。
@@ -133,16 +134,16 @@ npm run build
 
 ## 6. 下一步推荐动作
 
-优先级建议如下：
+> Phase 1.5 的 next_focus 已经推进到第 3 项（主聊天流式输出已经打通），新的优先级如下：
 
-1. **先修 Prompt Engine 收敛**
-   - 目标：把 `state_machine.py` 内的 system prompt 硬编码抽到共享层。
-2. **再修记忆系统测试与模型分层**
-   - 目标：先把 sqlite 测试跑稳，再推进 working / persistent memory 分层。
-3. **补主聊天流式输出**
-   - 目标：让主聊天 UI 和实时语音通话在“流式体验”上不再分裂。
-4. **最后考虑主动能力**
-   - 目标：等前 3 项稳定后，再认真推进 `action_layer` / `device_coordination`。
+1. **重构记忆双层模型**
+   - 目标：把 working memory / persistent memory 拆开，给短期对话上下文和长期沉淀两条独立路径。
+2. **动作执行器初始闭环**
+   - 目标：先把"主动提醒 + 1-2 个外部查询动作"接到 LangGraph，让 `action_layer` 不再是空架子。
+3. **调试台暴露完整 Prompt 链路**
+   - 目标：在前端的项目状态/调试面板里能看见最终拼出的 system prompt（基础人格 + 关系摘要 + 召回记忆）。
+4. **persona_engine 也接 SSE**
+   - 目标：让微服务模式下 `/persona/generate_response_stream` 也能流式返回，去掉当前 `state_machine.stream_assistant_response` 在该路径下的"非流式 fallback"。
 
 ---
 

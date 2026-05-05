@@ -89,31 +89,32 @@ def get_project_status() -> ProjectStatusData:
         current_phase="Phase 1.5 · 实时语音 MVP 收敛期",
         summary="单体 FastAPI 入口、实时语音通话链路、运行时配置面板都已落地；当前重心转向记忆模型收敛、主聊天流式输出和测试稳定性。",
         last_updated="2026-05-05",
-        overall_progress=85,
+        overall_progress=88,
         recent_highlights=[
             "单体入口 `main.py` 已成为默认开发路径，Lite Mode 可直接启动完整 Web API。",
             "实时语音链路已打通：浏览器 VAD、AudioWorklet 录音、WebSocket 双向流和边合成边播放。",
             "LLM / Voice Provider 已支持运行时切换与配置持久化，无需改代码即可调参。",
             "前端已具备聊天、记忆库、语音通话、状态面板四个核心调试入口。",
+            "🆕 主聊天流式输出已打通：`POST /orchestrator/turn/stream` 走 SSE，前端逐 token 渲染并保留 emotion / voice_url 元数据。",
         ],
         next_focus=[
             FocusItem(
-                title="收敛 Prompt Engine",
-                detail="把 `state_machine.py` 中的 system prompt 硬编码抽到共享层，方便人格文件、关系摘要和调试台复用。",
-            ),
-            FocusItem(
-                title="补齐主聊天流式输出",
-                detail="语音通话链路已支持流式，主聊天 REST 路径还没有把 token streaming 接到消息区。",
-            ),
-            FocusItem(
                 title="重构记忆双层模型",
                 detail="当前记忆层仍偏向“长期库”，下一步要补 working / persistent memory 分层和更稳定的摘要策略。",
+            ),
+            FocusItem(
+                title="动作执行器初始闭环",
+                detail="实时语音体验已领先，但 action / device_coordination 仍未进入真正的产品闭环；下一步先把主动提醒 + 1-2 个外部查询动作打通。",
+            ),
+            FocusItem(
+                title="人格摘要注入流式 Prompt",
+                detail="基础人格、关系摘要、记忆召回已经能装配进 system prompt，但调试台暂时还没暴露最终拼出的完整 prompt 链路。",
             ),
         ],
         risks=[
             FocusItem(
                 title="测试基线已恢复",
-                detail="2026-05-05 本地 `python -m pytest -q` 为 97 passed / 0 failed；之前的 sqlite 向量绑定与 prompt 用例漂移已修复，未安装 ffmpeg 时仍需注意 voice_layer 的真实集成测试。",
+                detail="2026-05-05 本地 `python -m pytest -q` 为 101 passed / 0 failed；新增 4 个 streaming 用例，sqlite 向量绑定与 prompt 用例漂移已修复，未安装 ffmpeg 时仍需注意 voice_layer 的真实集成测试。",
             ),
             FocusItem(
                 title="文档曾与代码漂移",
@@ -152,9 +153,10 @@ def get_project_status() -> ProjectStatusData:
         ],
         test_snapshot=TestSnapshot(
             command="python -m pytest -q",
-            passed=97,
+            passed=101,
             failed=0,
             notes=[
+                "新增 4 个 streaming 测试覆盖 chunk_text_stream、stream_assistant_response 和 /orchestrator/turn/stream SSE 端点。",
                 "shared/tests/test_prompt_engine.py 的中英文断言已与 prompt_engine 的中文实现对齐。",
                 "pyproject.toml 已显式声明 numpy 依赖，避免 voice_layer 在干净环境下因 ModuleNotFoundError 整组无法 collect。",
                 "voice_layer 的真实集成测试仍依赖 ffmpeg；当前测试通过 monkeypatch 已避免对它的硬依赖。",
@@ -201,6 +203,7 @@ def get_project_status() -> ProjectStatusData:
                 ),
                 key_features=[
                     "LangGraph 状态机编排 (意图→记忆→角色→语音→动作)",
+                    "🆕 主聊天流式输出 (POST /orchestrator/turn/stream, SSE)",
                     "微服务健康检查与熔断",
                     "事件总线 (Redis pub/sub)",
                     "LLM配置管理API (GET/POST /settings/llm)",
@@ -209,7 +212,7 @@ def get_project_status() -> ProjectStatusData:
                 ],
                 dependencies=["shared"],
                 blockers=[],
-                last_updated="2026-05-04",
+                last_updated="2026-05-05",
             ),
             ModuleInfo(
                 id="persona_engine",
@@ -348,12 +351,13 @@ def get_project_status() -> ProjectStatusData:
                 ),
                 key_features=[
                     "实时聊天界面 (滚动加载)",
+                    "🆕 主聊天 token 流式渲染 + 闪烁光标 (SSE 端点)",
                     "语音输入 (长按录音 + WebM→WAV 转换)",
-                    "🆕 实时语音通话面板 (豆包风格)",
-                    "🆕 AudioWorklet PCM 采集 (Int16 16kHz)",
-                    "🆕 浏览器内 Silero VAD (自动断句 + 打断)",
-                    "🆕 WebSocket 双向流 (PCM 上行 / TTS PCM 下行)",
-                    "🆕 链式音频播放队列 (无缝拼接 TTS chunks)",
+                    "实时语音通话面板 (豆包风格)",
+                    "AudioWorklet PCM 采集 (Int16 16kHz)",
+                    "浏览器内 Silero VAD (自动断句 + 打断)",
+                    "WebSocket 双向流 (PCM 上行 / TTS PCM 下行)",
+                    "链式音频播放队列 (无缝拼接 TTS chunks)",
                     "头像情绪显示 (EmotionBadge + 浮动动画)",
                     "Live2D 角色动画 (PixiJS 6 + pixi-live2d-display)",
                     "设置抽屉 (LLM配置 + 语音配置, 多Provider预设)",
@@ -363,10 +367,8 @@ def get_project_status() -> ProjectStatusData:
                     "自适应布局 (PC/移动端)",
                 ],
                 dependencies=["core_orchestrator", "voice_layer"],
-                blockers=[
-                    "LLM 文字流式输出尚未在主聊天接口对接 (语音通话已支持)",
-                ],
-                last_updated="2026-05-04",
+                blockers=[],
+                last_updated="2026-05-05",
             ),
         ],
         architecture_layers={
