@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
 import httpx
 import structlog
@@ -86,6 +87,25 @@ def load_llm_config_from_disk() -> None:
             logger.info("llm_config.loaded_from_disk", path=str(_CONFIG_FILE), keys=list(data.keys()))
     except Exception as exc:
         logger.warning("llm_config.load_failed", path=str(_CONFIG_FILE), error=str(exc))
+
+
+async def chunk_text_stream(
+    text: str,
+    chunk_size: int = 3,
+    delay_seconds: float = 0.04,
+) -> AsyncIterator[str]:
+    """Emit ``text`` as small async chunks.
+
+    Used when the active provider does not stream (e.g. rule-based fallback)
+    so that the public ``/orchestrator/turn/stream`` SSE contract still gives
+    callers an incremental experience.
+    """
+    if not text:
+        return
+    for start in range(0, len(text), chunk_size):
+        yield text[start:start + chunk_size]
+        if delay_seconds:
+            await asyncio.sleep(delay_seconds)
 
 
 class LLMClient:
@@ -169,6 +189,45 @@ class LLMClient:
             max_tokens=max_tokens,
         )
 
+    async def generate_stream(
+        self,
+        system_prompt: str,
+        user_message: str,
+        model: Optional[str] = None,
+        temperature: Optional[float] = 0.7,
+        max_tokens: Optional[int] = 1024,
+    ) -> AsyncIterator[str]:
+        """Stream a chat completion as incremental text chunks.
+
+        Yields the same per-token deltas the upstream API emits. Callers can
+        concatenate the chunks to reconstruct the full assistant_message.
+        Falls back to chunk-by-chunk emission of the non-streaming response
+        when the provider does not support SSE.
+        """
+        provider = self._detect_provider()
+        chosen_model = model or self.default_model
+
+        if provider == "openai":
+            iterator = self._generate_openai_stream(
+                system_prompt=system_prompt,
+                user_message=user_message,
+                model=chosen_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        else:
+            iterator = self._generate_anthropic_stream(
+                system_prompt=system_prompt,
+                user_message=user_message,
+                model=chosen_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
+        async for token in iterator:
+            if token:
+                yield token
+
     async def _generate_openai(
         self,
         system_prompt: str,
@@ -248,6 +307,107 @@ class LLMClient:
             "tokens_used": tokens_used,
             "model": data.get("model", model),
         }
+
+    async def _generate_openai_stream(
+        self,
+        system_prompt: str,
+        user_message: str,
+        model: str,
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+    ) -> AsyncIterator[str]:
+        url = f"{self.openai_base_url}/chat/completions"
+        payload: Dict[str, Any] = {
+            "model": model,
+            "stream": True,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+        }
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+
+        headers = {
+            "Authorization": f"Bearer {self.openai_api_key}",
+            "Content-Type": "application/json",
+        }
+
+        logger.debug("llm.openai_stream_request", model=model, url=url)
+        async with self.http.stream("POST", url, json=payload, headers=headers) as resp:
+            if resp.status_code != 200:
+                err_body = await resp.aread()
+                raise RuntimeError(
+                    f"LLM HTTP {resp.status_code}: {err_body.decode('utf-8', errors='ignore')}"
+                )
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except Exception:
+                    continue
+                delta = obj.get("choices", [{}])[0].get("delta", {})
+                token = delta.get("content")
+                if token:
+                    yield token
+
+    async def _generate_anthropic_stream(
+        self,
+        system_prompt: str,
+        user_message: str,
+        model: str,
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+    ) -> AsyncIterator[str]:
+        url = f"{self.anthropic_base_url}/messages"
+        payload: Dict[str, Any] = {
+            "model": model,
+            "stream": True,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_message}],
+            "max_tokens": max_tokens or 1024,
+        }
+        if temperature is not None:
+            payload["temperature"] = temperature
+
+        headers = {
+            "x-api-key": self.anthropic_api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+
+        logger.debug("llm.anthropic_stream_request", model=model, url=url)
+        async with self.http.stream("POST", url, json=payload, headers=headers) as resp:
+            if resp.status_code != 200:
+                err_body = await resp.aread()
+                raise RuntimeError(
+                    f"LLM HTTP {resp.status_code}: {err_body.decode('utf-8', errors='ignore')}"
+                )
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(data)
+                except Exception:
+                    continue
+                event_type = obj.get("type")
+                if event_type == "content_block_delta":
+                    delta = obj.get("delta") or {}
+                    if delta.get("type") == "text_delta":
+                        token = delta.get("text")
+                        if token:
+                            yield token
+                elif event_type == "message_stop":
+                    break
 
     async def analyze_sentiment(self, user_message: str) -> str:
         """Analyze sentiment. Returns 'positive', 'negative', or 'neutral'."""

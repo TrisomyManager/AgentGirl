@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from typing import Annotated, Any, Dict, List, Optional, TypedDict
+from typing import Annotated, Any, AsyncIterator, Dict, List, Optional, TypedDict
 
 import structlog
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -197,6 +197,22 @@ def _is_monolithic() -> bool:
     return settings.monolithic or os.environ.get("COMPANION_MONOLITHIC", "false").lower() in ("1", "true", "yes")
 
 
+def _rule_based_reply(user_message: str, persona_name: str = "小暖") -> str:
+    """Rule-based fallback used when no LLM provider is configured."""
+    msg = user_message
+    if any(tok in msg for tok in ("你叫什么", "你是谁")):
+        return f"我是{persona_name}，会一直在这里陪你聊天。"
+    if any(tok in msg for tok in ("你好", "嗨", "在吗", "早上好", "晚上好")):
+        return f"我在呢，我是{persona_name}！今天你最想先聊哪件事？"
+    if any(tok in msg for tok in ("难过", "伤心", "烦", "累", "生气", "焦虑", "崩溃", "压力")):
+        return "听起来你现在不太舒服。我先陪着你，你愿意把最难受的那一部分慢慢说给我听吗？"
+    if any(tok in msg for tok in ("开心", "高兴", "不错", "太好了", "棒", "哈哈")):
+        return "这听起来真的很不错，我也替你开心。你最想分享的是哪一段？"
+    if any(tok in msg for tok in ("记得", "还记得", "上次", "之前")):
+        return "我会认真记住我们聊过的内容，从这次开始把你说的都放在心里。"
+    return "我在认真听你说。你可以继续讲，我会尽量记住对你重要的内容。"
+
+
 async def _generate_response_monolithic(tc: TurnContext, system_prompt: str, persona_name: str = "小暖") -> str:
     """Call LLM directly (monolithic mode) without HTTP roundtrip to persona_engine."""
     from shared.llm_client import LLMClient
@@ -215,19 +231,42 @@ async def _generate_response_monolithic(tc: TurnContext, system_prompt: str, per
             logger.warning("monolithic_llm_failed", error=str(exc))
             return f"⚠️ LLM 调用失败：{exc}\n\n请检查设置页面中的 API Key、Base URL 和模型名称是否正确。"
 
-    # Rule-based fallback (no API key configured)
-    msg = tc.user_message
-    if any(tok in msg for tok in ("你叫什么", "你是谁")):
-        return f"我是{persona_name}，会一直在这里陪你聊天。"
-    if any(tok in msg for tok in ("你好", "嗨", "在吗", "早上好", "晚上好")):
-        return f"我在呢，我是{persona_name}！今天你最想先聊哪件事？"
-    if any(tok in msg for tok in ("难过", "伤心", "烦", "累", "生气", "焦虑", "崩溃", "压力")):
-        return "听起来你现在不太舒服。我先陪着你，你愿意把最难受的那一部分慢慢说给我听吗？"
-    if any(tok in msg for tok in ("开心", "高兴", "不错", "太好了", "棒", "哈哈")):
-        return "这听起来真的很不错，我也替你开心。你最想分享的是哪一段？"
-    if any(tok in msg for tok in ("记得", "还记得", "上次", "之前")):
-        return "我会认真记住我们聊过的内容，从这次开始把你说的都放在心里。"
-    return "我在认真听你说。你可以继续讲，我会尽量记住对你重要的内容。"
+    return _rule_based_reply(tc.user_message, persona_name)
+
+
+async def _stream_response_monolithic(
+    tc: TurnContext,
+    system_prompt: str,
+    persona_name: str = "小暖",
+) -> AsyncIterator[str]:
+    """Streaming variant of ``_generate_response_monolithic``.
+
+    Yields token chunks. When no provider is configured it streams the
+    rule-based reply chunk-by-chunk so the SSE pipeline still feels
+    incremental on the client side. On provider error it yields a single
+    user-facing error message chunk and stops.
+    """
+    from shared.llm_client import LLMClient, chunk_text_stream
+
+    llm = LLMClient()
+    if llm.has_configured_provider():
+        try:
+            async for token in llm.generate_stream(
+                system_prompt=system_prompt,
+                user_message=tc.user_message,
+                temperature=0.7,
+                max_tokens=1024,
+            ):
+                yield token
+            return
+        except Exception as exc:
+            logger.warning("monolithic_llm_stream_failed", error=str(exc))
+            yield f"⚠️ LLM 调用失败：{exc}\n\n请检查设置页面中的 API Key、Base URL 和模型名称是否正确。"
+            return
+
+    fallback_text = _rule_based_reply(tc.user_message, persona_name)
+    async for chunk in chunk_text_stream(fallback_text):
+        yield chunk
 
 
 _NEGATIVE_TOKENS = ("难过", "伤心", "烦", "累", "生气", "焦虑", "害怕", "崩溃", "讨厌", "失眠", "孤独", "压力")
@@ -654,3 +693,192 @@ def get_compiled_graph() -> Any:
     if _compiled_graph is None:
         _compiled_graph = build_graph()
     return _compiled_graph
+
+
+# ---------------------------------------------------------------------------
+# Streaming variant: same node pipeline, but exposes incremental LLM tokens.
+# Used by /orchestrator/turn/stream (SSE).
+# ---------------------------------------------------------------------------
+
+
+async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, Any]]:
+    """Run the full conversation pipeline but stream the LLM step.
+
+    Event shapes:
+      ``{"event": "meta", "intent": str|None, "intent_confidence": float|None,
+         "emotion": dict|None, "memory_entries_count": int}``
+      ``{"event": "token", "text": str}``
+      ``{"event": "done", "_state": OrchestratorState}``
+      ``{"event": "error", "error": str}``
+
+    The orchestrator is responsible for converting ``done`` into the
+    user-facing payload (``assistant_message`` / ``emotion`` / ``voice_url`` /
+    ``action_sequence`` / etc.) — this lets ``Orchestrator`` keep its single
+    success-result builder.
+    """
+    settings = get_settings()
+    state: OrchestratorState = build_initial_state(tc)
+
+    # Pre-generate nodes (receive → classify_intent → recall_memory)
+    state = await node_receive(state)
+    if state.get("error"):
+        yield {"event": "error", "error": state["error"]}
+        yield {"event": "done", "_state": state}
+        return
+
+    state = await node_classify_intent(state)
+    if state.get("error"):
+        yield {"event": "error", "error": state["error"]}
+        yield {"event": "done", "_state": state}
+        return
+
+    state = await node_recall_memory(state)
+    if state.get("error"):
+        yield {"event": "error", "error": state["error"]}
+        yield {"event": "done", "_state": state}
+        return
+
+    memory_result = state.get("memory_result")
+    memory_count = (
+        len(memory_result.entries) if memory_result and hasattr(memory_result, "entries") else 0
+    )
+    pre_emotion = state.get("emotion_state")
+    yield {
+        "event": "meta",
+        "intent": state.get("intent"),
+        "intent_confidence": state.get("intent_confidence"),
+        "emotion": pre_emotion.model_dump(mode="json") if pre_emotion else None,
+        "memory_entries_count": memory_count,
+    }
+
+    # Generate (streaming)
+    persona = state.get("persona_profile") or _default_persona()
+    memory = state.get("memory_result")
+    emotion = state.get("emotion_state")
+    relationship = state.get("relationship_metrics")
+    system_prompt = build_conversation_system_prompt(
+        persona=persona,
+        emotion=emotion,
+        relationship=relationship,
+        memory=memory,
+    )
+    if settings.enable_voice:
+        system_prompt += (
+            "\n\n【能力说明】你支持语音播报。"
+            "当用户希望你“说一句”“念出来”或“用语音回复”时，不要声称自己无法发声；"
+            "直接正常给出要说的内容，系统会按需合成语音。"
+        )
+
+    intent = state.get("intent") or Intent.CHAT.value
+
+    # Device-command intents short-circuit the LLM entirely (same logic as
+    # node_generate_response). We still emit the device response as a single
+    # token so the UI can render it like a streamed reply.
+    if intent == Intent.DEVICE_COMMAND.value and settings.enable_device_coordination:
+        try:
+            entities = state.get("intent_entities") or {}
+            command = entities.get("command", tc.user_message)
+            resp = await device_client.post(
+                "/device/send_command",
+                json_payload={"user_id": tc.user.user_id, "command": command, "payload": entities},
+            )
+            assistant_msg = resp.json().get("message", "指令已经发送。")
+            state["device_command_sent"] = True
+        except Exception as exc:
+            logger.warning("stream.device_command_failed", error=str(exc))
+            assistant_msg = "设备指令发送失败了，你可以稍后再试一次。"
+
+        if assistant_msg:
+            yield {"event": "token", "text": assistant_msg}
+        state["assistant_message"] = assistant_msg
+        state["messages"] = list(state["messages"]) + [AIMessage(content=assistant_msg)]
+    else:
+        accumulated: List[str] = []
+        try:
+            if _is_monolithic():
+                persona_name = persona.name if persona else "小暖"
+                async for token in _stream_response_monolithic(tc, system_prompt, persona_name):
+                    accumulated.append(token)
+                    yield {"event": "token", "text": token}
+            else:
+                # Microservice mode: try persona_engine streaming first, fall
+                # back to non-streaming HTTP if persona_engine doesn't expose
+                # a streaming endpoint.
+                try:
+                    async for token in _stream_via_persona_engine(
+                        tc, system_prompt, emotion, relationship
+                    ):
+                        accumulated.append(token)
+                        yield {"event": "token", "text": token}
+                except Exception as exc:
+                    logger.warning("stream.persona_stream_unavailable", error=str(exc))
+                    try:
+                        resp = await persona_client.post(
+                            "/persona/generate_response",
+                            json_payload={
+                                "user_id": tc.user.user_id,
+                                "session_id": tc.session_id,
+                                "user_message": tc.user_message,
+                                "system_prompt": system_prompt,
+                                "emotion": emotion.model_dump(mode="json") if emotion else None,
+                                "relationship": relationship.model_dump(mode="json") if relationship else None,
+                            },
+                        )
+                        data = resp.json()
+                        assistant_msg = data.get("assistant_message", "...")
+                        from shared.llm_client import chunk_text_stream
+
+                        async for chunk in chunk_text_stream(assistant_msg):
+                            accumulated.append(chunk)
+                            yield {"event": "token", "text": chunk}
+                        new_emotion_raw = data.get("new_emotion")
+                        if isinstance(new_emotion_raw, dict):
+                            try:
+                                state["emotion_state"] = EmotionState(**new_emotion_raw)
+                            except Exception:
+                                pass
+                    except Exception as inner_exc:
+                        logger.warning("stream.persona_generate_failed", error=str(inner_exc))
+                        accumulated.append("我在呢，你继续说，我会认真听。")
+                        yield {"event": "token", "text": accumulated[-1]}
+        except Exception as exc:
+            logger.exception("stream.generate_failed", error=str(exc))
+            err_msg = f"⚠️ LLM 调用失败：{exc}"
+            accumulated.append(err_msg)
+            yield {"event": "token", "text": err_msg}
+
+        assistant_msg = "".join(accumulated)
+        state["assistant_message"] = assistant_msg
+        state["messages"] = list(state["messages"]) + [AIMessage(content=assistant_msg)]
+
+        if _is_monolithic():
+            state["emotion_state"] = _derive_emotion(tc.user_message, state.get("emotion_state"))
+
+    # Post-generate nodes (voice / action / send / memory sync) — same as
+    # the non-streaming graph. Failures here only add to state["error"] and
+    # never block the already-streamed assistant message.
+    state = await node_synthesize_voice(state)
+    state = await node_generate_action(state)
+    state = await node_send_response(state)
+    state = await node_sync_memory(state)
+
+    yield {"event": "done", "_state": state}
+
+
+async def _stream_via_persona_engine(
+    tc: TurnContext,
+    system_prompt: str,
+    emotion: Optional[EmotionState],
+    relationship: Optional[RelationshipMetrics],
+) -> AsyncIterator[str]:
+    """Reserved for a future ``/persona/generate_response_stream`` endpoint.
+
+    The microservice persona engine does not yet expose an SSE endpoint,
+    so this raises ``NotImplementedError`` to trigger the non-streaming
+    fallback path in ``stream_assistant_response``. Defined here so the
+    streaming code path is symmetric with the monolithic case and easy
+    to extend without changing call sites.
+    """
+    raise NotImplementedError("persona_engine streaming not yet wired")
+    if False:  # pragma: no cover - keep the function shape async-iterator
+        yield ""

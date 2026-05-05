@@ -8,12 +8,14 @@ Endpoints:
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import structlog
 from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from shared.models import (
@@ -146,6 +148,89 @@ async def process_turn(request: TurnRequest) -> TurnResponse:
         )
 
     return TurnResponse(**result)
+
+
+@router.post(
+    "/turn/stream",
+    summary="Process a user turn and stream tokens as SSE",
+    response_class=StreamingResponse,
+)
+async def process_turn_stream(request: TurnRequest) -> StreamingResponse:
+    """SSE variant of ``/orchestrator/turn``.
+
+    Emits one of the following events per SSE frame:
+      ``meta``  — once after intent classification + memory recall.
+      ``token`` — one per LLM chunk; concatenate ``data.text`` to rebuild the
+                  full assistant message.
+      ``done``  — final TurnResponse-shaped payload (assistant_message,
+                  emotion, voice_url, action_sequence, intent, ...).
+      ``error`` — provider/network/state-machine error (non-fatal events
+                  still emit ``done`` afterwards).
+
+    Encoding follows the standard SSE wire format::
+
+        event: token
+        data: {"text": "你"}
+
+        event: token
+        data: {"text": "好"}
+
+        event: done
+        data: {"assistant_message": "你好", ...}
+    """
+    turn_id = str(uuid.uuid4())
+    log = logger.bind(turn_id=turn_id, session_id=request.session_id)
+    log.info(
+        "api_turn_stream_request",
+        user_id=request.user.user_id,
+        platform=request.platform.value,
+    )
+
+    turn_context = TurnContext(
+        turn_id=turn_id,
+        session_id=request.session_id,
+        user=request.user,
+        user_message=request.user_message,
+        platform=request.platform,
+        has_voice=request.has_voice,
+        request_voice_reply=request.request_voice_reply,
+        voice_duration_ms=request.voice_duration_ms,
+        has_image=request.has_image,
+        image_urls=request.image_urls,
+        device_info=request.device_info,
+    )
+
+    async def _sse_generator() -> AsyncIterator[bytes]:
+        try:
+            orch = await get_orchestrator()
+        except Exception as exc:
+            log.exception("api_turn_stream_orchestrator_error", error=str(exc))
+            payload = json.dumps({"error": str(exc)}, ensure_ascii=False)
+            yield f"event: error\ndata: {payload}\n\n".encode("utf-8")
+            yield b"event: done\ndata: {}\n\n"
+            return
+
+        try:
+            async for event in orch.process_turn_stream(turn_context):
+                event_name = event.pop("event", "message")
+                payload = json.dumps(event, ensure_ascii=False, default=str)
+                yield f"event: {event_name}\ndata: {payload}\n\n".encode("utf-8")
+        except Exception as exc:
+            log.exception("api_turn_stream_error", error=str(exc))
+            payload = json.dumps({"error": str(exc)}, ensure_ascii=False)
+            yield f"event: error\ndata: {payload}\n\n".encode("utf-8")
+            yield b"event: done\ndata: {}\n\n"
+
+    return StreamingResponse(
+        _sse_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            # Tell reverse proxies / Cloudflare not to buffer
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post(
