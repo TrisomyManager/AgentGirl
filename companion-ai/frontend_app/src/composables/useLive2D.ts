@@ -23,6 +23,13 @@ export function useLive2D(
   const error = ref<string | null>(null);
 
   let resizeObserver: ResizeObserver | null = null;
+  // Live2DModel.width / .height return getBounds() which is affected by the
+  // current scale. If we feed those back into the next layout pass, scale
+  // compounds across ResizeObserver ticks (font load, flex settle, scrollbar
+  // appearing) and the model balloons out of the canvas. Cache the intrinsic
+  // (scale = 1) bounds once so every subsequent layout uses a stable size.
+  let intrinsicWidth = 0;
+  let intrinsicHeight = 0;
 
   function getContainerSize() {
     const fallbackWidth = Math.max(options.width, 1);
@@ -45,17 +52,44 @@ export function useLive2D(
       return;
     }
 
+    if (!intrinsicWidth || !intrinsicHeight) {
+      const previousScale = targetModel.scale?.x ?? 1;
+      targetModel.scale.set(1);
+      const bounds = targetModel.getBounds?.() ?? {
+        width: targetModel.width,
+        height: targetModel.height,
+      };
+      intrinsicWidth = Math.max(bounds.width || 0, 1);
+      intrinsicHeight = Math.max(bounds.height || 0, 1);
+      targetModel.scale.set(previousScale);
+    }
+
     const { width, height } = getContainerSize();
     app.value.renderer.resize(width, height);
 
-    const scaleX = width / targetModel.width;
-    const scaleY = height / targetModel.height;
-    const scale = Math.min(scaleX, scaleY) * 0.8;
+    const scaleX = width / intrinsicWidth;
+    const scaleY = height / intrinsicHeight;
+    // Keep a generous margin so hair tips / desk feet stay inside the frame
+    // even when getBounds() under-reports the rendered area for some Live2D
+    // sample models.
+    const scale = Math.min(scaleX, scaleY) * 0.78;
 
     targetModel.scale.set(scale);
-    targetModel.anchor.set(0.5, 0.5);
-    targetModel.x = width / 2;
-    targetModel.y = height / 2;
+
+    // Live2DModel does NOT honor PIXI.Sprite's anchor — its origin is defined
+    // by the model layout file. Compute the real on-stage bounds AFTER scale
+    // is applied and translate the model so its visible bounding box is
+    // centered inside the canvas.
+    const liveBounds = targetModel.getBounds?.() ?? {
+      x: targetModel.x ?? 0,
+      y: targetModel.y ?? 0,
+      width: targetModel.width || intrinsicWidth * scale,
+      height: targetModel.height || intrinsicHeight * scale,
+    };
+    const offsetX = (width - liveBounds.width) / 2 - (liveBounds.x - (targetModel.x ?? 0));
+    const offsetY = (height - liveBounds.height) / 2 - (liveBounds.y - (targetModel.y ?? 0));
+    targetModel.x = offsetX;
+    targetModel.y = offsetY;
   }
 
   async function initLive2D() {
