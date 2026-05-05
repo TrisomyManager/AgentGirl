@@ -88,8 +88,8 @@ def get_project_status() -> ProjectStatusData:
         version="0.2.0-realtime",
         current_phase="Phase 1.5 · 实时语音 MVP 收敛期",
         summary="单体 FastAPI 入口、实时语音通话链路、运行时配置面板都已落地；当前重心转向记忆模型收敛、主聊天流式输出和测试稳定性。",
-        last_updated="2026-05-04",
-        overall_progress=84,
+        last_updated="2026-05-05",
+        overall_progress=85,
         recent_highlights=[
             "单体入口 `main.py` 已成为默认开发路径，Lite Mode 可直接启动完整 Web API。",
             "实时语音链路已打通：浏览器 VAD、AudioWorklet 录音、WebSocket 双向流和边合成边播放。",
@@ -112,8 +112,8 @@ def get_project_status() -> ProjectStatusData:
         ],
         risks=[
             FocusItem(
-                title="测试基线已回落",
-                detail="2026-05-04 本地 `python -m pytest -q` 为 89 passed / 7 failed，其中 2 个来自 memory sqlite 绑定，3 个来自 ffmpeg 缺失。",
+                title="测试基线已恢复",
+                detail="2026-05-05 本地 `python -m pytest -q` 为 97 passed / 0 failed；之前的 sqlite 向量绑定与 prompt 用例漂移已修复，未安装 ffmpeg 时仍需注意 voice_layer 的真实集成测试。",
             ),
             FocusItem(
                 title="文档曾与代码漂移",
@@ -152,11 +152,12 @@ def get_project_status() -> ProjectStatusData:
         ],
         test_snapshot=TestSnapshot(
             command="python -m pytest -q",
-            passed=89,
-            failed=7,
+            passed=97,
+            failed=0,
             notes=[
-                "memory_system: sqlite 插入向量字段的参数绑定数量不匹配。",
-                "voice_layer: 当前机器缺少 ffmpeg，导致音频时长/转码/转写相关测试失败。",
+                "shared/tests/test_prompt_engine.py 的中英文断言已与 prompt_engine 的中文实现对齐。",
+                "pyproject.toml 已显式声明 numpy 依赖，避免 voice_layer 在干净环境下因 ModuleNotFoundError 整组无法 collect。",
+                "voice_layer 的真实集成测试仍依赖 ffmpeg；当前测试通过 monkeypatch 已避免对它的硬依赖。",
             ],
         ),
         modules=[
@@ -259,9 +260,8 @@ def get_project_status() -> ProjectStatusData:
                 blockers=[
                     "需实现 working/persistent memory 二分模型 (参考AIRI)",
                     "记忆摘要质量依赖LLM",
-                    "SQLite 测试环境下向量字段插入仍有兼容问题",
                 ],
-                last_updated="2026-05-04",
+                last_updated="2026-05-05",
             ),
             ModuleInfo(
                 id="voice_layer",

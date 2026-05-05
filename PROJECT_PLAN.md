@@ -1,7 +1,7 @@
 # 陪伴类 AI 智能体项目执行计划
 
-> 版本：V2.2  
-> 日期：2026-05-04  
+> 版本：V2.3  
+> 日期：2026-05-05  
 > 当前阶段：Phase 1.5 · 实时语音 MVP 收敛期
 
 ---
@@ -112,19 +112,26 @@ npm run build
 
 ### 当前已知测试结果
 
-2026-05-04 本地结果：
+2026-05-05 本地结果：
 
 - `python -m pytest -q`
-  - **89 passed / 7 failed**
+  - **97 passed / 0 failed**
 
-失败原因：
+修复点：
 
+- `pyproject.toml`
+  - 显式声明 `numpy` 依赖，避免 `voice_layer` 在干净 venv 中
+    `ModuleNotFoundError` 阻塞整组 collect。
+- `shared/tests/test_prompt_engine.py`
+  - 英文断言已对齐 `shared/prompt_engine.py` 的中文 prompt 实现。
 - `memory_system`
-  - SQLite 下向量字段插入参数绑定不匹配
-- `voice_layer`
-  - 当前机器缺少 `ffmpeg`
+  - 上一轮的 SQLite 向量绑定问题在 `memory_system/db.py` /
+    `vector_store.py` 改动后已恢复绿色。
 
-这意味着当前项目不再适合继续对外宣称“93 passed”。
+需要继续观察的：
+
+- `voice_layer` 的真实音频集成在 CI / 干净环境仍依赖 `ffmpeg`
+  与本地模型，目前是通过 monkeypatch 避免硬依赖。
 
 ---
 

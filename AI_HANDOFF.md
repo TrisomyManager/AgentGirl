@@ -1,7 +1,7 @@
 # AI 工程交接文档
 
 > 写给下一位接手本工程的 AI，或者下一轮对话里的自己。  
-> 更新日期：2026-05-04
+> 更新日期：2026-05-05
 
 ---
 
@@ -114,17 +114,20 @@ cd frontend_app
 npm run build
 ```
 
-### 2026-05-04 的实际验证结果
+### 2026-05-05 的实际验证结果
 
 - `python -m pytest -q`
-  - **89 passed / 7 failed**
-- 失败主要分两类
-  - `memory_system/tests/test_memory.py`
-    - SQLite 环境下向量字段插入参数绑定数量不匹配
-  - `voice_layer/tests/test_voice.py`
-    - 当前机器缺少 `ffmpeg`，导致音频时长、转码、转写相关测试失败
-
-所以不要再把“93 passed”当成当前真实基线。
+  - **97 passed / 0 failed**
+- 修复要点
+  - `pyproject.toml` 现在显式声明 `numpy` 依赖，`voice_layer` 不再因
+    `ModuleNotFoundError: numpy` 在干净 venv 中整组 collect 失败。
+  - `shared/tests/test_prompt_engine.py` 的英文断言已与
+    `shared/prompt_engine.py` 的中文 prompt 对齐，2 个长期红测已转绿。
+  - `memory_system/tests/test_memory.py` 之前的 SQLite 向量绑定问题在
+    上一轮 `memory_system/db.py` / `vector_store.py` 调整后已恢复绿色。
+- 仍需注意：`voice_layer` 的真实音频集成（`ffmpeg`、`faster-whisper`、`piper-tts`
+  模型下载）在 CI / 干净机器上仍是潜在阻塞点；当前测试通过 monkeypatch
+  避开了这条硬依赖路径。
 
 ---
 
