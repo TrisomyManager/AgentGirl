@@ -39,12 +39,12 @@
 
 ### 还没真正收口的部分
 
-- `memory_system`
-  - 仍偏“长期记忆仓库”，working memory / persistent memory 分层尚未完成。
 - `action_layer` / `device_coordination`
   - 产品闭环仍未完成，更多是架子和边界预留。
 - 调试台 / Prompt 可视化
-  - `state_machine.py` 装配出的最终 system prompt 没有在调试台呈现。
+  - `state_machine.py` 装配出的最终 system prompt（含 working memory 注入的【当前对话状态】section）尚未在调试台呈现。
+- working memory 摘要质量
+  - dominant_topic / 用户摘要目前是 bag-of-words 启发式，未来可以替换为 LLM 摘要器。
 
 ---
 
@@ -118,7 +118,7 @@ npm run build
 ### 2026-05-05 的实际验证结果
 
 - `python -m pytest -q`
-  - **101 passed / 0 failed**（新增 4 个 streaming 用例：`chunk_text_stream` / `stream_assistant_response` / `/orchestrator/turn/stream`）
+  - **110 passed / 0 failed**（在 streaming 4 用例之上又新增 9 个 working memory 用例覆盖滚动 buffer / 用户摘要 / topic / prompt 渲染）
 - 修复要点
   - `pyproject.toml` 现在显式声明 `numpy` 依赖，`voice_layer` 不再因
     `ModuleNotFoundError: numpy` 在干净 venv 中整组 collect 失败。
