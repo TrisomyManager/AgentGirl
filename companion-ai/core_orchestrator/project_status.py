@@ -118,11 +118,11 @@ def get_project_status() -> ProjectStatusData:
         current_phase="Phase 1.5 · 实时语音 MVP 收敛期",
         summary=(
             "单体 FastAPI 与 Lite Mode 已稳定；主聊天 SSE、记忆双层、行动执行器提醒链路与 "
-            "项目状态面板已落地。本轮补齐 Open-Meteo 天气、固定间隔重复提醒，以及「假设用户句」的 "
-            "system prompt 预览 API，便于工程调试。"
+            "项目状态面板已落地。本轮补齐 working memory 可选 LLM 主题与 digest（TTL 缓存）、"
+            "Open-Meteo 天气、固定间隔重复提醒，以及「假设用户句」的 system prompt 预览 API。"
         ),
-        last_updated="2026-05-05",
-        overall_progress=93,
+        last_updated="2026-05-06",
+        overall_progress=94,
         recent_highlights=[
             "单体入口 `main.py` 已成为默认开发路径，Lite Mode 可直接启动完整 Web API。",
             "实时语音链路已打通：浏览器 VAD、AudioWorklet 录音、WebSocket 双向流和边合成边播放。",
@@ -135,6 +135,7 @@ def get_project_status() -> ProjectStatusData:
             "🆕 工程收尾：`.env` 固定从 `companion-ai/.env` 解析（与 cwd 无关）、`/actions/push/poll` 轮询兜底 + 前端 2.5s 轮询、SSE 首包 padding 4KB、状态面板可加载完整 system prompt。",
             "🆕 行动执行器：Open-Meteo 无 key 实时天气；自然语言「每 N 分钟」重复提醒（SQLite `repeat_interval_seconds` + scheduler 自动顺延）；相对延迟正则收紧，避免误吞「每 5 分钟」。",
             "🆕 编排调试：`POST /orchestrator/debug/prompt_preview` 可在不发 LLM 的情况下拼装与主路径一致的 conversation system prompt（含意图分类 + 记忆召回）。",
+            "🆕 working memory 可选 LLM：`COMPANION_WORKING_MEMORY_LLM_SUMMARY` / `LLM_DIGEST` 一次 JSON 补全精炼主题 + 一句会话摘要；`SUMMARY_TTL_SECONDS` 按 transcript 指纹去重，减少 recall 连打。",
         ],
         next_focus=[
             FocusItem(
@@ -142,8 +143,8 @@ def get_project_status() -> ProjectStatusData:
                 detail="已有 `/debug/system_prompt`（最近一轮）与 `prompt_preview`（假设用户句）；下一步可把拼装抽到更可测的层，并视需要支持按会话 / 版本 diff。",
             ),
             FocusItem(
-                title="working memory 摘要 LLM 化",
-                detail="当前 working memory 的 dominant_topic / 摘要是 bag-of-words 启发式，等成本/延迟可控后再切换到 LLM 摘要器。",
+                title="working memory 持久化与跨进程",
+                detail="LLM 摘要缓存仅在进程内；多副本 / 重启后需从 transcript 重算或外置 Redis 缓存键。",
             ),
             FocusItem(
                 title="action_executor 日历与高级调度",
@@ -153,7 +154,11 @@ def get_project_status() -> ProjectStatusData:
         risks=[
             FocusItem(
                 title="测试基线再上一档",
-                detail="2026-05-05 `pytest -q` 全量 **131 passed**（含 Open-Meteo 天气与重复提醒、prompt_preview ASGI 测试）；Open-Meteo 依赖外网，极端网络下可能偶发失败。",
+                detail=(
+                    "2026-05-06 `pytest -q`（`--ignore=voice_layer/tests/test_voice.py`）全量 **127 passed**（含 working memory LLM 缓存与 digest、"
+                    "Open-Meteo 天气与重复提醒、prompt_preview ASGI）；Open-Meteo 依赖外网，极端网络下可能偶发失败；"
+                    "启用 working memory LLM 时每新 transcript 指纹至多一次补全（TTL 内 recall 复用缓存）。"
+                ),
             ),
             FocusItem(
                 title="文档曾与代码漂移",
@@ -181,7 +186,7 @@ def get_project_status() -> ProjectStatusData:
                 title="记忆系统收敛",
                 owner="memory_system",
                 status="active",
-                detail="向量检索和情感标签已在，但工作记忆 / 长期记忆分层、摘要质量和 sqlite 测试兼容还需继续补。",
+                detail="向量检索 + working memory 已接主路径；可选 LLM 主题 + 一句 digest + TTL 去重；图谱与跨副本缓存仍待加强。",
             ),
             MilestoneInfo(
                 title="动作执行器与主动能力",
@@ -192,11 +197,11 @@ def get_project_status() -> ProjectStatusData:
         ],
         test_snapshot=TestSnapshot(
             command="python -m pytest -q",
-            passed=131,
+            passed=127,
             failed=0,
             skipped=0,
             notes=[
-                "全量 **131 passed**（voice_layer 全绿；无 skip）。",
+                "全量 **127 passed**（`--ignore=voice_layer/tests/test_voice.py`；含 working memory LLM 缓存与 digest、Open-Meteo、prompt_preview）。",
                 "action_executor：含 Open-Meteo 天气 mock、重复提醒 scheduler bump、`parse_repeat_interval` / 相对延迟正则回归。",
                 "新增 15 个 action_executor 用例：registry / 内置 handler / reminders store / scheduler 与 push bus / NL 文本解析；另含 push_bus `poll_since` 轮询契约测试。",
                 "新增 9 个 working memory 用例覆盖 observe_turn / window 截断 / 名字 & 喜好抽取 / dominant topic / snapshot rebuild / 与 prompt 的渲染。",
@@ -290,7 +295,7 @@ def get_project_status() -> ProjectStatusData:
                 name_zh="记忆系统",
                 description="Working memory + persistent vector / graph store",
                 status=ModuleStatus.IN_PROGRESS,
-                progress=78,
+                progress=82,
                 tech_stack=TechStack(
                     languages=["Python 3.11+"],
                     frameworks=["FastAPI", "SQLAlchemy 2.x"],
@@ -304,13 +309,15 @@ def get_project_status() -> ProjectStatusData:
                     "自动遗忘机制 (importance decay)",
                     "记忆情感标签 (EmotionTag)",
                     "🆕 working memory 双层模型：滚动 N 轮 + 结构化用户摘要",
+                    "🆕 working memory 可选 LLM：`LLM_SUMMARY` + `LLM_DIGEST` + `SUMMARY_TTL_SECONDS`（一次 JSON：topic + digest）",
+                    "🆕 prompt 【当前对话状态】可注入「本段对话摘要」及启发式主题对照行",
                     "🆕 working memory 调试端点 GET/DELETE /memory/working/{session_id}",
                 ],
                 dependencies=["shared"],
                 blockers=[
-                    "记忆摘要质量依赖LLM",
+                    "LLM 开关打开时增加延迟与费用；跨进程无共享缓存",
                 ],
-                last_updated="2026-05-05",
+                last_updated="2026-05-06",
             ),
             ModuleInfo(
                 id="voice_layer",
@@ -428,13 +435,25 @@ def get_project_status() -> ProjectStatusData:
             "基础层": ["shared"],
         },
         release_notes=ReleaseSection(
-            title="本轮交付 · action_executor + prompt 调试",
-            pr_branch="cursor/action-reminder-weather-prompt-03ab",
+            title="本轮交付 · working memory 缓存 + 行动与编排",
+            pr_branch="cursor/working-memory-digest-cache-03ab",
             summary=(
-                "补齐行动执行器：无 API Key 的 Open-Meteo 天气、自然语言固定间隔重复提醒、"
-                "SQLite 列迁移与调度器顺延；编排层新增 prompt 预览 API；同步项目状态面板数据。"
+                "一次 JSON 补全同时产出精炼 topic 与一句 session_digest，按 transcript 指纹 + TTL 进程内缓存；"
+                "行动执行器侧保持 Open-Meteo 天气与固定间隔重复提醒；编排层保留 prompt 预览调试能力。"
             ),
             items=[
+                ReleaseNoteItem(
+                    category="feature",
+                    title="Working memory · LLM topic + digest（可选）",
+                    detail="`COMPANION_WORKING_MEMORY_LLM_SUMMARY` / `LLM_DIGEST`；`COMPANION_WORKING_MEMORY_SUMMARY_TTL_SECONDS` 去重。`WorkingMemorySnapshot.session_digest` 注入 prompt「本段对话摘要」。",
+                    impact="默认仍零 LLM；开启后对话状态更可读且 recall 风暴时少打模型。",
+                    refs=[
+                        "memory_system/working.py",
+                        "shared/config.py",
+                        "shared/prompt_engine.py",
+                        "memory_system/recall.py",
+                    ],
+                ),
                 ReleaseNoteItem(
                     category="feature",
                     title="Open-Meteo 实时天气（无 API key）",
@@ -475,10 +494,13 @@ def get_project_status() -> ProjectStatusData:
                 ),
                 ReleaseNoteItem(
                     category="chore",
-                    title="项目进度可视化与测试基线",
-                    detail="`project_status.py`：overall_progress、action_executor / core_orchestrator 卡片、milestones、test_snapshot 同步至 131 passed。",
-                    impact="状态面板与 handoff 口径一致。",
-                    refs=["companion-ai/core_orchestrator/project_status.py"],
+                    title="project_status / .env.example",
+                    detail="同步 overall_progress、memory_system / action_executor 卡片、milestones、test_snapshot（127 passed，同上 ignore）与 `.env.example` working memory LLM 注释。",
+                    impact="状态面板与运维配置、handoff 口径一致。",
+                    refs=[
+                        "core_orchestrator/project_status.py",
+                        "companion-ai/.env.example",
+                    ],
                 ),
             ],
         ),

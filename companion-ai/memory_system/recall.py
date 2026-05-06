@@ -112,6 +112,8 @@ async def recall_memory(
                     likes=list(wm_state.likes),
                     dislikes=list(wm_state.dislikes),
                     dominant_topic=wm_state.dominant_topic,
+                    dominant_topic_heuristic=wm_state.dominant_topic_heuristic,
+                    session_digest=wm_state.session_digest,
                     last_user_emotion=wm_state.last_user_emotion,
                     last_assistant_preview=wm_state.last_assistant_preview,
                     recent_turns=[
