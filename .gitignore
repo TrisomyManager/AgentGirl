@@ -90,5 +90,6 @@ temp/
 
 # companion-ai specific
 companion_lite.db
+companion_lite.db-journal
 companion_llm_config.json
 mvp.env

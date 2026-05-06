@@ -118,7 +118,8 @@ def get_project_status() -> ProjectStatusData:
         current_phase="Phase 1.5 · 实时语音 MVP 收敛期",
         summary=(
             "单体 FastAPI 与 Lite Mode 已稳定；主聊天 SSE、记忆双层、行动执行器提醒链路与 "
-            "项目状态面板已落地。本轮补齐「假设用户句」的 system prompt 预览 API，便于工程调试。"
+            "项目状态面板已落地。本轮补齐 Open-Meteo 天气、固定间隔重复提醒，以及「假设用户句」的 "
+            "system prompt 预览 API，便于工程调试。"
         ),
         last_updated="2026-05-05",
         overall_progress=93,
@@ -132,26 +133,27 @@ def get_project_status() -> ProjectStatusData:
             "🆕 项目状态面板新增『本轮交付』分类卡片（feature / fix / docs / chore），交接时一眼看清当前分支改了什么。",
             "🆕 行动执行器初始闭环已打通：5 个内置 handler、自然语言『3 分钟后提醒我喝水』、SQLite 持久化、后台轮询触发，前端 ReminderToast 通过 /actions/push SSE（及轮询兜底）接收。",
             "🆕 工程收尾：`.env` 固定从 `companion-ai/.env` 解析（与 cwd 无关）、`/actions/push/poll` 轮询兜底 + 前端 2.5s 轮询、SSE 首包 padding 4KB、状态面板可加载完整 system prompt。",
-            "🆕 编排调试：`POST /orchestrator/debug/prompt_preview` 可在不发 LLM 的情况下拼装与主路径一致的 conversation system prompt（意图分类 + 记忆召回）。",
+            "🆕 行动执行器：Open-Meteo 无 key 实时天气；自然语言「每 N 分钟」重复提醒（SQLite `repeat_interval_seconds` + scheduler 自动顺延）；相对延迟正则收紧，避免误吞「每 5 分钟」。",
+            "🆕 编排调试：`POST /orchestrator/debug/prompt_preview` 可在不发 LLM 的情况下拼装与主路径一致的 conversation system prompt（含意图分类 + 记忆召回）。",
         ],
         next_focus=[
             FocusItem(
-                title="状态面板深度联动",
-                detail="后端已提供 `prompt_preview`；前端可在面板内直接输入用户句并展示结果，或做与「最近一轮」快照的并排 diff。",
+                title="Prompt 拼装可测化与对比",
+                detail="已有 `/debug/system_prompt`（最近一轮）与 `prompt_preview`（假设用户句）；下一步可把拼装抽到更可测的层，并视需要支持按会话 / 版本 diff。",
             ),
             FocusItem(
                 title="working memory 摘要 LLM 化",
                 detail="当前 working memory 的 dominant_topic / 摘要是 bag-of-words 启发式，等成本/延迟可控后再切换到 LLM 摘要器。",
             ),
             FocusItem(
-                title="action_executor 真实接入",
-                detail="天气仍为 stub（保留接入形状）；日历与 OAuth 未接。提醒为单次触发，循环 / cron 风格调度尚未实现。",
+                title="action_executor 日历与高级调度",
+                detail="天气已走 Open-Meteo 公网接口；日历 / OAuth 仍待接入。重复提醒为固定间隔（每 N 分/时/天），尚未支持 cron 表达式与自然日「每天早上八点」。",
             ),
         ],
         risks=[
             FocusItem(
                 title="测试基线再上一档",
-                detail="2026-05-05 `pytest -q` 全量 **127 passed**（新增 `prompt_preview` ASGI 用例）；voice_layer 在无 ffmpeg 环境下历史上有 skip，以本机 pytest 输出为准。",
+                detail="2026-05-05 `pytest -q` 全量 **131 passed**（含 Open-Meteo 天气与重复提醒、prompt_preview ASGI 测试）；Open-Meteo 依赖外网，极端网络下可能偶发失败。",
             ),
             FocusItem(
                 title="文档曾与代码漂移",
@@ -185,17 +187,18 @@ def get_project_status() -> ProjectStatusData:
                 title="动作执行器与主动能力",
                 owner="action_executor",
                 status="active",
-                detail="提醒 + 时间 + SSE/轮询推送已闭环；天气 stub、日历与重复调度仍为后续项。",
+                detail="提醒闭环 + 无 key 天气 + 固定间隔重复提醒已落地；日历与 cron 表达式仍为后续项。",
             ),
         ],
         test_snapshot=TestSnapshot(
             command="python -m pytest -q",
-            passed=127,
+            passed=131,
             failed=0,
             skipped=0,
             notes=[
-                "全量 **127 passed**（含 `POST /orchestrator/debug/prompt_preview` 集成测试）。",
-                "15+ action_executor 用例：registry / handler / reminders / scheduler / push_bus / NL 解析 / `poll_since`。",
+                "全量 **131 passed**（voice_layer 全绿；无 skip）。",
+                "action_executor：含 Open-Meteo 天气 mock、重复提醒 scheduler bump、`parse_repeat_interval` / 相对延迟正则回归。",
+                "新增 15 个 action_executor 用例：registry / 内置 handler / reminders store / scheduler 与 push bus / NL 文本解析；另含 push_bus `poll_since` 轮询契约测试。",
                 "新增 9 个 working memory 用例覆盖 observe_turn / window 截断 / 名字 & 喜好抽取 / dominant topic / snapshot rebuild / 与 prompt 的渲染。",
                 "新增 4 个 streaming 测试覆盖 chunk_text_stream、stream_assistant_response 和 /orchestrator/turn/stream SSE 端点。",
                 "shared/tests/test_prompt_engine.py 的中英文断言已与 prompt_engine 的中文实现对齐。",
@@ -349,28 +352,28 @@ def get_project_status() -> ProjectStatusData:
                 id="action_executor",
                 name="Action Executor",
                 name_zh="行动执行器",
-                description="Pluggable handlers (reminders / time / weather stub) + proactive push (SSE + poll)",
+                description="Pluggable handlers (reminders + repeat / time / Open-Meteo weather) + proactive push",
                 status=ModuleStatus.IN_PROGRESS,
-                progress=62,
+                progress=72,
                 tech_stack=TechStack(
                     languages=["Python 3.11+"],
-                    frameworks=["FastAPI", "asyncio", "SQLAlchemy"],
+                    frameworks=["FastAPI", "asyncio", "SQLAlchemy", "httpx"],
                     databases=["SQLite (lite mode) / PostgreSQL"],
-                    apis=["天气 stub（待真实 API）", "日历 API（待接入）", "GET /actions/push/poll"],
+                    apis=["Open-Meteo（当前天气，无 API key）", "日历 API（待接入）"],
                 ),
                 key_features=[
                     "🆕 ActionRegistry：插件式 handler 注册（@register_action）",
-                    "🆕 内置 5 个 handler：get_time / get_weather (stub) / set_reminder / list_reminders / cancel_reminder",
-                    "🆕 自然语言提醒解析（'3 分钟后提醒我喝水'）",
-                    "🆕 SQLite 持久化 reminders 表 + 后台 ReminderScheduler 轮询触发",
-                    "🆕 ProactivePushBus：进程内 pub/sub；GET /actions/push SSE + `/actions/push/poll` 轮询兜底（Cloudflare 友好）",
-                    "🆕 GET /actions/push SSE 端点 + 前端 ReminderToast 浮窗",
+                    "🆕 内置 5 个 handler：get_time / get_weather（Open-Meteo）/ set_reminder / list_reminders / cancel_reminder",
+                    "🆕 自然语言提醒：相对延迟 +「每 N 分钟/小时/天」固定间隔重复（`repeat_interval_seconds`）",
+                    "🆕 SQLite / PG 持久化 reminders 表 + 后台 ReminderScheduler；重复提醒触发后自动顺延 `fire_at`",
+                    "🆕 ProactivePushBus：进程内 pub/sub，提醒触发后经 /actions/push（或 poll）推到前端",
+                    "🆕 GET /actions/push SSE + `/actions/push/poll` 轮询兜底",
                     "🆕 状态机集成：Intent.TOOL_USE 经关键字路由直接走 handler，无需 LLM",
                 ],
                 dependencies=["shared", "core_orchestrator"],
                 blockers=[
-                    "天气 / 日历 API 真实接入待外部 key 或选型",
-                    "提醒目前只是一次触发，循环 / cron 风格调度尚未实现",
+                    "日历 / OAuth 与「每天早上八点」类自然日 cron 仍未实现",
+                    "Open-Meteo 依赖公网；离线环境需降级或自建代理",
                 ],
                 last_updated="2026-05-05",
             ),
@@ -399,7 +402,6 @@ def get_project_status() -> ProjectStatusData:
                 key_features=[
                     "实时聊天界面 (滚动加载)",
                     "🆕 主聊天 token 流式渲染 + 闪烁光标 (SSE 端点)",
-                    "🆕 项目状态面板：整体进度 / 测试快照 / Prompt 调试（最近 system prompt + 可扩展预览）",
                     "语音输入 (长按录音 + WebM→WAV 转换)",
                     "实时语音通话面板 (豆包风格)",
                     "AudioWorklet PCM 采集 (Int16 16kHz)",
@@ -410,6 +412,7 @@ def get_project_status() -> ProjectStatusData:
                     "Live2D 角色动画 (PixiJS 6 + pixi-live2d-display)",
                     "设置抽屉 (LLM配置 + 语音配置, 多Provider预设)",
                     "LLM 状态栏 (实时显示当前 Provider/模型)",
+                    "项目状态面板 (本页)",
                     "离线检测与错误提示",
                     "自适应布局 (PC/移动端)",
                 ],
@@ -425,36 +428,56 @@ def get_project_status() -> ProjectStatusData:
             "基础层": ["shared"],
         },
         release_notes=ReleaseSection(
-            title="本轮交付 · 进度面板与 Prompt 预览",
-            pr_branch="cursor/project-status-viz-03ab",
+            title="本轮交付 · action_executor + prompt 调试",
+            pr_branch="cursor/action-reminder-weather-prompt-03ab",
             summary=(
-                "同步 `project_status` 与当前测试基线；新增 "
-                "`POST /orchestrator/debug/prompt_preview`；前端状态面板增强 Prompt 调试区。"
+                "补齐行动执行器：无 API Key 的 Open-Meteo 天气、自然语言固定间隔重复提醒、"
+                "SQLite 列迁移与调度器顺延；编排层新增 prompt 预览 API；同步项目状态面板数据。"
             ),
             items=[
                 ReleaseNoteItem(
                     category="feature",
-                    title="POST /orchestrator/debug/prompt_preview",
-                    detail="对任意 `TurnRequest` 走意图分类 + 记忆召回后拼装 `build_conversation_system_prompt`，不调 LLM，便于对照主路径 prompt。",
-                    impact="工程可在不聊天的情况下验证 prompt 注入是否正确。",
+                    title="Open-Meteo 实时天气（无 API key）",
+                    detail="`get_weather` 通过 geocoding + forecast 拉取当前气温/湿度/风速与 WMO 天气代码中文描述；失败时返回可读错误。",
+                    impact="用户问「北京天气」即可得到真实数据，无需先配置商业天气 key。",
                     refs=[
-                        "core_orchestrator/state_machine.build_prompt_preview",
-                        "POST /orchestrator/debug/prompt_preview",
-                        "core_orchestrator/tests/test_prompt_preview.py",
+                        "action_executor/weather_open_meteo.py",
+                        "action_executor/handlers.get_weather",
                     ],
                 ),
                 ReleaseNoteItem(
                     category="feature",
-                    title="项目状态面板 · Prompt 调试增强",
-                    detail="保留「最近 system prompt」加载；增加示例用户句、一键预览（调用 prompt_preview）、复制与下载 .txt。",
-                    impact="交接与联调时更少切终端 / Postman。",
-                    refs=["frontend_app/src/components/ProjectStatusPanel.vue"],
+                    title="重复提醒（固定间隔）",
+                    detail="解析「每 5 分钟」「every 2 hours」等短语写入 `repeat_interval_seconds`；scheduler 触发后 bump `fire_at` 而非标记 fired；SSE payload 带 `repeating`。",
+                    impact="「3 分钟后每 5 分钟提醒我喝水」类需求可在 Lite Mode 下持续触发，直至用户取消。",
+                    refs=[
+                        "action_executor/reminders.py",
+                        "action_executor/handlers.set_reminder",
+                        "shared/database.init_database_schema (ALTER 迁移)",
+                    ],
                 ),
                 ReleaseNoteItem(
-                    category="docs",
-                    title="project_status 数据刷新",
-                    detail="overall_progress、highlights、next_focus、milestones、test_snapshot、模块卡片与 master 能力对齐（含 push poll、prompt 预览）。",
-                    impact="`/orchestrator/project_status` 与面板展示一致。",
+                    category="feature",
+                    title="POST /orchestrator/debug/prompt_preview",
+                    detail="`build_prompt_preview` 复用 classify_intent + recall_memory + `build_conversation_system_prompt`，与主回复路径一致但不调用 LLM。",
+                    impact="调试台 / 自动化可稳定断言完整 system prompt，无需依赖上一轮聊天的内存快照。",
+                    refs=[
+                        "core_orchestrator/state_machine.build_prompt_preview",
+                        "core_orchestrator/api.debug_prompt_preview",
+                    ],
+                ),
+                ReleaseNoteItem(
+                    category="fix",
+                    title="相对延迟正则不误匹配「每 N 分钟」",
+                    detail="中文相对延迟模式要求「后/以后/之后」等后缀，避免把「每5分钟」当成「5分钟」。",
+                    impact="组合「3分钟后每5分钟提醒」时 body 解析与时间计算正确。",
+                    refs=["action_executor/reminders._DELAY_PATTERNS"],
+                ),
+                ReleaseNoteItem(
+                    category="chore",
+                    title="项目进度可视化与测试基线",
+                    detail="`project_status.py`：overall_progress、action_executor / core_orchestrator 卡片、milestones、test_snapshot 同步至 131 passed。",
+                    impact="状态面板与 handoff 口径一致。",
                     refs=["companion-ai/core_orchestrator/project_status.py"],
                 ),
             ],

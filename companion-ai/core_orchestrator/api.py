@@ -487,7 +487,7 @@ async def project_status() -> ProjectStatusData:
     summary="Preview assembled conversation system prompt for a hypothetical turn",
 )
 async def debug_prompt_preview(request: TurnRequest) -> Dict[str, Any]:
-    """Build the same system prompt as the reply path without calling the LLM."""
+    """Build the same system prompt as the reply path (``node_generate_response``) without calling the LLM."""
     from core_orchestrator.state_machine import build_prompt_preview
 
     turn_id = str(uuid.uuid4())

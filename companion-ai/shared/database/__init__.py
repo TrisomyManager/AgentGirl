@@ -108,7 +108,33 @@ async def init_database_schema() -> None:
 
         await conn.run_sync(Base.metadata.create_all)
 
+    async with engine.begin() as migration_conn:
+        await _ensure_reminder_repeat_column(migration_conn)
+
     logger.info("database_schema.initialized", lite_mode=settings.lite_mode, url=str(engine.url).replace("://", "://***@"))
+
+
+async def _ensure_reminder_repeat_column(connection: Any) -> None:
+    """Add ``repeat_interval_seconds`` to ``reminders`` if missing (older DB files)."""
+    from sqlalchemy import inspect, text
+
+    try:
+
+        def _has_column(sync_conn: Any) -> bool:
+            insp = inspect(sync_conn)
+            if not insp.has_table("reminders"):
+                return True
+            cols = {c["name"] for c in insp.get_columns("reminders")}
+            return "repeat_interval_seconds" in cols
+
+        has_col = await connection.run_sync(_has_column)
+        if has_col:
+            return
+        await connection.execute(
+            text("ALTER TABLE reminders ADD COLUMN repeat_interval_seconds INTEGER")
+        )
+    except Exception as exc:
+        logger.warning("reminders_repeat_column_migrate_failed", error=str(exc))
 
 
 async def close_database() -> None:

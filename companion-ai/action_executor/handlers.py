@@ -3,10 +3,7 @@
 These are the first three "things 小暖 can actually do":
 
   - ``get_time``      — replies with the current local time.
-  - ``get_weather``   — stub that surfaces a structured "weather not
-                        configured" message; intentional placeholder so
-                        the integration path is wired even before a
-                        weather API key lands.
+  - ``get_weather``   — current conditions via Open-Meteo (no API key).
   - ``set_reminder``  — parses a natural-language delay ("3 分钟后")
                         plus a body ("提醒我喝水"), persists it, and
                         returns the reminder id.
@@ -30,6 +27,7 @@ from action_executor.reminders import (
     extract_reminder_body,
     get_reminders_store,
     parse_relative_delay,
+    parse_repeat_interval,
 )
 
 logger = structlog.get_logger("action_executor.handlers")
@@ -56,30 +54,21 @@ async def get_time(params: Dict[str, Any]) -> ActionResult:
 
 
 # ---------------------------------------------------------------------------
-# get_weather (stub — preserves the integration shape)
+# get_weather (Open-Meteo — no API key)
 # ---------------------------------------------------------------------------
 
 
 async def get_weather(params: Dict[str, Any]) -> ActionResult:
-    """Stub: returns a structured 'not configured' message.
+    """Current conditions via Open-Meteo (no API key).
 
-    Intent here is to keep the call shape stable so when a weather API
-    key lands it's a one-file swap, and so the assistant has a coherent
-    fallback today instead of pretending to know.
+    Optional ``COMPANION_WEATHER_API_KEY`` is reserved for a future paid
+    provider; when unset we still answer with real public data.
     """
-    location = (params or {}).get("location") or "你所在的地方"
-    return ActionResult(
-        ok=True,
-        message=(
-            f"我还没接入实时天气接口呢。等配置好天气 API 后我就能告诉你 {location} 的天气啦。"
-            "（你也可以直接告诉我外面是什么天，我帮你记着。）"
-        ),
-        data={
-            "configured": False,
-            "location": location,
-            "note": "Set COMPANION_WEATHER_API_KEY to enable this handler.",
-        },
-    )
+    from action_executor.weather_open_meteo import fetch_current_weather
+
+    raw_loc = (params or {}).get("location") or ""
+    ok, message, data = await fetch_current_weather(raw_loc or "本地")
+    return ActionResult(ok=ok, message=message, data=data)
 
 
 # ---------------------------------------------------------------------------
@@ -143,19 +132,45 @@ async def set_reminder(params: Dict[str, Any]) -> ActionResult:
             data={"error": "empty_body"},
         )
 
+    repeat_td = parse_repeat_interval(raw_text)
+    repeat_seconds = (
+        int(repeat_td.total_seconds())
+        if repeat_td is not None and repeat_td.total_seconds() >= 60
+        else None
+    )
+
     reminder = await get_reminders_store().add(
         user_id=user_id,
         session_id=session_id,
         text=body,
         fire_at=fire_at,
+        repeat_interval_seconds=repeat_seconds,
     )
     delta_sec = (reminder.fire_at - datetime.now(timezone.utc)).total_seconds()
     when_friendly = _format_relative(delta_sec)
+    msg = f"好的，我会在 {when_friendly} 提醒你「{body}」。"
+    if repeat_seconds:
+        msg += f"之后每 {_format_repeat_label(repeat_seconds)} 重复一次；需要停掉时在待办里取消对应 id 即可。"
     return ActionResult(
         ok=True,
-        message=f"好的，我会在 {when_friendly} 提醒你「{body}」。",
-        data={"reminder": reminder.to_dict(), "fire_in_seconds": int(max(0, delta_sec))},
+        message=msg,
+        data={
+            "reminder": reminder.to_dict(),
+            "fire_in_seconds": int(max(0, delta_sec)),
+            "repeat_interval_seconds": repeat_seconds,
+        },
     )
+
+
+def _format_repeat_label(seconds: int) -> str:
+    s = max(60, int(seconds))
+    if s % 86400 == 0:
+        return f"{s // 86400} 天"
+    if s % 3600 == 0:
+        return f"{s // 3600} 小时"
+    if s % 60 == 0:
+        return f"{s // 60} 分钟"
+    return f"{s} 秒"
 
 
 def _format_relative(seconds: float) -> str:
@@ -237,7 +252,7 @@ BUILTIN_ACTIONS = (
     },
     {
         "name": "set_reminder",
-        "description": "Create a one-shot reminder that fires at a future time.",
+        "description": "Create a one-shot or repeating reminder (natural-language delay + optional 每 N 分钟).",
         "params_schema": {
             "user_id": "string",
             "raw_text": "string — original user message; parses '3 分钟后' style delays",
@@ -270,7 +285,7 @@ BUILTIN_ACTIONS = (
     },
     {
         "name": "get_weather",
-        "description": "Lookup current weather (stub until WEATHER_API_KEY configured).",
+        "description": "Lookup current weather via Open-Meteo (free, no API key).",
         "params_schema": {"location": "string"},
         "keywords": ["天气", "weather"],
         "handler": get_weather,

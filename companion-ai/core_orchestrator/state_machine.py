@@ -344,14 +344,27 @@ async def _stream_response_monolithic(
         yield chunk
 
 
-async def build_prompt_preview(tc: TurnContext) -> str:
-    """Assemble the conversation system prompt used at reply time (no LLM).
+async def build_prompt_preview(
+    tc: TurnContext,
+    *,
+    intent: Optional[str] = None,
+    intent_confidence: Optional[float] = None,
+    intent_entities: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Assemble the same conversation system prompt used at reply time (debug).
 
-    Mirrors the pre-generation path in ``stream_assistant_response``:
-    classify intent → recall memory → ``build_conversation_system_prompt``.
+    Mirrors the pre-generation path in ``stream_assistant_response`` when
+    ``intent`` is not injected: classify intent → recall memory →
+    ``build_conversation_system_prompt``. Optional ``intent*`` overrides skip
+    classification for deterministic tests.
     """
     state: OrchestratorState = build_initial_state(tc)
-    state = await node_classify_intent(state)
+    if intent is not None:
+        state["intent"] = intent
+        state["intent_confidence"] = intent_confidence
+        state["intent_entities"] = intent_entities or {}
+    else:
+        state = await node_classify_intent(state)
     if state.get("error"):
         return build_base_system_prompt()
     state = await node_recall_memory(state)

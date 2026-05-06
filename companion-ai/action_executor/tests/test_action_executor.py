@@ -35,6 +35,7 @@ from action_executor.reminders import (
     RemindersStore,
     extract_reminder_body,
     parse_relative_delay,
+    parse_repeat_interval,
 )
 from shared.database import init_database_schema
 
@@ -98,11 +99,18 @@ async def test_get_time_returns_formatted_now() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_weather_is_stubbed_message() -> None:
-    result = await get_weather({"location": "北京"})
+async def test_get_weather_uses_open_meteo(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_fetch(_loc: str):
+        return True, "「测试市」现在晴朗", {"source": "open_meteo", "resolved_name": "测试市"}
+
+    monkeypatch.setattr(
+        "action_executor.weather_open_meteo.fetch_current_weather",
+        _fake_fetch,
+    )
+    result = await get_weather({"location": "测试市"})
     assert result.ok
-    assert "北京" in result.message
-    assert result.data.get("configured") is False
+    assert "测试市" in result.message
+    assert result.data.get("source") == "open_meteo"
 
 
 @pytest.mark.asyncio
@@ -267,6 +275,66 @@ async def test_push_bus_poll_since_returns_incrementing_events() -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def test_parse_repeat_interval() -> None:
+    assert parse_repeat_interval("每5分钟提醒我喝水") == timedelta(minutes=5)
+    assert parse_repeat_interval("every 2 hours stretch") == timedelta(hours=2)
+    assert parse_repeat_interval("三分钟后喝水") is None
+
+
+def test_extract_reminder_body_strips_repeat_phrase() -> None:
+    assert extract_reminder_body("3分钟后每5分钟提醒我喝水") == "喝水"
+
+
+@pytest.mark.asyncio
+async def test_set_reminder_with_repeat_interval() -> None:
+    result = await set_reminder(
+        {
+            "user_id": "repeat-user",
+            "raw_text": "3分钟后每5分钟提醒我喝水",
+        }
+    )
+    assert result.ok, result.message
+    assert result.data.get("repeat_interval_seconds") == 300
+    rem = result.data["reminder"]
+    assert rem.get("repeat_interval_seconds") == 300
+
+
+@pytest.mark.asyncio
+async def test_repeating_reminder_scheduler_bumps_fire_at() -> None:
+    store = RemindersStore()
+    now = datetime.now(timezone.utc)
+    r = await store.add(
+        user_id="bump-user",
+        text="周期喝水",
+        fire_at=now - timedelta(seconds=2),
+        repeat_interval_seconds=120,
+    )
+    scheduler = ReminderScheduler(poll_interval=999)
+    received: list[dict] = []
+    done = asyncio.Event()
+
+    async def _consume(bus: ProactivePushBus) -> None:
+        async for event in bus.subscribe():
+            if event.kind == "reminder_fired" and event.payload.get("id") == r.id:
+                received.append(event.payload)
+                done.set()
+                return
+
+    consumer = asyncio.create_task(_consume(scheduler._bus))  # noqa: SLF001
+    await asyncio.sleep(0.05)
+    await scheduler._tick_once()  # noqa: SLF001
+    try:
+        await asyncio.wait_for(done.wait(), timeout=3)
+    finally:
+        consumer.cancel()
+
+    assert received and received[0].get("repeating") is True
+    updated = await store.get(r.id)
+    assert updated is not None
+    assert updated.fired_at is None
+    assert updated.fire_at > now + timedelta(seconds=60)
 
 
 def test_parse_relative_delay_handles_chinese_and_english() -> None:
