@@ -38,6 +38,31 @@ from shared.prompt_engine import build_base_system_prompt, build_conversation_sy
 
 logger = structlog.get_logger()
 
+
+def _monolithic_llm_error_hint(exc: BaseException) -> str:
+    """Context-aware hint so quota/billing errors are not mistaken for bad API keys."""
+    low = str(exc).lower()
+    if any(
+        token in low
+        for token in (
+            "403",
+            "429",
+            "quota",
+            "free tier",
+            "allocationquota",
+            "exhausted",
+            "insufficient",
+            "billing",
+            "balance",
+            "欠费",
+        )
+    ):
+        return (
+            "本次更像服务商额度或计费限制（例如免费额度用尽）。请到阿里云 DashScope 等控制台开通按量付费，"
+            "或关闭「仅使用免费额度 / use free tier only」后再试。"
+        )
+    return "请检查设置页面中的 API Key、Base URL 和模型名称是否正确。"
+
 # Last assembled conversation system prompt (for /orchestrator/debug/system_prompt).
 _DEBUG_SYSTEM_PROMPT_SNAPSHOT: Dict[str, Any] = {}
 
@@ -304,7 +329,7 @@ async def _generate_response_monolithic(tc: TurnContext, system_prompt: str, per
             return result["assistant_message"]
         except Exception as exc:
             logger.warning("monolithic_llm_failed", error=str(exc))
-            return f"⚠️ LLM 调用失败：{exc}\n\n请检查设置页面中的 API Key、Base URL 和模型名称是否正确。"
+            return f"⚠️ LLM 调用失败：{exc}\n\n{_monolithic_llm_error_hint(exc)}"
 
     return _rule_based_reply(tc.user_message, persona_name)
 
@@ -336,7 +361,7 @@ async def _stream_response_monolithic(
             return
         except Exception as exc:
             logger.warning("monolithic_llm_stream_failed", error=str(exc))
-            yield f"⚠️ LLM 调用失败：{exc}\n\n请检查设置页面中的 API Key、Base URL 和模型名称是否正确。"
+            yield f"⚠️ LLM 调用失败：{exc}\n\n{_monolithic_llm_error_hint(exc)}"
             return
 
     fallback_text = _rule_based_reply(tc.user_message, persona_name)

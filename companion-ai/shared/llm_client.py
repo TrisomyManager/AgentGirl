@@ -89,6 +89,28 @@ def _normalize_anthropic_messages_base(url: str) -> str:
     return b
 
 
+def format_upstream_error_text(body: str, *, max_len: int = 900) -> str:
+    """Pull a readable message from OpenAI-style ``{\"error\":{...}}`` bodies (incl. DashScope)."""
+    raw = (body or "").strip()
+    if not raw:
+        return "(empty response body)"
+    try:
+        data = json.loads(raw)
+        err = data.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message")
+            if isinstance(msg, str) and msg.strip():
+                typ = err.get("type") or err.get("code")
+                return f"{msg.strip()}" + (f"  [{typ}]" if typ else "")
+        if isinstance(err, str) and err.strip():
+            return err.strip()
+    except Exception:
+        pass
+    if len(raw) > max_len:
+        return raw[:max_len] + "…"
+    return raw
+
+
 def update_runtime_llm_config(**kwargs: Any) -> None:
     """Merge kwargs into the runtime LLM config (empty string clears a key)."""
     for k, v in kwargs.items():
@@ -301,7 +323,10 @@ class LLMClient:
 
         logger.debug("llm.openai_request", model=model, url=url)
         resp = await self.http.post(url, json=payload, headers=headers)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"LLM HTTP {resp.status_code}: {format_upstream_error_text(resp.text)}"
+            )
         data = resp.json()
 
         choice = data["choices"][0]
@@ -337,7 +362,10 @@ class LLMClient:
 
         logger.debug("llm.anthropic_request", model=model, url=url)
         resp = await self.http.post(url, json=payload, headers=headers)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"LLM HTTP {resp.status_code}: {format_upstream_error_text(resp.text)}"
+            )
         data = resp.json()
 
         assistant_message = "".join(
@@ -384,8 +412,9 @@ class LLMClient:
         async with self.http.stream("POST", url, json=payload, headers=headers) as resp:
             if resp.status_code != 200:
                 err_body = await resp.aread()
+                text = err_body.decode("utf-8", errors="ignore")
                 raise RuntimeError(
-                    f"LLM HTTP {resp.status_code}: {err_body.decode('utf-8', errors='ignore')}"
+                    f"LLM HTTP {resp.status_code}: {format_upstream_error_text(text)}"
                 )
             async for line in resp.aiter_lines():
                 if not line or not line.startswith("data:"):
@@ -431,8 +460,9 @@ class LLMClient:
         async with self.http.stream("POST", url, json=payload, headers=headers) as resp:
             if resp.status_code != 200:
                 err_body = await resp.aread()
+                text = err_body.decode("utf-8", errors="ignore")
                 raise RuntimeError(
-                    f"LLM HTTP {resp.status_code}: {err_body.decode('utf-8', errors='ignore')}"
+                    f"LLM HTTP {resp.status_code}: {format_upstream_error_text(text)}"
                 )
             async for line in resp.aiter_lines():
                 if not line or not line.startswith("data:"):
