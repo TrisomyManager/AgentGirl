@@ -7,6 +7,15 @@ This is a monorepo with two primary projects:
 
 For hermes-agent development details, see `hermes-agent/AGENTS.md`.
 
+## Cloud Agent quick-start skill
+
+Cloud Agents joining this repo should read
+[`.cursor/skills/cloud-agents/SKILL.md`](.cursor/skills/cloud-agents/SKILL.md)
+**first**. It's a minimal runbook covering activation, Lite-Mode launch,
+feature flags, common smoke tests, and the per-area testing playbooks for
+both `companion-ai/` and `hermes-agent/`. Update that skill whenever you
+discover a new testing trick or workflow gotcha.
+
 ## Cursor Cloud specific instructions
 
 ### Environment prerequisites
