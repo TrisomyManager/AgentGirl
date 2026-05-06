@@ -185,7 +185,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Companion AI — Unified",
         description="All companion-ai modules running in a single process.",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
 
@@ -267,7 +267,7 @@ def create_app() -> FastAPI:
         return {
             "service": "companion-ai-unified",
             "status": "ok",
-            "version": "0.1.0",
+            "version": "0.2.0",
             "modules": {k: v for k, v in _ENABLED_MODULES.items()},
             "lite_mode": settings.lite_mode,
         }

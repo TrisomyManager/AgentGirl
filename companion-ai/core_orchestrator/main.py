@@ -89,7 +89,7 @@ settings = get_settings()
 app = FastAPI(
     title="Companion AI — Core Orchestrator",
     description="LangGraph-based central orchestration service for companion-ai.",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -133,6 +133,6 @@ async def health() -> Dict[str, Any]:
     return {
         "status": "healthy",
         "service": settings.service_name,
-        "version": "0.1.0",
+        "version": "0.2.0",
         "timestamp": datetime.utcnow().isoformat(),
     }

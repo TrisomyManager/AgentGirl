@@ -5,4 +5,4 @@ emotional state transitions, per-user relationship metrics, and
 produces dynamic system-prompt tone text for the core orchestrator.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

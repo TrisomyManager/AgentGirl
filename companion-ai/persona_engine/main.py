@@ -164,7 +164,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Persona Engine",
         description="Structured persona, emotion state machine, relationship tracking, and dynamic tone generation for companion-ai.",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
     app.include_router(router)

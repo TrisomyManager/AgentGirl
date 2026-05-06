@@ -46,7 +46,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Companion AI — Voice Layer",
         description="ASR, TTS, and real-time voice streaming",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
     app.include_router(router)

@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Companion AI — Memory System",
     description="5-stage memory pipeline, vector search, and knowledge graph.",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -53,4 +53,4 @@ app.include_router(memory_router)
 
 @app.get("/health")
 async def health_check() -> dict:
-    return {"status": "ok", "service": "memory_system", "version": "0.1.0"}
+    return {"status": "ok", "service": "memory_system", "version": "0.2.0"}

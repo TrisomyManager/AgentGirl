@@ -46,7 +46,7 @@ def create_app() -> FastAPI:
             "Pluggable action handlers (reminders, time, weather stub) plus "
             "an SSE stream for proactive push events."
         ),
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
     app.include_router(router)

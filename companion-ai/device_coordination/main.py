@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="Device Coordination",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 app.include_router(router)

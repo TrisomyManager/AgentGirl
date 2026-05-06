@@ -114,7 +114,7 @@ def get_project_status() -> ProjectStatusData:
     """Return current project development status."""
     return ProjectStatusData(
         project_name="Companion AI - 小暖",
-        version="0.2.0-realtime",
+        version="0.2.0",
         current_phase="Phase 1.5 · 实时语音 MVP 收敛期",
         summary=(
             "单体 FastAPI 与 Lite Mode 已稳定；主聊天 SSE、记忆双层、行动执行器提醒链路与 "
@@ -124,6 +124,7 @@ def get_project_status() -> ProjectStatusData:
         last_updated="2026-05-06",
         overall_progress=94,
         recent_highlights=[
+            "🆕 工程版本号对齐：`companion-ai` 包与各微服务 FastAPI `version`、前端 SDK 统一为 **0.2.0**（与项目状态面板 `version` 字段一致）。",
             "单体入口 `main.py` 已成为默认开发路径，Lite Mode 可直接启动完整 Web API。",
             "实时语音链路已打通：浏览器 VAD、AudioWorklet 录音、WebSocket 双向流和边合成边播放。",
             "LLM / Voice Provider 已支持运行时切换与配置持久化，无需改代码即可调参。",
@@ -435,71 +436,22 @@ def get_project_status() -> ProjectStatusData:
             "基础层": ["shared"],
         },
         release_notes=ReleaseSection(
-            title="本轮交付 · working memory 缓存 + 行动与编排",
-            pr_branch="cursor/working-memory-digest-cache-03ab",
+            title="本轮交付 · 版本号对齐 0.2.0",
+            pr_branch="cursor/sync-version-0-2-0-03ab",
             summary=(
-                "一次 JSON 补全同时产出精炼 topic 与一句 session_digest，按 transcript 指纹 + TTL 进程内缓存；"
-                "行动执行器侧保持 Open-Meteo 天气与固定间隔重复提醒；编排层保留 prompt 预览调试能力。"
+                "从 `origin/master` 拉取最新代码后，将 Python 包、各微服务 FastAPI `version`、"
+                "`__version__` 与 `frontend_sdk` 的 npm 版本统一为 **0.2.0**，与项目状态面板 `version` 一致。"
             ),
             items=[
                 ReleaseNoteItem(
-                    category="feature",
-                    title="Working memory · LLM topic + digest（可选）",
-                    detail="`COMPANION_WORKING_MEMORY_LLM_SUMMARY` / `LLM_DIGEST`；`COMPANION_WORKING_MEMORY_SUMMARY_TTL_SECONDS` 去重。`WorkingMemorySnapshot.session_digest` 注入 prompt「本段对话摘要」。",
-                    impact="默认仍零 LLM；开启后对话状态更可读且 recall 风暴时少打模型。",
-                    refs=[
-                        "memory_system/working.py",
-                        "shared/config.py",
-                        "shared/prompt_engine.py",
-                        "memory_system/recall.py",
-                    ],
-                ),
-                ReleaseNoteItem(
-                    category="feature",
-                    title="Open-Meteo 实时天气（无 API key）",
-                    detail="`get_weather` 通过 geocoding + forecast 拉取当前气温/湿度/风速与 WMO 天气代码中文描述；失败时返回可读错误。",
-                    impact="用户问「北京天气」即可得到真实数据，无需先配置商业天气 key。",
-                    refs=[
-                        "action_executor/weather_open_meteo.py",
-                        "action_executor/handlers.get_weather",
-                    ],
-                ),
-                ReleaseNoteItem(
-                    category="feature",
-                    title="重复提醒（固定间隔）",
-                    detail="解析「每 5 分钟」「every 2 hours」等短语写入 `repeat_interval_seconds`；scheduler 触发后 bump `fire_at` 而非标记 fired；SSE payload 带 `repeating`。",
-                    impact="「3 分钟后每 5 分钟提醒我喝水」类需求可在 Lite Mode 下持续触发，直至用户取消。",
-                    refs=[
-                        "action_executor/reminders.py",
-                        "action_executor/handlers.set_reminder",
-                        "shared/database.init_database_schema (ALTER 迁移)",
-                    ],
-                ),
-                ReleaseNoteItem(
-                    category="feature",
-                    title="POST /orchestrator/debug/prompt_preview",
-                    detail="`build_prompt_preview` 复用 classify_intent + recall_memory + `build_conversation_system_prompt`，与主回复路径一致但不调用 LLM。",
-                    impact="调试台 / 自动化可稳定断言完整 system prompt，无需依赖上一轮聊天的内存快照。",
-                    refs=[
-                        "core_orchestrator/state_machine.build_prompt_preview",
-                        "core_orchestrator/api.debug_prompt_preview",
-                    ],
-                ),
-                ReleaseNoteItem(
-                    category="fix",
-                    title="相对延迟正则不误匹配「每 N 分钟」",
-                    detail="中文相对延迟模式要求「后/以后/之后」等后缀，避免把「每5分钟」当成「5分钟」。",
-                    impact="组合「3分钟后每5分钟提醒」时 body 解析与时间计算正确。",
-                    refs=["action_executor/reminders._DELAY_PATTERNS"],
-                ),
-                ReleaseNoteItem(
                     category="chore",
-                    title="project_status / .env.example",
-                    detail="同步 overall_progress、memory_system / action_executor 卡片、milestones、test_snapshot（129 passed，同上 ignore）与 `.env.example` working memory LLM 注释。",
-                    impact="状态面板与运维配置、handoff 口径一致。",
+                    title="companion-ai 0.2.0 版本对齐",
+                    detail="`pyproject.toml` → 0.2.0；`main.py` / `core_orchestrator` / `memory_system` / `gateway_adapter` / `persona_engine` / `voice_layer` / `action_layer` / `action_executor` / `device_coordination` 内硬编码 version 同步；`frontend_sdk/package.json` 0.2.0；`project_status.version` 与 highlights 更新。",
+                    impact="OpenAPI `/docs`、健康 JSON 与面板展示同一语义化版本。",
                     refs=[
-                        "core_orchestrator/project_status.py",
-                        "companion-ai/.env.example",
+                        "companion-ai/pyproject.toml",
+                        "companion-ai/main.py",
+                        "companion-ai/core_orchestrator/project_status.py",
                     ],
                 ),
             ],
