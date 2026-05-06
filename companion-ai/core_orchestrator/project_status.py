@@ -155,7 +155,7 @@ def get_project_status() -> ProjectStatusData:
             FocusItem(
                 title="测试基线再上一档",
                 detail=(
-                    "2026-05-06 `pytest -q`（`--ignore=voice_layer/tests/test_voice.py`）全量 **127 passed**（含 working memory LLM 缓存与 digest、"
+                    "2026-05-06 `pytest -q`（`--ignore=voice_layer/tests/test_voice.py`）全量 **129 passed**（含 working memory LLM 缓存与 digest、"
                     "Open-Meteo 天气与重复提醒、prompt_preview ASGI）；Open-Meteo 依赖外网，极端网络下可能偶发失败；"
                     "启用 working memory LLM 时每新 transcript 指纹至多一次补全（TTL 内 recall 复用缓存）。"
                 ),
@@ -197,11 +197,11 @@ def get_project_status() -> ProjectStatusData:
         ],
         test_snapshot=TestSnapshot(
             command="python -m pytest -q",
-            passed=127,
+            passed=129,
             failed=0,
             skipped=0,
             notes=[
-                "全量 **127 passed**（`--ignore=voice_layer/tests/test_voice.py`；含 working memory LLM 缓存与 digest、Open-Meteo、prompt_preview）。",
+                "全量 **129 passed**（`--ignore=voice_layer/tests/test_voice.py`；含 working memory LLM 缓存与 digest、Open-Meteo、prompt_preview、启发式对照与 fenced JSON 解析单测）。",
                 "action_executor：含 Open-Meteo 天气 mock、重复提醒 scheduler bump、`parse_repeat_interval` / 相对延迟正则回归。",
                 "新增 15 个 action_executor 用例：registry / 内置 handler / reminders store / scheduler 与 push bus / NL 文本解析；另含 push_bus `poll_since` 轮询契约测试。",
                 "新增 9 个 working memory 用例覆盖 observe_turn / window 截断 / 名字 & 喜好抽取 / dominant topic / snapshot rebuild / 与 prompt 的渲染。",
@@ -495,7 +495,7 @@ def get_project_status() -> ProjectStatusData:
                 ReleaseNoteItem(
                     category="chore",
                     title="project_status / .env.example",
-                    detail="同步 overall_progress、memory_system / action_executor 卡片、milestones、test_snapshot（127 passed，同上 ignore）与 `.env.example` working memory LLM 注释。",
+                    detail="同步 overall_progress、memory_system / action_executor 卡片、milestones、test_snapshot（129 passed，同上 ignore）与 `.env.example` working memory LLM 注释。",
                     impact="状态面板与运维配置、handoff 口径一致。",
                     refs=[
                         "core_orchestrator/project_status.py",

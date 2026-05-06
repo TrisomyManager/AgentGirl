@@ -290,6 +290,29 @@ def test_parse_working_memory_llm_json() -> None:
     assert t2 is None and d2 is None
 
 
+def test_parse_working_memory_llm_json_fenced_and_topic_only() -> None:
+    t, d = WorkingMemory._parse_working_memory_llm_json('```json\n{"topic": "考试"}\n```')
+    assert t == "考试" and d is None
+    t2, d2 = WorkingMemory._parse_working_memory_llm_json('{"topic":"工作压力"}')
+    assert t2 == "工作压力" and d2 is None
+    assert WorkingMemory._parse_working_memory_llm_json("not json") == (None, None)
+
+
+def test_prompt_shows_heuristic_when_topic_differs_from_llm() -> None:
+    snap = WorkingMemorySnapshot(
+        session_id="sess-x",
+        turn_count=1,
+        dominant_topic="升学焦虑",
+        dominant_topic_heuristic="考试",
+        recent_turns=[],
+    )
+    memory = MemoryRecallResult(entries=[], graph_facts=[], working_memory=snap)
+    persona = PersonaProfile(name="小暖")
+    prompt = build_conversation_system_prompt(persona=persona, memory=memory)
+    assert "近段聊的主题：升学焦虑" in prompt
+    assert "启发式主题参考：考试" in prompt
+
+
 def test_prompt_omits_section_when_no_working_memory() -> None:
     """If working_memory is None, no 【当前对话状态】 section is emitted."""
     memory = MemoryRecallResult(entries=[], graph_facts=[], working_memory=None)
