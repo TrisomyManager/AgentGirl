@@ -57,6 +57,13 @@ export interface SynthesizeRequest {
   emotion?: string;
 }
 
+export interface LlmConfigSnapshot {
+  provider: string;
+  api_key_set: boolean;
+  base_url: string;
+  model: string;
+}
+
 export function useApi() {
   const isLoading = ref(false);
   const error = ref<string | null>(null);
@@ -265,7 +272,7 @@ export function useApi() {
     }
   }
 
-  async function getLlmConfig(): Promise<{ provider: string; api_key_set: boolean; base_url: string; model: string } | null> {
+  async function getLlmConfig(): Promise<LlmConfigSnapshot | null> {
     try {
       const resp = await fetch(`${ORCHESTRATOR_URL}/orchestrator/settings/llm`);
       if (!resp.ok) return null;
@@ -275,16 +282,32 @@ export function useApi() {
     }
   }
 
-  async function saveLlmConfig(cfg: { provider: string; api_key: string; base_url: string; model: string }): Promise<boolean> {
+  async function saveLlmConfig(cfg: {
+    provider: string;
+    api_key: string;
+    base_url: string;
+    model: string;
+  }): Promise<{ ok: true; config: LlmConfigSnapshot } | { ok: false; detail?: string }> {
     try {
       const resp = await fetch(`${ORCHESTRATOR_URL}/orchestrator/settings/llm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(cfg),
       });
-      return resp.ok;
+      if (resp.ok) {
+        const config = (await resp.json()) as LlmConfigSnapshot;
+        return { ok: true, config };
+      }
+      let detail: string | undefined;
+      try {
+        const err = (await resp.json()) as { detail?: string };
+        if (typeof err.detail === 'string') detail = err.detail;
+      } catch {
+        /* ignore */
+      }
+      return { ok: false, detail };
     } catch {
-      return false;
+      return { ok: false };
     }
   }
 

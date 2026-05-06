@@ -47,6 +47,7 @@ const config = ref<{
 const providerLabel = computed(() => {
   const map: Record<string, string> = {
     openai: 'OpenAI',
+    openai_compatible: 'OpenAI 兼容',
     claude: 'Claude',
     kimi: 'Kimi',
     dashscope: 'DashScope',

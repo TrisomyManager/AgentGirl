@@ -362,21 +362,35 @@ async function saveLlm() {
   if (llm.provider === 'openai_compatible' && !llm.model) { llmMsg.value = '兼容接口必须填写模型名称（如 qwen-turbo）'; llmMsgType.value = 'err'; return; }
   saving.value = true;
   llmMsg.value = '';
-  const ok = await saveLlmConfig({ provider: llm.provider, api_key: llm.api_key, base_url: llm.base_url, model: llm.model });
+  const result = await saveLlmConfig({
+    provider: llm.provider,
+    api_key: llm.api_key,
+    base_url: llm.base_url,
+    model: llm.model,
+  });
   saving.value = false;
-  if (ok) {
+  if (result.ok) {
     llmMsg.value = '已保存，下一条消息开始使用真实 LLM';
     llmMsgType.value = 'ok';
-    llm.api_key_set = true;
+    const c = result.config;
+    llm.api_key_set = c.api_key_set;
+    llm.provider = c.provider;
+    llm.base_url = c.base_url;
+    llm.model = c.model;
     llm.api_key = '';
   } else {
-    llmMsg.value = '保存失败，请检查后端是否运行';
+    llmMsg.value = result.detail || '保存失败，请检查后端是否运行';
     llmMsgType.value = 'err';
   }
 }
 
 async function clearLlm() {
-  await saveLlmConfig({ provider: '', api_key: '', base_url: '', model: '' });
+  const cleared = await saveLlmConfig({ provider: '', api_key: '', base_url: '', model: '' });
+  if (!cleared.ok) {
+    llmMsg.value = cleared.detail || '清除失败';
+    llmMsgType.value = 'err';
+    return;
+  }
   llm.provider = '';
   llm.api_key = '';
   llm.base_url = '';

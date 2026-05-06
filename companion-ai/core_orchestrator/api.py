@@ -319,29 +319,63 @@ async def get_llm_settings() -> LlmConfigResponse:
     summary="Update LLM config at runtime",
 )
 async def save_llm_settings(req: LlmConfigRequest) -> LlmConfigResponse:
+    """Persist LLM settings.
+
+    Empty ``api_key`` in the request means "keep the previously saved key" so
+    the UI can save model/base_url changes without forcing users to re-paste
+    secrets (the settings form clears the key field after load).
+    """
+    rt_before = dict(get_runtime_llm_config())
+    prev_openai_key = (rt_before.get("openai_api_key") or "").strip()
+    prev_anthropic_key = (rt_before.get("anthropic_api_key") or "").strip()
+    prev_default_model = (rt_before.get("default_model") or "").strip()
+
     # Clear both providers first, then set the chosen one
-    update_runtime_llm_config(openai_api_key="", anthropic_api_key="",
-                               openai_base_url="", anthropic_base_url="", provider="")
+    update_runtime_llm_config(
+        openai_api_key="",
+        anthropic_api_key="",
+        openai_base_url="",
+        anthropic_base_url="",
+        provider="",
+    )
     if req.provider == "openai":
+        api_key = (req.api_key or "").strip() or prev_openai_key
+        if not api_key:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="需要 OpenAI API Key。仅改模型或地址时可以不重新粘贴 Key（将沿用已保存的 Key）。",
+            )
         update_runtime_llm_config(
             provider="openai",
-            openai_api_key=req.api_key,
+            openai_api_key=api_key,
             openai_base_url=req.base_url,
-            default_model=req.model or "gpt-4o-mini",
+            default_model=(req.model or "").strip() or prev_default_model or "gpt-4o-mini",
         )
     elif req.provider == "anthropic":
+        api_key = (req.api_key or "").strip() or prev_anthropic_key
+        if not api_key:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="需要 Anthropic API Key。仅改模型或地址时可以不重新粘贴 Key（将沿用已保存的 Key）。",
+            )
         update_runtime_llm_config(
             provider="anthropic",
-            anthropic_api_key=req.api_key,
+            anthropic_api_key=api_key,
             anthropic_base_url=req.base_url,
-            default_model=req.model or "claude-haiku-4-5-20251001",
+            default_model=(req.model or "").strip() or prev_default_model or "claude-haiku-4-5-20251001",
         )
     elif req.provider == "openai_compatible":
+        api_key = (req.api_key or "").strip() or prev_openai_key
+        if not api_key:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="需要 API Key。仅改模型或地址时可以不重新粘贴 Key（将沿用已保存的 Key）。",
+            )
         update_runtime_llm_config(
             provider="openai_compatible",
-            openai_api_key=req.api_key,
+            openai_api_key=api_key,
             openai_base_url=req.base_url,
-            default_model=req.model or "gpt-4o-mini",
+            default_model=(req.model or "").strip() or prev_default_model or "gpt-4o-mini",
         )
 
     save_llm_config_to_disk()
