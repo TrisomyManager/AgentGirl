@@ -12,5 +12,7 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    // Cloudflare Quick Tunnel / reverse proxies send non-local Host headers.
+    allowedHosts: true,
   },
 });
