@@ -341,7 +341,7 @@ async def save_llm_settings(req: LlmConfigRequest) -> LlmConfigResponse:
             provider="openai_compatible",
             openai_api_key=req.api_key,
             openai_base_url=req.base_url,
-            default_model=req.model,
+            default_model=req.model or "gpt-4o-mini",
         )
 
     save_llm_config_to_disk()

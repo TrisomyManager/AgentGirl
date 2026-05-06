@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
+from urllib.parse import urlparse
 
 import httpx
 import structlog
@@ -14,6 +15,9 @@ import structlog
 from shared.config import get_settings
 
 logger = structlog.get_logger("shared.llm_client")
+
+# Persist next to companion-ai/.env so cwd does not change where config is read/written.
+_COMPANION_ROOT = Path(__file__).resolve().parent.parent
 
 _OPENAI_DEFAULT_BASE = "https://api.openai.com/v1"
 _ANTHROPIC_DEFAULT_BASE = "https://api.anthropic.com/v1"
@@ -52,7 +56,37 @@ _NEGATIVE_HINTS = (
 # ---------------------------------------------------------------------------
 
 _runtime_llm_config: Dict[str, Any] = {}
-_CONFIG_FILE = Path(os.getenv("COMPANION_LLM_CONFIG_PATH", "companion_llm_config.json"))
+_CONFIG_FILE = Path(
+    os.getenv("COMPANION_LLM_CONFIG_PATH", str(_COMPANION_ROOT / "companion_llm_config.json"))
+)
+
+
+def _normalize_openai_chat_base(url: str) -> str:
+    """OpenAI chat completions live under ``.../v1``; bare ``https://api.openai.com`` breaks."""
+    b = (url or "").strip().rstrip("/")
+    if not b or b.lower().endswith("/v1"):
+        return b
+    try:
+        host = (urlparse(b).hostname or "").lower()
+    except Exception:
+        return b
+    if host == "api.openai.com":
+        return f"{b}/v1"
+    return b
+
+
+def _normalize_anthropic_messages_base(url: str) -> str:
+    """Anthropic Messages API is ``.../v1/messages``."""
+    b = (url or "").strip().rstrip("/")
+    if not b or b.lower().endswith("/v1"):
+        return b
+    try:
+        host = (urlparse(b).hostname or "").lower()
+    except Exception:
+        return b
+    if host == "api.anthropic.com":
+        return f"{b}/v1"
+    return b
 
 
 def update_runtime_llm_config(**kwargs: Any) -> None:
@@ -123,9 +157,20 @@ class LLMClient:
         rt = _runtime_llm_config  # runtime overrides win over env/settings
 
         self.openai_api_key = openai_api_key or rt.get("openai_api_key") or settings.openai_api_key
-        self.openai_base_url = (openai_base_url or rt.get("openai_base_url") or settings.openai_base_url or _OPENAI_DEFAULT_BASE).rstrip("/")
+        self.openai_base_url = _normalize_openai_chat_base(
+            (openai_base_url or rt.get("openai_base_url") or settings.openai_base_url or _OPENAI_DEFAULT_BASE).rstrip(
+                "/"
+            )
+        )
         self.anthropic_api_key = anthropic_api_key or rt.get("anthropic_api_key") or settings.anthropic_api_key
-        self.anthropic_base_url = (anthropic_base_url or rt.get("anthropic_base_url") or settings.anthropic_base_url or _ANTHROPIC_DEFAULT_BASE).rstrip("/")
+        self.anthropic_base_url = _normalize_anthropic_messages_base(
+            (
+                anthropic_base_url
+                or rt.get("anthropic_base_url")
+                or settings.anthropic_base_url
+                or _ANTHROPIC_DEFAULT_BASE
+            ).rstrip("/")
+        )
         self.default_model = default_model or rt.get("default_model") or settings.default_llm_model
         self._http: Optional[httpx.AsyncClient] = None
 

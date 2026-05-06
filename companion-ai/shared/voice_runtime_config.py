@@ -15,8 +15,11 @@ import structlog
 
 logger = structlog.get_logger("shared.voice_runtime_config")
 
+_COMPANION_ROOT = Path(__file__).resolve().parent.parent
 _runtime_voice_config: Dict[str, Any] = {}
-_CONFIG_FILE = Path(os.getenv("COMPANION_VOICE_CONFIG_PATH", "companion_voice_config.json"))
+_CONFIG_FILE = Path(
+    os.getenv("COMPANION_VOICE_CONFIG_PATH", str(_COMPANION_ROOT / "companion_voice_config.json"))
+)
 
 
 def update_runtime_voice_config(**kwargs: Any) -> None:
