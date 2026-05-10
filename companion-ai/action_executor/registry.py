@@ -54,6 +54,10 @@ class ActionDefinition:
     params_schema: Dict[str, Any]
     keywords: List[str]
     handler: HandlerFn
+    needs_api_key: bool = False
+    api_key_env_var: Optional[str] = None
+    category: str = "general"
+    requires_user_id: bool = False
 
     def to_meta(self) -> Dict[str, Any]:
         return {
@@ -61,6 +65,10 @@ class ActionDefinition:
             "description": self.description,
             "params_schema": self.params_schema,
             "keywords": list(self.keywords),
+            "needs_api_key": self.needs_api_key,
+            "api_key_env_var": self.api_key_env_var,
+            "category": self.category,
+            "requires_user_id": self.requires_user_id,
         }
 
 
@@ -76,6 +84,10 @@ class ActionRegistry:
         description: str,
         params_schema: Optional[Dict[str, Any]] = None,
         keywords: Optional[List[str]] = None,
+        needs_api_key: bool = False,
+        api_key_env_var: Optional[str] = None,
+        category: str = "general",
+        requires_user_id: bool = False,
     ) -> Callable[[HandlerFn], HandlerFn]:
         def _decorator(fn: HandlerFn) -> HandlerFn:
             if not inspect.iscoroutinefunction(fn):
@@ -90,6 +102,10 @@ class ActionRegistry:
                 params_schema=params_schema or {},
                 keywords=list(keywords or []),
                 handler=fn,
+                needs_api_key=needs_api_key,
+                api_key_env_var=api_key_env_var,
+                category=category,
+                requires_user_id=requires_user_id,
             )
             logger.info("action.registered", name=name)
             return fn
@@ -158,6 +174,10 @@ def register_action(
     description: str,
     params_schema: Optional[Dict[str, Any]] = None,
     keywords: Optional[List[str]] = None,
+    needs_api_key: bool = False,
+    api_key_env_var: Optional[str] = None,
+    category: str = "general",
+    requires_user_id: bool = False,
 ) -> Callable[[HandlerFn], HandlerFn]:
     """Decorator: register a handler on the process-wide registry."""
     return get_registry().register(
@@ -165,4 +185,8 @@ def register_action(
         description=description,
         params_schema=params_schema,
         keywords=keywords,
+        needs_api_key=needs_api_key,
+        api_key_env_var=api_key_env_var,
+        category=category,
+        requires_user_id=requires_user_id,
     )
