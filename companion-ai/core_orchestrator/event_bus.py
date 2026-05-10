@@ -10,9 +10,9 @@ from typing import Any, Callable, Coroutine, Dict, List, Optional
 import redis.asyncio as aioredis
 import structlog
 
-from shared.config import get_settings
-from shared.events import BaseEvent
-from shared.lite_mode import InMemoryEventBus
+from shared_runtime.config import get_settings
+from shared_contracts.events import BaseEvent
+from shared_runtime.lite_mode import InMemoryEventBus
 
 logger = structlog.get_logger()
 

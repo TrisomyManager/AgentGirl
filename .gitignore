@@ -64,6 +64,9 @@ Thumbs.db
 .local-test.log
 .local-test.err.log
 
+# Scratch test artifacts (do not commit)
+companion-ai/tmp_*.mp3
+
 # Local configs
 .claude/
 zed/settings.json

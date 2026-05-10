@@ -6,8 +6,8 @@ import httpx
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.config import get_settings
-from shared.models import (
+from shared_runtime.config import get_settings
+from shared_contracts.models import (
     MemoryCategory,
     MemoryEntry,
     MemoryRecallResult,

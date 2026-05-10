@@ -12,8 +12,8 @@ from persona_engine.emotion_engine import EmotionEngine
 from persona_engine.persona_store import get_persona_profile_async
 from persona_engine.relationship_tracker import RelationshipTracker
 from persona_engine.tone_generator import ToneGenerator
-from shared.llm_client import LLMClient
-from shared.models import EmotionState, EmotionTag, PersonaProfile, RelationshipMetrics
+from shared_runtime.llm_client import LLMClient
+from shared_contracts.models import EmotionState, EmotionTag, PersonaProfile, RelationshipMetrics
 
 logger = structlog.get_logger("persona_engine.api")
 router = APIRouter(prefix="/persona", tags=["persona"])

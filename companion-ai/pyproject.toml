@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "companion-ai"
 version = "0.2.0"
-description = "Companion AI agent built on top of Hermes"
+description = "Companion AI module library and reference app"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.12.5,<3",
@@ -33,14 +33,33 @@ dependencies = [
     "numpy>=1.26,<3",
     "python-dotenv>=1.2.1,<2",
     "dashscope>=1.20.0,<2",
+    "websockets>=13.0,<14",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0,<9", "pytest-asyncio>=0.24.0,<1", "ruff>=0.7.0,<1", "mypy>=1.13.0,<2"]
+arch = ["import-linter>=2.0,<3"]
+# Local realtime ASR (COMPANION_REALTIME_VOICE_PROVIDER=local); pulls CTranslate2 binaries — optional.
+voice-local = ["faster-whisper>=1.0.0,<2"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["shared*", "core_orchestrator*", "persona_engine*", "memory_system*", "voice_layer*", "action_layer*", "action_executor*", "device_coordination*", "gateway_adapter*"]
+include = [
+    "shared*",
+    "shared_contracts*",
+    "shared_runtime*",
+    "core_orchestrator*",
+    "persona_engine*",
+    "memory_system*",
+    "voice_layer*",
+    "action_layer*",
+    "action_executor*",
+    "device_coordination*",
+    "gateway_adapter*",
+    "safety_guard*",
+    "user_profile*",
+    "onboarding*",
+]
 
 [tool.ruff]
 line-length = 120

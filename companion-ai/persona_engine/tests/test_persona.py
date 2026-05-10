@@ -22,7 +22,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from shared.models import EmotionState, EmotionTag, RelationshipMetrics
+from shared_contracts.models import EmotionState, EmotionTag, RelationshipMetrics
 
 from persona_engine.emotion_engine import EmotionEngine
 from persona_engine.persona_store import get_persona_profile, load_persona

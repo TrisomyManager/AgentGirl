@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from shared.llm_client import (
+from shared_runtime.llm_client import (
     _normalize_anthropic_messages_base,
     _normalize_openai_chat_base,
     format_upstream_error_text,

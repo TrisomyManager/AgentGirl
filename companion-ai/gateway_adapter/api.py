@@ -8,8 +8,8 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
 
-from shared.config import get_settings
-from shared.models import Platform
+from shared_runtime.config import get_settings
+from shared_contracts.models import Platform
 
 from .event_consumer import GatewayEventConsumer
 from .session_manager import SessionManager

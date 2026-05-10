@@ -23,7 +23,7 @@ import pytest
 os.environ.setdefault("COMPANION_LITE_MODE", "true")
 
 from memory_system.working import WorkingMemory, get_working_memory
-from shared.models import (
+from shared_contracts.models import (
     EmotionState,
     EmotionTag,
     MemoryRecallResult,

@@ -41,7 +41,7 @@
     </div>
 
     <div v-if="voice.isRecording.value" class="recording-hint">
-      正在录音 {{ voice.recordingDuration.value }}s... 松开发送
+      正在录音 {{ voice.recordingDuration.value }}s… 松开结束
     </div>
   </div>
 </template>

@@ -37,7 +37,7 @@ from action_executor.reminders import (
     parse_relative_delay,
     parse_repeat_interval,
 )
-from shared.database import init_database_schema
+from shared_runtime.database import init_database_schema
 
 
 @pytest.fixture(autouse=True, scope="module")

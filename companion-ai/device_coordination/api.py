@@ -9,8 +9,8 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from shared.config import get_settings
-from shared.models import DeviceInfo, DeviceType, Platform
+from shared_runtime.config import get_settings
+from shared_contracts.models import DeviceInfo, DeviceType, Platform
 
 from .mqtt_client import DeviceMQTTClient
 from .registry import DeviceRegistry

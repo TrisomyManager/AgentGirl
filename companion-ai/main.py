@@ -33,8 +33,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from shared.config import get_settings
-from shared.database import close_database, init_database_schema
+from shared_runtime.config import get_settings
+from shared_runtime.database import close_database, init_database_schema
 from core_orchestrator.http_client import attach_monolithic_app
 
 settings = get_settings()
@@ -70,6 +70,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # 1. Initialize shared database
     try:
+        # Eagerly register module ORMs onto shared.database.Base before schema init.
+        try:
+            from user_profile import SQLiteUserProfileStore
+            SQLiteUserProfileStore()  # registers UserProfileORM via _build_orm
+        except Exception as exc:
+            logger.warning("user_profile_orm_register_failed", error=str(exc))
+
         await init_database_schema()
         logger.info("database_ready")
     except Exception as exc:
@@ -105,7 +112,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if _ENABLED_MODULES.get("action_layer"):
         try:
-            from action_layer.main import lifespan as action_lifespan
+            from action_executor.action2d.main import lifespan as action_lifespan
             app.state.action_ctx = action_lifespan(app)
             await app.state.action_ctx.__aenter__()
             logger.info("action_layer_ready")
@@ -236,10 +243,18 @@ def create_app() -> FastAPI:
             routers.append(voice_router)
         except Exception as exc:
             logger.warning("voice_router_load_failed", error=str(exc))
+    else:
+        try:
+            from voice_layer.disabled_stub import router as voice_disabled_router
+
+            routers.append(voice_disabled_router)
+            logger.info("voice_layer_stub_router_enabled")
+        except Exception as exc:
+            logger.warning("voice_disabled_router_load_failed", error=str(exc))
 
     if _ENABLED_MODULES.get("action_layer"):
         try:
-            from action_layer.api import router as action_router
+            from action_executor.action2d.api import router as action_router
             routers.append(action_router)
         except Exception as exc:
             logger.warning("action_router_load_failed", error=str(exc))
@@ -262,23 +277,47 @@ def create_app() -> FastAPI:
         app.include_router(router)
         logger.info("router_included", router=router.prefix or "/")
 
+    from voice_layer.voice_static import mount_voice_static_files
+
+    mount_voice_static_files(app)
+
     @app.get("/", tags=["health"])
     async def root() -> Dict[str, Any]:
+        voice_on = bool(_ENABLED_MODULES.get("voice_layer"))
         return {
             "service": "companion-ai-unified",
             "status": "ok",
             "version": "0.2.0",
             "modules": {k: v for k, v in _ENABLED_MODULES.items()},
             "lite_mode": settings.lite_mode,
+            "voice": {
+                "enabled": voice_on,
+                "hint": None
+                if voice_on
+                else (
+                    "语音未启用：设置 COMPANION_ENABLE_VOICE=true 或 "
+                    "python scripts/start_lite_server.py --voice"
+                ),
+            },
         }
 
     @app.get("/health", tags=["health"])
     async def health() -> Dict[str, Any]:
+        voice_on = bool(_ENABLED_MODULES.get("voice_layer"))
         return {
             "status": "healthy",
             "service": "companion-ai-unified",
             "timestamp": datetime.utcnow().isoformat(),
             "modules": {k: v for k, v in _ENABLED_MODULES.items()},
+            "voice": {
+                "enabled": voice_on,
+                "hint": None
+                if voice_on
+                else (
+                    "语音路由已关闭。请设置 COMPANION_ENABLE_VOICE=true 或使用 "
+                    "python scripts/start_lite_server.py --voice"
+                ),
+            },
         }
 
     return app

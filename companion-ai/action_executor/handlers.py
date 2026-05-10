@@ -1,6 +1,6 @@
 """Built-in action handlers.
 
-These are the first three "things 小暖 can actually do":
+These are the built-in actions the companion can perform:
 
   - ``get_time``      — replies with the current local time.
   - ``get_weather``   — current conditions via Open-Meteo (no API key).

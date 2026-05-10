@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 import structlog
 from neo4j import AsyncGraphDatabase
 
-from shared.config import get_settings
+from shared_runtime.config import get_settings
 
 logger = structlog.get_logger(__name__)
 

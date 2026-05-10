@@ -9,8 +9,8 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from typing import AsyncIterator, Iterator, Optional
 
 import structlog
 
@@ -19,12 +19,12 @@ logger = structlog.get_logger("voice_layer.local_tts")
 _MODEL_DIR = Path(__file__).parent / "piper_models"
 _DEFAULT_MODEL = os.getenv("COMPANION_PIPER_MODEL", "zh_CN-huayan-medium.onnx")
 
-_voice: Optional["object"] = None
+_voice: object | None = None
 _voice_lock = threading.Lock()
 _sample_rate: int = 22050
 
 
-def _get_voice() -> "object":
+def _get_voice() -> object:
     global _voice, _sample_rate
     if _voice is not None:
         return _voice
@@ -70,7 +70,7 @@ def synthesize_pcm_chunks_sync(text: str) -> Iterator[bytes]:
 
 async def synthesize_pcm_chunks(text: str) -> AsyncIterator[bytes]:
     """Async generator wrapper. Runs synthesis in a worker thread, batches frames."""
-    queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=64)
+    queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=64)
     loop = asyncio.get_running_loop()
 
     def _producer() -> None:

@@ -14,7 +14,7 @@ from core_orchestrator.http_client import ServiceClient
 from core_orchestrator.intent_router import Intent, IntentRouter
 from core_orchestrator.main import app
 from core_orchestrator.state_machine import build_graph, build_initial_state
-from shared.models import Platform, TurnContext, UserProfile
+from shared_contracts.models import Platform, TurnContext, UserProfile
 
 
 @pytest.fixture

@@ -18,9 +18,9 @@ from typing import Any, Dict, Optional
 import redis.asyncio as redis
 import structlog
 
-from shared.config import get_settings
-from shared.events import GatewaySendEvent, GatewayBroadcastEvent, TurnStartEvent
-from shared.models import Platform, UserProfile
+from shared_runtime.config import get_settings
+from shared_contracts.events import GatewaySendEvent, GatewayBroadcastEvent, TurnStartEvent
+from shared_contracts.models import Platform, UserProfile
 
 logger = structlog.get_logger(__name__)
 

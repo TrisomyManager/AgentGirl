@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from shared.models import (
+from shared_contracts.models import (
     DeviceInfo,
     EmotionTag,
     Platform,
@@ -28,9 +28,9 @@ from shared.models import (
 
 from core_orchestrator.orchestrator import get_orchestrator
 from core_orchestrator.project_status import get_project_status, ProjectStatusData
-from shared.config import get_settings
-from shared.llm_client import get_runtime_llm_config, update_runtime_llm_config, save_llm_config_to_disk
-from shared.voice_runtime_config import (
+from shared_runtime.config import get_settings
+from shared_runtime.llm_client import get_runtime_llm_config, update_runtime_llm_config, save_llm_config_to_disk
+from shared_runtime.voice_runtime_config import (
     get_runtime_voice_config,
     update_runtime_voice_config,
     save_voice_config_to_disk,
@@ -70,6 +70,8 @@ class TurnResponse(BaseModel):
     assistant_message: str
     emotion: Optional[Dict[str, Any]] = None
     voice_url: Optional[str] = None
+    voice_duration_ms: Optional[int] = None
+    voice_error: Optional[str] = None
     action_sequence: Optional[Dict[str, Any]] = None
     intent: Optional[str] = None
     intent_confidence: Optional[float] = None
@@ -110,6 +112,7 @@ class StatusResponse(BaseModel):
 @router.post(
     "/turn",
     response_model=TurnResponse,
+    response_model_exclude_none=False,
     status_code=status.HTTP_200_OK,
     summary="Process a single user turn",
 )
@@ -383,6 +386,213 @@ async def save_llm_settings(req: LlmConfigRequest) -> LlmConfigResponse:
     return await get_llm_settings()
 
 
+class LlmTestResponse(BaseModel):
+    ok: bool
+    provider: str
+    model: str
+    base_url: str
+    latency_ms: int
+    sample_reply: str = ""
+    error: str = ""
+
+
+@router.post(
+    "/settings/llm/test",
+    response_model=LlmTestResponse,
+    tags=["settings"],
+    summary="Test the current LLM config with a tiny round-trip call",
+)
+async def test_llm_settings() -> LlmTestResponse:
+    """Send a minimal prompt to the configured LLM and time the response.
+
+    Uses the current runtime settings (whatever the user just saved) and does
+    NOT require any request body. Returns latency + a sample reply on success,
+    or a friendly error message on failure (network / 401 / wrong base_url /
+    wrong model name etc.).
+    """
+    import time
+
+    from shared_runtime.llm_client import LLMClient
+
+    rt = get_runtime_llm_config()
+    provider = (rt.get("provider") or "").strip()
+    model = (rt.get("default_model") or "").strip() or "gpt-4o-mini"
+    base_url = (rt.get("openai_base_url") or rt.get("anthropic_base_url") or "").strip()
+    has_key = bool(rt.get("openai_api_key") or rt.get("anthropic_api_key"))
+
+    if not has_key or not provider:
+        return LlmTestResponse(
+            ok=False,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            latency_ms=0,
+            error="未配置 LLM Provider 或 API Key，请先保存配置后再测试。",
+        )
+
+    client = LLMClient()
+    started = time.perf_counter()
+    try:
+        reply = await client.generate(
+            system_prompt="你是一个测试助手。请用一句话简短回复。",
+            user_message="ping",
+            temperature=0.0,
+            max_tokens=32,
+        )
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        sample = (reply.get("assistant_message") or "").strip()
+        if len(sample) > 200:
+            sample = sample[:200] + "..."
+        return LlmTestResponse(
+            ok=True,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            latency_ms=elapsed_ms,
+            sample_reply=sample or "(空回复)",
+        )
+    except Exception as exc:  # noqa: BLE001
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        msg = str(exc) or exc.__class__.__name__
+        logger.warning("llm_test_failed", provider=provider, model=model, error=msg)
+        return LlmTestResponse(
+            ok=False,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            latency_ms=elapsed_ms,
+            error=msg,
+        )
+    finally:
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class VoiceTestResponse(BaseModel):
+    asr_ok: bool
+    asr_provider: str
+    asr_model: str
+    asr_message: str = ""
+    tts_ok: bool
+    tts_provider: str
+    tts_model: str
+    tts_voice: str
+    tts_latency_ms: int
+    tts_audio_url: str = ""
+    tts_duration_ms: int = 0
+    tts_error: str = ""
+
+
+@router.post(
+    "/settings/voice/test",
+    response_model=VoiceTestResponse,
+    tags=["settings"],
+    summary="Test ASR/TTS configs without doing a real call",
+)
+async def test_voice_settings() -> VoiceTestResponse:
+    """Verify ASR + TTS are usable.
+
+    - ASR: checks config presence (we don't have an audio file to send here,
+      so we just confirm key/base_url/model are set; full validation happens
+      on first /voice/realtime use).
+    - TTS: synthesizes a short Chinese sentence and returns the audio URL +
+      latency. Failures show the upstream error so users can fix the config.
+    """
+    import time
+
+    from shared_runtime.voice_runtime_config import get_runtime_voice_config
+    from shared_contracts.models import EmotionTag, VoiceSynthesisRequest
+
+    rt = get_runtime_voice_config()
+
+    asr_provider = "dashscope" if "dashscope" in (rt.get("asr_base_url") or "").lower() else "openai_compat"
+    asr_ok = bool(rt.get("asr_api_key") and rt.get("asr_base_url") and rt.get("asr_model"))
+    asr_msg = (
+        "ASR 配置完整，将在下一次通话使用"
+        if asr_ok
+        else "ASR 未配置完整：需要 API Key + Base URL + 模型"
+    )
+
+    tts_provider = (rt.get("tts_provider") or "").strip()
+    tts_model = (rt.get("tts_model") or "").strip()
+    tts_voice = (rt.get("tts_voice_id") or "").strip()
+    tts_has_key = bool(rt.get("tts_api_key"))
+
+    tts_base_ok = bool((rt.get("tts_base_url") or "").strip())
+    if not tts_provider or not tts_has_key or not tts_base_ok or not tts_model:
+        return VoiceTestResponse(
+            asr_ok=asr_ok,
+            asr_provider=asr_provider,
+            asr_model=rt.get("asr_model") or "",
+            asr_message=asr_msg,
+            tts_ok=False,
+            tts_provider=tts_provider,
+            tts_model=tts_model,
+            tts_voice=tts_voice,
+            tts_latency_ms=0,
+            tts_error="TTS 需配置：提供商、API Key、Base URL 与模型（设置页保存后生效）",
+        )
+
+    try:
+        from voice_layer.tts import TTSClient
+        client = TTSClient()
+    except Exception as exc:  # noqa: BLE001
+        return VoiceTestResponse(
+            asr_ok=asr_ok,
+            asr_provider=asr_provider,
+            asr_model=rt.get("asr_model") or "",
+            asr_message=asr_msg,
+            tts_ok=False,
+            tts_provider=tts_provider,
+            tts_model=tts_model,
+            tts_voice=tts_voice,
+            tts_latency_ms=0,
+            tts_error=f"无法初始化 TTS 客户端: {exc}",
+        )
+
+    started = time.perf_counter()
+    try:
+        req = VoiceSynthesisRequest(
+            text="语音合成测试，你好。",
+            emotion=EmotionTag.NEUTRAL,
+            voice_id=None,
+            speed=1.0,
+        )
+        result = await client.synthesize(req)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        return VoiceTestResponse(
+            asr_ok=asr_ok,
+            asr_provider=asr_provider,
+            asr_model=rt.get("asr_model") or "",
+            asr_message=asr_msg,
+            tts_ok=True,
+            tts_provider=tts_provider,
+            tts_model=tts_model,
+            tts_voice=tts_voice,
+            tts_latency_ms=elapsed_ms,
+            tts_audio_url=result.get("audio_url", ""),
+            tts_duration_ms=int(result.get("duration_ms", 0)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        msg = str(exc) or exc.__class__.__name__
+        logger.warning("voice_test_failed", provider=tts_provider, model=tts_model, error=msg)
+        return VoiceTestResponse(
+            asr_ok=asr_ok,
+            asr_provider=asr_provider,
+            asr_model=rt.get("asr_model") or "",
+            asr_message=asr_msg,
+            tts_ok=False,
+            tts_provider=tts_provider,
+            tts_model=tts_model,
+            tts_voice=tts_voice,
+            tts_latency_ms=elapsed_ms,
+            tts_error=msg,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Voice settings — ASR (speech-to-text) and TTS (text-to-speech)
 # ---------------------------------------------------------------------------
@@ -483,12 +693,18 @@ async def get_voice_settings() -> VoiceConfigResponse:
     summary="Update voice (ASR/TTS) config at runtime",
 )
 async def save_voice_settings(req: VoiceConfigRequest) -> VoiceConfigResponse:
+    # Preserve existing API keys when the request leaves them blank
+    # (the UI clears the input fields after load so users don't have to
+    # re-paste secrets just to change a model name or base url).
+    rt_before = get_runtime_voice_config()
+    asr_api_key = req.asr_api_key.strip() if req.asr_api_key else (rt_before.get("asr_api_key") or "")
+    tts_api_key = req.tts_api_key.strip() if req.tts_api_key else (rt_before.get("tts_api_key") or "")
     update_runtime_voice_config(
-        asr_api_key=req.asr_api_key,
+        asr_api_key=asr_api_key,
         asr_base_url=req.asr_base_url,
         asr_model=req.asr_model,
         tts_provider=req.tts_provider,
-        tts_api_key=req.tts_api_key,
+        tts_api_key=tts_api_key,
         tts_base_url=req.tts_base_url,
         tts_model=req.tts_model,
         tts_voice_id=req.tts_voice_id,
@@ -545,6 +761,7 @@ async def debug_prompt_preview(request: TurnRequest) -> Dict[str, Any]:
         "user_id": tc.user.user_id,
         "system_prompt": system_prompt,
         "prompt_length": len(system_prompt),
+        "intent": request.user_message[:100],
     }
 
 
@@ -558,3 +775,231 @@ async def debug_system_prompt() -> Dict[str, Any]:
     from core_orchestrator.state_machine import get_debug_system_prompt_snapshot
 
     return get_debug_system_prompt_snapshot()
+
+
+# ---------------------------------------------------------------------------
+# Onboarding endpoints — first-time user flow → role_id → user_profile
+# ---------------------------------------------------------------------------
+
+
+class OnboardingStartRequest(BaseModel):
+    user_id: str
+
+
+class OnboardingAnswerRequest(BaseModel):
+    user_id: str
+    answer: str
+
+
+@router.post(
+    "/onboarding/start",
+    tags=["onboarding"],
+    summary="Start or resume onboarding flow for a user",
+)
+async def onboarding_start(req: OnboardingStartRequest) -> Dict[str, Any]:
+    """Begin onboarding: returns the first question prompt."""
+    from onboarding import OnboardingFlow, default_steps
+
+    flow = OnboardingFlow(user_id=req.user_id)
+    _active_flows[req.user_id] = flow
+    prompt = flow.current_prompt()
+    return {
+        "user_id": req.user_id,
+        "step": flow.current_step().key if flow.current_step() else None,
+        "prompt": prompt,
+        "is_complete": flow.is_complete,
+    }
+
+
+@router.post(
+    "/onboarding/answer",
+    tags=["onboarding"],
+    summary="Submit an answer during onboarding",
+)
+async def onboarding_answer(req: OnboardingAnswerRequest) -> Dict[str, Any]:
+    """Submit an answer and get the next prompt (or completion)."""
+    from onboarding import OnboardingFlow, apply_to_profile
+    from user_profile import get_default_store
+
+    flow = _active_flows.get(req.user_id)
+    if flow is None:
+        from onboarding import OnboardingFlow
+
+        flow = OnboardingFlow(user_id=req.user_id)
+        _active_flows[req.user_id] = flow
+
+    next_step = flow.submit_answer(req.answer)
+    if flow.is_complete:
+        await apply_to_profile(flow.result, get_default_store())
+        del _active_flows[req.user_id]
+        return {
+            "user_id": req.user_id,
+            "is_complete": True,
+            "result": {
+                "role_id": flow.result.role_id,
+                "nickname": flow.result.nickname,
+                "locale": flow.result.locale,
+                "completed_steps": flow.result.completed_steps,
+            },
+        }
+
+    return {
+        "user_id": req.user_id,
+        "step": next_step.key if next_step else None,
+        "prompt": next_step.prompt if next_step else None,
+        "is_complete": False,
+    }
+
+
+@router.get(
+    "/onboarding/status",
+    tags=["onboarding"],
+    summary="Check onboarding status for a user",
+)
+async def onboarding_status(user_id: str) -> Dict[str, Any]:
+    """Check if onboarding is complete and what profile was set."""
+    from user_profile import get_default_store
+
+    profile = await get_default_store().get(user_id)
+    if profile and profile.preferences.get("role_id"):
+        return {
+            "user_id": user_id,
+            "onboarded": True,
+            "role_id": profile.preferences.get("role_id"),
+            "nickname": profile.display_name,
+            "locale": profile.locale,
+        }
+    return {"user_id": user_id, "onboarded": False}
+
+
+_active_flows: Dict[str, Any] = {}
+
+
+# ---------------------------------------------------------------------------
+# Debug state endpoint — full personality state visibility for diagnostics
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/debug/state",
+    tags=["development"],
+    summary="Full personality state snapshot (emotion / relationship / memory / intent)",
+)
+async def debug_state(session_id: str, user_id: str = "") -> Dict[str, Any]:
+    """Return a comprehensive debug snapshot of the conversation state engine.
+
+    Includes:
+    - Last system prompt
+    - Current emotion_state
+    - Relationship metrics
+    - Working memory for the session
+    - Recalled long-term memories (last snapshot)
+    - Intent classification (last snapshot)
+    """
+    from core_orchestrator.state_machine import get_debug_system_prompt_snapshot
+
+    result: Dict[str, Any] = {
+        "session_id": session_id,
+        "user_id": user_id,
+        "system_prompt": None,
+        "emotion_state": None,
+        "relationship_metrics": None,
+        "working_memory": None,
+        "recalled_memories": None,
+        "intent": None,
+    }
+
+    # System prompt snapshot
+    snap = get_debug_system_prompt_snapshot()
+    if snap.get("system_prompt"):
+        result["system_prompt"] = snap["system_prompt"]
+
+    # Emotion state from emotion_engine
+    if user_id:
+        try:
+            from persona_engine.runtime import get_emotion_engine
+            engine = get_emotion_engine()
+            emotion = await engine.get_current_emotion(user_id)
+            result["emotion_state"] = emotion.model_dump(mode="json")
+        except Exception:
+            pass
+
+        # Relationship metrics
+        try:
+            from persona_engine.runtime import get_relationship_tracker
+            tracker = get_relationship_tracker()
+            rel = await tracker.get_metrics(user_id)
+            result["relationship_metrics"] = rel.model_dump(mode="json")
+        except Exception:
+            pass
+
+        # User profile
+        try:
+            from user_profile import get_default_store
+            profile = await get_default_store().get(user_id)
+            if profile:
+                result["user_profile"] = {
+                    "display_name": profile.display_name,
+                    "locale": profile.locale,
+                    "preferences": profile.preferences,
+                    "traits": profile.traits,
+                }
+        except Exception:
+            pass
+
+    # Working memory
+    if session_id:
+        try:
+            from memory_system.working import get_working_memory
+            wm = get_working_memory()
+            window = await wm.get_window(session_id)
+            if window:
+                result["working_memory"] = {
+                    "turn_count": len(window),
+                    "recent_turns": [
+                        {
+                            "user": t.get("user", "")[:200],
+                            "assistant": t.get("assistant", "")[:200],
+                            "emotion": t.get("emotion"),
+                            "intent": t.get("intent"),
+                        }
+                        for t in window[-5:]
+                    ],
+                }
+        except Exception:
+            pass
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Persona listing — available roles for onboarding
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/personas",
+    tags=["persona"],
+    summary="List available persona roles",
+)
+async def list_personas() -> Dict[str, Any]:
+    """Return all available persona role_ids and their display names."""
+    try:
+        from persona_engine.persona_store import list_available_personas, get_persona_profile
+
+        role_ids = list_available_personas()
+        personas = []
+        for rid in role_ids:
+            try:
+                profile = get_persona_profile(role_id=rid)
+                personas.append({
+                    "role_id": rid,
+                    "name": profile.name,
+                    "core_traits": profile.core_traits[:3] if profile.core_traits else [],
+                    "communication_style": (profile.communication_style or "")[:80],
+                })
+            except Exception:
+                personas.append({"role_id": rid, "name": rid})
+        return {"personas": personas}
+    except Exception:
+        return {"personas": [{"role_id": "default", "name": "陪伴者"}]}

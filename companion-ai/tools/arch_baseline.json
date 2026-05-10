@@ -1,0 +1,380 @@
+{
+  "reverse_orchestrator": [],
+  "direct_llm_sdk": [],
+  "cross_module_matrix": {
+    "persona_engine": [],
+    "memory_system": [],
+    "voice_layer": [],
+    "action_layer": [
+      "action_executor"
+    ],
+    "action_executor": [],
+    "device_coordination": [],
+    "gateway_adapter": []
+  },
+  "cross_module_locations": [
+    {
+      "file": "action_layer/api.py",
+      "line": 5,
+      "from": "action_layer",
+      "to": "action_executor"
+    },
+    {
+      "file": "action_layer/generator_2d.py",
+      "line": 5,
+      "from": "action_layer",
+      "to": "action_executor"
+    },
+    {
+      "file": "action_layer/lip_sync.py",
+      "line": 5,
+      "from": "action_layer",
+      "to": "action_executor"
+    },
+    {
+      "file": "action_layer/main.py",
+      "line": 5,
+      "from": "action_layer",
+      "to": "action_executor"
+    },
+    {
+      "file": "action_layer/router.py",
+      "line": 5,
+      "from": "action_layer",
+      "to": "action_executor"
+    },
+    {
+      "file": "action_layer/sequencer.py",
+      "line": 5,
+      "from": "action_layer",
+      "to": "action_executor"
+    },
+    {
+      "file": "action_layer/__init__.py",
+      "line": 27,
+      "from": "action_layer",
+      "to": "action_executor"
+    },
+    {
+      "file": "action_layer/__init__.py",
+      "line": 28,
+      "from": "action_layer",
+      "to": "action_executor"
+    },
+    {
+      "file": "action_layer/__init__.py",
+      "line": 29,
+      "from": "action_layer",
+      "to": "action_executor"
+    },
+    {
+      "file": "action_layer/__init__.py",
+      "line": 30,
+      "from": "action_layer",
+      "to": "action_executor"
+    }
+  ],
+  "hardcoded_persona": [
+    {
+      "file": "core_orchestrator/project_status.py",
+      "line": 233,
+      "keyword": "小暖"
+    },
+    {
+      "file": "core_orchestrator/project_status.py",
+      "line": 435,
+      "keyword": "小暖"
+    },
+    {
+      "file": "core_orchestrator/project_status.py",
+      "line": 183,
+      "keyword": "小汐"
+    },
+    {
+      "file": "core_orchestrator/project_status.py",
+      "line": 169,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "core_orchestrator/project_status.py",
+      "line": 233,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "core_orchestrator/project_status.py",
+      "line": 298,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "core_orchestrator/project_status.py",
+      "line": 435,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "memory_system/tests/test_working_memory.py",
+      "line": 203,
+      "keyword": "小暖"
+    },
+    {
+      "file": "memory_system/tests/test_working_memory.py",
+      "line": 239,
+      "keyword": "小暖"
+    },
+    {
+      "file": "memory_system/tests/test_working_memory.py",
+      "line": 310,
+      "keyword": "小暖"
+    },
+    {
+      "file": "memory_system/tests/test_working_memory.py",
+      "line": 319,
+      "keyword": "小暖"
+    },
+    {
+      "file": "persona_engine/tests/test_persona.py",
+      "line": 84,
+      "keyword": "小暖"
+    },
+    {
+      "file": "persona_engine/tests/test_persona.py",
+      "line": 90,
+      "keyword": "小暖"
+    },
+    {
+      "file": "persona_engine/tests/test_persona.py",
+      "line": 297,
+      "keyword": "小暖"
+    },
+    {
+      "file": "persona_engine/tests/test_persona.py",
+      "line": 318,
+      "keyword": "小暖"
+    },
+    {
+      "file": "persona_engine/tests/test_persona.py",
+      "line": 354,
+      "keyword": "小暖"
+    },
+    {
+      "file": "shared/tests/test_prompt_engine.py",
+      "line": 26,
+      "keyword": "小暖"
+    },
+    {
+      "file": "shared/tests/test_prompt_engine.py",
+      "line": 68,
+      "keyword": "小暖"
+    },
+    {
+      "file": "shared_contracts/models.py",
+      "line": 234,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/resolver.py",
+      "line": 82,
+      "keyword": "小暖"
+    },
+    {
+      "file": "voice_layer/resolver.py",
+      "line": 44,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/resolver.py",
+      "line": 81,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/resolver.py",
+      "line": 136,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/resolver.py",
+      "line": 161,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/resolver.py",
+      "line": 193,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 166,
+      "keyword": "小暖"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 36,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 42,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 48,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 80,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 81,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 90,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 91,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 92,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 104,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 105,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 106,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 114,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 116,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 119,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 126,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 136,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 140,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 144,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 148,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 151,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 154,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 164,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 165,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 192,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 239,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 240,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 241,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 242,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 256,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 259,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 302,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 314,
+      "keyword": "xiaonuan"
+    },
+    {
+      "file": "voice_layer/tests/test_resolver.py",
+      "line": 316,
+      "keyword": "xiaonuan"
+    }
+  ],
+  "summary": {
+    "reverse_orchestrator_count": 0,
+    "direct_llm_sdk_count": 0,
+    "cross_module_pairs": 1,
+    "hardcoded_persona_count": 59
+  }
+}

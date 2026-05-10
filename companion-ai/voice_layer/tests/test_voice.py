@@ -11,15 +11,12 @@ _requires_ffmpeg = pytest.mark.skipif(
     reason="ffmpeg not on PATH (pydub export requires it)",
 )
 from fastapi.testclient import TestClient
-from httpx import Response
 
-from shared.models import EmotionTag, VoiceSynthesisRequest
-from voice_layer.api import router
+from shared_contracts.models import EmotionTag, VoiceSynthesisRequest
 from voice_layer.asr import ASRClient
 from voice_layer.audio_utils import convert_audio_format, get_audio_duration, save_temp_audio
 from voice_layer.main import create_app
 from voice_layer.tts import TTSClient
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -27,24 +24,25 @@ from voice_layer.tts import TTSClient
 
 @pytest.fixture
 def mock_settings():
-    with patch("voice_layer.asr.get_settings") as m_asr, \
-         patch("voice_layer.tts.get_settings") as m_tts, \
-         patch("voice_layer.audio_utils.get_settings") as m_au:
-        settings = MagicMock()
-        settings.whisper_api_key = "test-whisper-key"
-        settings.whisper_base_url = "https://api.openai.com/v1"
-        settings.openai_api_key = "test-openai-key"
-        settings.openai_base_url = "https://api.openai.com/v1"
-        settings.default_llm_model = "gpt-4o"
-        settings.tts_provider = "openai"
-        settings.tts_api_key = "test-tts-key"
-        settings.tts_base_url = None
-        settings.default_voice_id = "zh-CN-XiaoxiaoNeural"
-        settings.log_level = "INFO"
-        m_asr.return_value = settings
-        m_tts.return_value = settings
-        m_au.return_value = settings
-        yield settings
+    cfg = {
+        "asr_api_key": "test-asr-key",
+        "asr_base_url": "https://api.siliconflow.cn/v1",
+        "asr_model": "FunAudioLLM/SenseVoiceSmall",
+        "tts_provider": "openai",
+        "tts_api_key": "test-tts-key",
+        "tts_base_url": "https://api.openai.com/v1",
+        "tts_model": "tts-1",
+        "tts_voice_id": "alloy",
+    }
+    llm = {
+        "openai_api_key": "llm-key",
+        "openai_base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-4o-mini",
+    }
+    with patch("voice_layer.asr.get_runtime_voice_config", return_value=dict(cfg)), \
+         patch("voice_layer.tts.get_runtime_voice_config", return_value=dict(cfg)), \
+         patch("voice_layer.asr.get_runtime_llm_config", return_value=llm):
+        yield cfg
 
 
 @pytest.fixture
@@ -93,7 +91,7 @@ async def test_convert_audio_format(mock_settings):
 @pytest.mark.asyncio
 async def test_save_temp_audio(mock_settings, tmp_path):
     """Test saving audio to temp directory."""
-    with patch("voice_layer.audio_utils._get_temp_dir", return_value=tmp_path):
+    with patch("voice_layer.audio_utils.get_voice_temp_directory", return_value=tmp_path):
         path = await save_temp_audio(b"fake_audio_data", fmt="mp3")
         assert path.endswith(".mp3")
         assert (tmp_path / path.split("/")[-1]).exists()
@@ -144,7 +142,12 @@ async def test_asr_transcribe(mock_settings):
         mock_client.post = AsyncMock(side_effect=[mock_response, mock_llm_response])
         mock_client_factory.return_value = mock_client
 
-        result = await asr.transcribe(b"fake_audio", language="zh-CN")
+        result = await asr.transcribe(
+            b"x" * 3000,
+            language="zh-CN",
+            upload_filename="a.wav",
+            upload_content_type="audio/wav",
+        )
         assert result.text == "你好，今天天气不错"
         assert result.detected_emotion == EmotionTag.HAPPY
         assert result.confidence > 0.0
@@ -188,6 +191,24 @@ def test_transcribe_endpoint(client):
         assert data["detected_emotion"] == "neutral"
 
 
+def test_static_voice_mp3_served(mock_settings, tmp_path):
+    """TTS URLs under /static/voice must be readable (Windows-safe paths)."""
+    from fastapi import FastAPI
+
+    from voice_layer.voice_static import mount_voice_static_files
+
+    sample = tmp_path / "abc123.mp3"
+    sample.write_bytes(b"\xff\xfb\x90\x00")  # minimal mp3-like bytes
+
+    with patch("voice_layer.audio_utils.get_voice_temp_directory", return_value=tmp_path):
+        app = FastAPI()
+        mount_voice_static_files(app)
+        with TestClient(app) as tc:
+            resp = tc.get("/static/voice/abc123.mp3")
+            assert resp.status_code == 200
+            assert resp.content.startswith(b"\xff\xfb")
+
+
 def test_synthesize_endpoint(client):
     """Test POST /voice/synthesize."""
     with patch("voice_layer.api._get_tts") as mock_get_tts:
@@ -209,3 +230,164 @@ def test_synthesize_endpoint(client):
         data = response.json()
         assert data["audio_url"] == "/static/voice/abc123.mp3"
         assert data["duration_ms"] == 2500
+
+
+# ---------------------------------------------------------------------------
+# Xiaomi MiMo TTS provider tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mimo_settings():
+    cfg = {
+        "asr_api_key": "test-asr-key",
+        "asr_base_url": "https://api.siliconflow.cn/v1",
+        "asr_model": "FunAudioLLM/SenseVoiceSmall",
+        "tts_provider": "xiaomi_mimo",
+        "tts_api_key": "test-mimo-key",
+        "tts_base_url": "https://api.xiaomimimo.com/v1",
+        "tts_model": "mimo-v2.5-tts",
+        "tts_voice_id": "default_zh",
+    }
+    llm = {
+        "openai_api_key": "llm-key",
+        "openai_base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-4o-mini",
+    }
+    with patch("voice_layer.tts.get_runtime_voice_config", return_value=dict(cfg)), \
+         patch("voice_layer.asr.get_runtime_voice_config", return_value=dict(cfg)), \
+         patch("voice_layer.asr.get_runtime_llm_config", return_value=llm):
+        yield cfg
+
+
+def test_mimo_request_body_generation(mimo_settings):
+    """Verify MiMo TTS builds the correct chat-completions request body."""
+    tts = TTSClient()
+    assert tts.provider == "xiaomi_mimo"
+    assert tts.tts_model == "mimo-v2.5-tts"
+
+    messages = tts._build_mimo_messages("你好呀", "cheerful", 1.0)
+    # Should have user hint + assistant text
+    assert len(messages) == 2
+    assert messages[0]["role"] == "user"
+    assert "开心" in messages[0]["content"]
+    assert messages[1]["role"] == "assistant"
+    assert messages[1]["content"] == "你好呀"
+
+
+def test_mimo_request_body_no_hints(mimo_settings):
+    """MiMo request with neutral style and default speed has no user message."""
+    tts = TTSClient()
+    messages = tts._build_mimo_messages("测试", "neutral", 1.0)
+    assert len(messages) == 1
+    assert messages[0]["role"] == "assistant"
+    assert messages[0]["content"] == "测试"
+
+
+def test_mimo_request_body_speed_hint(mimo_settings):
+    """MiMo request with non-default speed adds speed hint."""
+    tts = TTSClient()
+    messages = tts._build_mimo_messages("测试", "neutral", 1.3)
+    assert len(messages) == 2
+    assert "变快" in messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_mimo_audio_base64_decode(mimo_settings):
+    """MiMo TTS correctly decodes base64 audio from choices[0].message.audio.data."""
+    import base64
+
+    tts = TTSClient()
+    fake_audio = b"\xff\xfb\x90\x00" * 100
+    fake_b64 = base64.b64encode(fake_audio).decode()
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "choices": [{
+            "message": {
+                "audio": {"data": fake_b64},
+            },
+        }],
+    }
+    mock_response.raise_for_status = MagicMock()
+
+    with patch.object(tts, "_get_client", new_callable=AsyncMock) as mock_factory:
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.is_closed = False
+        mock_factory.return_value = mock_client
+
+        result = await tts._synthesize_xiaomi_mimo("测试", "default_zh", 1.0, "neutral")
+        assert result == fake_audio
+        assert len(result) > 0
+
+        # Verify the request was sent to the correct endpoint
+        call_args = mock_client.post.call_args
+        assert "/chat/completions" in call_args[0][0]
+        payload = call_args[1]["json"]
+        assert payload["model"] == "mimo-v2.5-tts"
+        assert payload["audio"]["voice"] == "default_zh"
+        assert payload["audio"]["format"] == "mp3"
+
+
+@pytest.mark.asyncio
+async def test_mimo_empty_audio_raises(mimo_settings):
+    """MiMo TTS raises ValueError when audio.data is empty or missing."""
+    import base64
+
+    tts = TTSClient()
+
+    # Case 1: base64 data exists but decodes to empty bytes
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "choices": [{
+            "message": {
+                "audio": {"data": base64.b64encode(b"").decode()},
+            },
+        }],
+    }
+
+    with patch.object(tts, "_get_client", new_callable=AsyncMock) as mock_factory:
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.is_closed = False
+        mock_factory.return_value = mock_client
+
+        # empty b64 encodes to "" which is falsy → falls through to missing error
+        with pytest.raises(ValueError, match="missing audio.data"):
+            await tts._synthesize_xiaomi_mimo("测试", "default_zh", 1.0, "neutral")
+
+    # Case 2: no audio key in response
+    mock_response2 = MagicMock()
+    mock_response2.status_code = 200
+    mock_response2.json.return_value = {"choices": [{"message": {}}]}
+
+    with patch.object(tts, "_get_client", new_callable=AsyncMock) as mock_factory2:
+        mock_client2 = AsyncMock()
+        mock_client2.post = AsyncMock(return_value=mock_response2)
+        mock_client2.is_closed = False
+        mock_factory2.return_value = mock_client2
+
+        with pytest.raises(ValueError, match="missing audio.data"):
+            await tts._synthesize_xiaomi_mimo("测试", "default_zh", 1.0, "neutral")
+
+
+def test_mimo_voice_id_priority(mimo_settings):
+    """Settings page tts_voice_id takes priority over persona mapping."""
+    tts = TTSClient()
+    # tts_voice_id is "default_zh" — not a known profile name, so raw_voice_override
+    assert tts.raw_voice_override == "default_zh"
+    assert tts.default_voice_profile_id == "default"
+
+
+def test_mimo_voice_id_profile_fallback(mimo_settings):
+    """When tts_voice_id is a known profile name, resolver is used."""
+    cfg = dict(mimo_settings)
+    cfg["tts_voice_id"] = "xiaonuan"  # known profile
+    with patch("voice_layer.tts.get_runtime_voice_config", return_value=cfg):
+        tts = TTSClient()
+        assert tts.raw_voice_override is None
+        assert tts.default_voice_profile_id == "xiaonuan"
+

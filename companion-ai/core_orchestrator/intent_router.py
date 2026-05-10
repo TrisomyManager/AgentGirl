@@ -10,7 +10,7 @@ import structlog
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from shared.config import get_settings
+from shared_runtime.config import get_settings
 
 logger = structlog.get_logger()
 

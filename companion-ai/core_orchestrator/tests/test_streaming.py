@@ -29,9 +29,9 @@ os.environ["COMPANION_MONOLITHIC"] = "true"
 from fastapi.testclient import TestClient
 
 from core_orchestrator.state_machine import stream_assistant_response
-from shared.config import get_settings
-from shared.llm_client import chunk_text_stream
-from shared.models import Platform, TurnContext, UserProfile
+from shared_runtime.config import get_settings
+from shared_runtime.llm_client import chunk_text_stream
+from shared_contracts.models import Platform, TurnContext, UserProfile
 
 get_settings.cache_clear()
 

@@ -7,10 +7,8 @@ for short utterances (1-15s) captured from the realtime WS pipeline.
 from __future__ import annotations
 
 import asyncio
-import io
 import os
 import threading
-from typing import Optional
 
 import numpy as np
 import structlog
@@ -23,11 +21,11 @@ _DEFAULT_LANGUAGE = os.getenv("COMPANION_WHISPER_LANGUAGE", "zh")
 # Use the HF mirror by default for users in mainland China unless overridden.
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
-_model: Optional["object"] = None
+_model: object | None = None
 _model_lock = threading.Lock()
 
 
-def _get_model() -> "object":
+def _get_model() -> object:
     """Singleton WhisperModel; built on first call."""
     global _model
     if _model is not None:
@@ -35,7 +33,13 @@ def _get_model() -> "object":
     with _model_lock:
         if _model is not None:
             return _model
-        from faster_whisper import WhisperModel  # heavy import
+        try:
+            from faster_whisper import WhisperModel  # heavy import
+        except ImportError as exc:
+            raise ImportError(
+                "缺少 faster-whisper。本地实时语音 ASR 需要安装："
+                "pip install faster-whisper  或  pip install -e \".[voice-local]\""
+            ) from exc
 
         logger.info("local_asr.loading", size=_DEFAULT_MODEL_SIZE)
         _model = WhisperModel(_DEFAULT_MODEL_SIZE, device="cpu", compute_type="int8")

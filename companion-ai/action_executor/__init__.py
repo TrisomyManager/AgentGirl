@@ -2,7 +2,7 @@
 
 This package is distinct from ``action_layer`` (which generates 2D
 animation / lip-sync). The action_executor module owns *capabilities*:
-the things "小暖" can actually do for the user — set a reminder, look
+the things the companion can actually do for the user — set a reminder, look
 up the time, fetch the weather, etc.
 
 Public surface:

@@ -14,8 +14,8 @@ from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 
-from shared.database import AsyncSessionLocal, Base, engine
-from shared.config import get_settings
+from shared_runtime.database import AsyncSessionLocal, Base, engine
+from shared_runtime.config import get_settings
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()

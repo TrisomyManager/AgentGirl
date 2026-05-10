@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql import text
 
-from shared.models import EmotionTag, MemoryCategory, MemoryEntry
+from shared_contracts.models import EmotionTag, MemoryCategory, MemoryEntry
 
 from memory_system.db import Base, MemoryORM, UserORM
 from memory_system.short_term import ShortTermMemory

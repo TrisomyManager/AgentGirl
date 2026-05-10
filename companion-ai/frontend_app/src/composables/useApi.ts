@@ -4,6 +4,54 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.
 const ORCHESTRATOR_URL = API_BASE_URL;
 const VOICE_URL = API_BASE_URL;
 
+/** Resolve relative API paths (e.g. /static/voice/x.mp3) against the backend base URL. */
+export function absoluteApiUrl(path: string): string {
+  const p = (path || '').trim();
+  if (!p) return '';
+  if (/^https?:\/\//i.test(p)) return p;
+  const base = API_BASE_URL.replace(/\/$/, '');
+  return p.startsWith('/') ? base + p : `${base}/${p}`;
+}
+
+function voiceHttpHint(status: number): string {
+  if (status === 404) {
+    return '语音接口未挂载（404）。请确认已设置 COMPANION_ENABLE_VOICE=true 并重启后端。';
+  }
+  if (status === 503) {
+    return '语音模块未启用（503）。请使用 COMPANION_ENABLE_VOICE=true 或运行 scripts/start_lite_server.py --voice。';
+  }
+  return '';
+}
+
+export type VoiceErrorDetail = { message: string; code?: string };
+
+async function readVoiceErrorDetail(resp: Response): Promise<VoiceErrorDetail> {
+  try {
+    const j = (await resp.json()) as { detail?: unknown };
+    const d = j.detail;
+    if (d && typeof d === 'object' && !Array.isArray(d) && 'message' in d) {
+      const o = d as { message?: string; code?: string };
+      return { message: String(o.message || '请求失败'), code: o.code };
+    }
+    if (typeof d === 'string') return { message: d };
+    if (Array.isArray(d)) {
+      const message = d
+        .map((x) => (typeof x === 'object' && x !== null && 'msg' in x ? String((x as { msg?: string }).msg) : String(x)))
+        .filter(Boolean)
+        .join('；');
+      return { message: message || '请求失败' };
+    }
+  } catch {
+    /* ignore */
+  }
+  return { message: '' };
+}
+
+async function readJsonDetail(resp: Response): Promise<string> {
+  const { message } = await readVoiceErrorDetail(resp);
+  return message;
+}
+
 export interface TurnRequest {
   session_id: string;
   user: {
@@ -29,6 +77,9 @@ export interface TurnResponse {
     arousal?: number;
   } | null;
   voice_url?: string;
+  voice_duration_ms?: number;
+  /** Populated when TTS was attempted but failed; text reply is still valid. */
+  voice_error?: string;
   action_sequence?: {
     sequence_id: string;
     turn_id: string;
@@ -50,6 +101,25 @@ export interface TranscribeResponse {
   text: string;
   confidence?: number;
 }
+
+const MIN_VOICE_RECORDING_BYTES = 2800;
+
+export type TranscribeVoiceResult =
+  | { ok: true; text: string }
+  | {
+      ok: false;
+      code:
+        | 'recording_too_short'
+        | 'audio_convert_failed'
+        | 'voice_endpoint_404'
+        | 'voice_endpoint_503'
+        | 'asr_empty'
+        | 'asr_upstream_error'
+        | 'asr_config'
+        | 'network'
+        | 'unknown';
+      message: string;
+    };
 
 export interface SynthesizeRequest {
   text: string;
@@ -173,7 +243,7 @@ export function useApi() {
             handlers.onError?.(parsed.error || 'unknown stream error');
             break;
           case 'done':
-            if (parsed && typeof parsed === 'object' && parsed.assistant_message) {
+            if (parsed && typeof parsed === 'object' && 'assistant_message' in parsed) {
               finalPayload = parsed as TurnResponse;
             }
             break;
@@ -221,17 +291,34 @@ export function useApi() {
     }
   }
 
-  async function transcribeVoice(audioBlob: Blob): Promise<string | null> {
-    // DashScope Paraformer requires WAV 16kHz mono. Convert in-browser to a
-    // safe format that all providers (Whisper / Paraformer / SenseVoice) accept.
-    let uploadBlob = audioBlob;
-    let filename = 'recording.webm';
+  async function transcribeVoice(
+    audioBlob: Blob,
+    opts: { reportGlobalError?: boolean } = {},
+  ): Promise<TranscribeVoiceResult> {
+    const reportGlobal = opts.reportGlobalError !== false;
+
+    const setGlobal = (msg: string | null) => {
+      if (reportGlobal) {
+        error.value = msg;
+      }
+    };
+
+    if (audioBlob.size < MIN_VOICE_RECORDING_BYTES) {
+      const message = '录音太短，请按住稍长一点时间再松手。';
+      setGlobal(message);
+      return { ok: false, code: 'recording_too_short', message };
+    }
+
+    let uploadBlob: Blob;
+    let filename: string;
     try {
       const { blobToWav16kMono } = await import('./audioCodec');
       uploadBlob = await blobToWav16kMono(audioBlob);
       filename = 'recording.wav';
     } catch (convErr) {
-      console.warn('wav conversion failed, sending original blob:', convErr);
+      const message = `音频格式转换失败：${convErr instanceof Error ? convErr.message : String(convErr)}。请重试或更换浏览器。`;
+      setGlobal(message);
+      return { ok: false, code: 'audio_convert_failed', message };
     }
 
     const formData = new FormData();
@@ -241,15 +328,52 @@ export function useApi() {
         method: 'POST',
         body: formData,
       });
+      if (resp.status === 404) {
+        const message =
+          (await readJsonDetail(resp)) ||
+          voiceHttpHint(404) ||
+          '语音转写接口不存在（404）。请确认已启用语音模块并重启后端。';
+        setGlobal(message);
+        return { ok: false, code: 'voice_endpoint_404', message };
+      }
+      if (resp.status === 503) {
+        const message = (await readJsonDetail(resp)) || voiceHttpHint(503) || '语音服务不可用（503）。';
+        setGlobal(message);
+        return { ok: false, code: 'voice_endpoint_503', message };
+      }
       if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}`);
+        const { message: detail, code } = await readVoiceErrorDetail(resp);
+        const hint = voiceHttpHint(resp.status);
+        const base = detail || hint || `HTTP ${resp.status}`;
+        if (resp.status === 502 || code === 'asr_upstream_error') {
+          const message = base.startsWith('ASR') ? base : `ASR 上游错误：${base}`;
+          setGlobal(message);
+          return { ok: false, code: 'asr_upstream_error', message };
+        }
+        if (resp.status === 400 && (code === 'asr_config_missing' || code === 'asr_audio_too_short')) {
+          const message = detail || base;
+          setGlobal(message);
+          return { ok: false, code: code === 'asr_audio_too_short' ? 'recording_too_short' : 'asr_config', message };
+        }
+        const message = base;
+        setGlobal(message);
+        return { ok: false, code: 'unknown', message };
       }
       const data: TranscribeResponse = await resp.json();
-      return data.text || null;
+      const text = (data.text || '').trim();
+      if (!text) {
+        const message = '识别结果为空：未检测到有效语音内容，请大声清晰地说完后重试。';
+        setGlobal(message);
+        return { ok: false, code: 'asr_empty', message };
+      }
+      if (reportGlobal) {
+        error.value = null;
+      }
+      return { ok: true, text };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      error.value = `语音转文字失败: ${msg}`;
-      return null;
+      const message = `网络或请求失败：${err instanceof Error ? err.message : String(err)}`;
+      setGlobal(message);
+      return { ok: false, code: 'network', message };
     }
   }
 
@@ -261,7 +385,9 @@ export function useApi() {
         body: JSON.stringify(req),
       });
       if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}`);
+        const detail = await readJsonDetail(resp);
+        const hint = voiceHttpHint(resp.status);
+        throw new Error(detail || hint || `HTTP ${resp.status}`);
       }
       const data = await resp.json();
       return data.audio_url || data.url || null;
@@ -308,6 +434,114 @@ export function useApi() {
       return { ok: false, detail };
     } catch {
       return { ok: false };
+    }
+  }
+
+  async function testLlmConfig(): Promise<{
+    ok: boolean;
+    provider: string;
+    model: string;
+    base_url: string;
+    latency_ms: number;
+    sample_reply: string;
+    error: string;
+  } | null> {
+    try {
+      const resp = await fetch(`${ORCHESTRATOR_URL}/orchestrator/settings/llm/test`, {
+        method: 'POST',
+      });
+      if (!resp.ok) {
+        try {
+          const err = (await resp.json()) as { detail?: string };
+          return {
+            ok: false,
+            provider: '',
+            model: '',
+            base_url: '',
+            latency_ms: 0,
+            sample_reply: '',
+            error: err.detail || `HTTP ${resp.status}`,
+          };
+        } catch {
+          return {
+            ok: false,
+            provider: '',
+            model: '',
+            base_url: '',
+            latency_ms: 0,
+            sample_reply: '',
+            error: `HTTP ${resp.status}`,
+          };
+        }
+      }
+      return await resp.json();
+    } catch (e) {
+      return {
+        ok: false,
+        provider: '',
+        model: '',
+        base_url: '',
+        latency_ms: 0,
+        sample_reply: '',
+        error: (e as Error).message || '请求失败（后端未运行？）',
+      };
+    }
+  }
+
+  async function testVoiceConfig(): Promise<{
+    asr_ok: boolean;
+    asr_provider: string;
+    asr_model: string;
+    asr_message: string;
+    tts_ok: boolean;
+    tts_provider: string;
+    tts_model: string;
+    tts_voice: string;
+    tts_latency_ms: number;
+    tts_audio_url: string;
+    tts_duration_ms: number;
+    tts_error: string;
+  } | null> {
+    try {
+      const resp = await fetch(`${ORCHESTRATOR_URL}/orchestrator/settings/voice/test`, {
+        method: 'POST',
+      });
+      if (!resp.ok) {
+        const detail = await readJsonDetail(resp);
+        const hint = voiceHttpHint(resp.status);
+        const errText = detail || hint || `请求失败（HTTP ${resp.status}）`;
+        return {
+          asr_ok: false,
+          asr_provider: '',
+          asr_model: '',
+          asr_message: errText,
+          tts_ok: false,
+          tts_provider: '',
+          tts_model: '',
+          tts_voice: '',
+          tts_latency_ms: 0,
+          tts_audio_url: '',
+          tts_duration_ms: 0,
+          tts_error: errText,
+        };
+      }
+      return await resp.json();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '网络错误';
+      return {
+        asr_ok: false,
+        asr_provider: '',
+        asr_model: '',
+        asr_message: `请求失败：${msg}`,
+        tts_ok: false,
+        tts_provider: '',
+        tts_model: '',
+        tts_voice: '',
+        tts_latency_ms: 0,
+        tts_audio_url: '',
+        tts_duration_ms: 0,
+        tts_error: `请求失败：${msg}（后端是否已启动？）`,
+      };
     }
   }
 
@@ -462,8 +696,10 @@ export function useApi() {
     synthesizeVoice,
     getLlmConfig,
     saveLlmConfig,
+    testLlmConfig,
     getVoiceConfig,
     saveVoiceConfig,
+    testVoiceConfig,
     listMemories,
     getMemorySummary,
     recallMemory,

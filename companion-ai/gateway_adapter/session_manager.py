@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 
 import structlog
 
-from shared.models import Platform
+from shared_contracts.models import Platform
 
 logger = structlog.get_logger(__name__)
 

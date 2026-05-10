@@ -66,7 +66,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import structlog
 
 from memory_system.short_term import short_term_memory
-from shared.config import get_settings
+from shared_runtime.config import get_settings
 
 logger = structlog.get_logger("memory_system.working")
 

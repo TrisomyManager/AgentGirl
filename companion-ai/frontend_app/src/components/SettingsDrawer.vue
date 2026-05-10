@@ -93,6 +93,49 @@
               <button class="clear-llm-btn" @click="clearLlm" title="清除 LLM 配置，恢复规则回复">清除</button>
             </div>
 
+            <div class="llm-actions test-row">
+              <button
+                class="test-btn"
+                @click="testLlm"
+                :disabled="testingLlm || (!llm.api_key_set && !llm.api_key)"
+                title="向当前配置的 LLM 发送一个最小请求，测量延迟和返回内容"
+              >
+                <span v-if="testingLlm">⏳ 测试中... (最长 30s)</span>
+                <span v-else>🧪 测试连接</span>
+              </button>
+            </div>
+
+            <div v-if="llmTestResult" class="test-result" :class="llmTestResult.ok ? 'ok' : 'err'">
+              <div class="test-result-header">
+                <span class="test-status">
+                  {{ llmTestResult.ok ? '✅ 连接成功' : '❌ 连接失败' }}
+                </span>
+                <span v-if="llmTestResult.ok" class="test-latency">
+                  延迟 {{ llmTestResult.latency_ms }} ms
+                  <span class="latency-tag" :class="latencyTag(llmTestResult.latency_ms)">
+                    {{ latencyHint(llmTestResult.latency_ms) }}
+                  </span>
+                </span>
+              </div>
+              <div v-if="llmTestResult.ok && llmTestResult.sample_reply" class="test-sample">
+                <span class="test-label">回复预览:</span>
+                <span class="test-text">{{ llmTestResult.sample_reply }}</span>
+              </div>
+              <div v-if="!llmTestResult.ok && llmTestResult.error" class="test-error">
+                <div class="test-label">错误:</div>
+                <div class="test-error-msg">{{ llmTestResult.error }}</div>
+                <div class="test-tips">
+                  <strong>常见排查:</strong>
+                  <ul>
+                    <li>检查 API Key 是否正确（注意首尾空格）</li>
+                    <li>Base URL 是否填错协议或路径（如 DashScope 兼容接口需 <code>https://dashscope.aliyuncs.com/compatible-mode/v1</code>）</li>
+                    <li>模型名称是否拼对（如 <code>qwen-turbo</code>、<code>deepseek-chat</code>）</li>
+                    <li>是否被防火墙/代理拦截，或需要梯子</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
             <div v-if="llmMsg" class="llm-msg" :class="llmMsgType">{{ llmMsg }}</div>
 
             <div class="llm-hint">
@@ -173,6 +216,7 @@
                 <label>Provider</label>
                 <select v-model="voice.tts_provider" class="select-input" @change="applyTtsPreset">
                   <option value="">-- 不启用 TTS --</option>
+                  <option value="xiaomi_mimo">小米 MiMo TTS v2.5（国内）</option>
                   <option value="dashscope">阿里云 DashScope CosyVoice（国内 推荐）</option>
                   <option value="siliconflow">硅基流动 SiliconFlow（国内）</option>
                   <option value="openai">OpenAI 官方</option>
@@ -222,7 +266,11 @@
                   type="text"
                   :placeholder="ttsVoicePlaceholder"
                 />
-                <div class="model-hint" v-if="voice.tts_provider === 'dashscope'">
+                <div class="model-hint" v-if="voice.tts_provider === 'xiaomi_mimo'">
+                  可选: <code>default_zh</code> / <code>mimo_default</code> / <code>default_en</code><br>
+                  <code>Mia</code> / <code>Chloe</code> / <code>Milo</code> / <code>Dean</code>
+                </div>
+                <div class="model-hint" v-else-if="voice.tts_provider === 'dashscope'">
                   可选: <code>longxiaochun</code>(女) / <code>longxiaocheng</code>(男) / <code>longwan</code>(温柔) / <code>longyumi</code>(甜美)
                 </div>
                 <div class="model-hint" v-else-if="voice.tts_provider === 'siliconflow'">
@@ -241,6 +289,60 @@
               <button class="clear-llm-btn" @click="clearVoice" title="清除语音配置">清除</button>
             </div>
 
+            <div class="llm-actions test-row">
+              <button
+                class="test-btn"
+                @click="testVoice"
+                :disabled="testingVoice || (!voice.asr_api_key_set && !voice.tts_api_key_set)"
+                title="检查 ASR 配置 + 调用 TTS 合成一段语音并播放"
+              >
+                <span v-if="testingVoice">⏳ 测试中... (TTS 需 1~3 秒)</span>
+                <span v-else>🧪 测试语音 (ASR 检测 + 播放 TTS)</span>
+              </button>
+            </div>
+
+            <div v-if="voiceTestResult" class="test-result" :class="(voiceTestResult.asr_ok && voiceTestResult.tts_ok) ? 'ok' : 'err'">
+              <div class="test-result-header">
+                <span class="test-status">
+                  ASR: {{ voiceTestResult.asr_ok ? '✅' : '❌' }}
+                  &nbsp; TTS: {{ voiceTestResult.tts_ok ? '✅' : '❌' }}
+                </span>
+                <span v-if="voiceTestResult.tts_ok" class="test-latency">
+                  TTS {{ voiceTestResult.tts_latency_ms }} ms
+                  <span class="latency-tag" :class="latencyTag(voiceTestResult.tts_latency_ms)">
+                    {{ latencyHint(voiceTestResult.tts_latency_ms) }}
+                  </span>
+                </span>
+              </div>
+
+              <div class="test-sample">
+                <span class="test-label">ASR:</span>
+                <span class="test-text">{{ voiceTestResult.asr_message }}</span>
+              </div>
+
+              <div v-if="voiceTestResult.tts_ok" class="test-sample">
+                <span class="test-label">TTS 试听:</span>
+                <audio ref="ttsAudioRef" controls preload="auto" class="tts-audio" />
+              </div>
+
+              <div v-if="!voiceTestResult.tts_ok && voiceTestResult.tts_error" class="test-error">
+                <div class="test-label">TTS 错误:</div>
+                <div class="test-error-msg">{{ voiceTestResult.tts_error }}</div>
+                <div class="test-tips">
+                  <strong>常见排查:</strong>
+                  <ul>
+                    <li v-if="voice.tts_provider === 'xiaomi_mimo'">Base URL 应为 <code>https://api.xiaomimimo.com/v1</code></li>
+                    <li v-if="voice.tts_provider === 'xiaomi_mimo'">模型名: <code>mimo-v2.5-tts</code>；音色: <code>default_zh</code> / <code>mimo_default</code></li>
+                    <li v-if="voice.tts_provider === 'xiaomi_mimo'">API Key 需在 <a href="https://platform.xiaomimimo.com" target="_blank">platform.xiaomimimo.com</a> 获取</li>
+                    <li v-if="voice.tts_provider !== 'xiaomi_mimo'">DashScope TTS 的 Base URL 应为 <code>https://dashscope.aliyuncs.com/api/v1</code>（不是 compatible-mode）</li>
+                    <li v-if="voice.tts_provider !== 'xiaomi_mimo'">模型名建议: <code>cosyvoice-v3-flash</code> / <code>cosyvoice-v2</code> / <code>cosyvoice-v1</code></li>
+                    <li v-if="voice.tts_provider !== 'xiaomi_mimo'">音色 ID 应为 <code>longxiaochun</code> / <code>longwan</code> / <code>longyumi</code> 等</li>
+                    <li>API Key 是否开通了语音合成模型权限</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
             <div v-if="voiceMsg" class="llm-msg" :class="voiceMsgType">{{ voiceMsg }}</div>
 
             <div class="llm-hint">
@@ -252,6 +354,37 @@
                 <span class="hint-dot" :class="voice.tts_api_key_set ? 'active' : 'inactive'"></span>
                 TTS: {{ voice.tts_api_key_set ? `已配置 (${voice.tts_provider})` : '未配置' }}
               </div>
+            </div>
+          </div>
+
+          <!-- Realtime Voice 调试信息 -->
+          <div class="setting-section debug-section">
+            <div class="section-title">🔍 Realtime Voice 调试</div>
+
+            <div class="setting-item">
+              <label>Realtime Provider</label>
+              <div class="debug-value">
+                <code>{{ realtimeProvider || '（未协商）' }}</code>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <label>Audio Format</label>
+              <div class="debug-value">
+                <code>{{ audioFormat || 'pcm' }}</code>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <label>Sample Rate</label>
+              <div class="debug-value">
+                <code v-if="sampleRate > 0">{{ sampleRate }} Hz</code>
+                <code v-else>（未协商）</code>
+              </div>
+            </div>
+
+            <div class="debug-hint">
+              这些值由 <code>assistant_sentence_start</code> / <code>tts_start</code> 事件协商得出。若播放无声，请对比服务端实际格式。
             </div>
           </div>
 
@@ -283,6 +416,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
 import { useApi } from '../composables/useApi';
+import { currentAudioFormat, currentRealtimeProvider, currentSampleRate } from '../composables/useRealtimeVoice';
 
 const props = defineProps<{
   visible: boolean;
@@ -297,7 +431,11 @@ const emit = defineEmits<{
   (e: 'clear'): void;
 }>();
 
-const { getLlmConfig, saveLlmConfig, getVoiceConfig, saveVoiceConfig } = useApi();
+const { getLlmConfig, saveLlmConfig, testLlmConfig, getVoiceConfig, saveVoiceConfig, testVoiceConfig } = useApi();
+
+const audioFormat = computed(() => currentAudioFormat.value);
+const realtimeProvider = computed(() => currentRealtimeProvider.value);
+const sampleRate = computed(() => currentSampleRate.value);
 
 // ── user name ──
 const localUserName = ref(props.userName);
@@ -320,6 +458,15 @@ const showKey = ref(false);
 const saving = ref(false);
 const llmMsg = ref('');
 const llmMsgType = ref<'ok' | 'err'>('ok');
+const testingLlm = ref(false);
+const llmTestResult = ref<null | {
+  ok: boolean;
+  provider: string;
+  model: string;
+  latency_ms: number;
+  sample_reply: string;
+  error: string;
+}>(null);
 
 const baseUrlPlaceholder = computed(() => {
   if (llm.provider === 'openai') return 'https://api.openai.com/v1';
@@ -353,6 +500,8 @@ watch(() => props.visible, (v) => {
     loadVoiceConfig();
     llmMsg.value = '';
     voiceMsg.value = '';
+    llmTestResult.value = null;
+    voiceTestResult.value = null;
   }
 });
 
@@ -398,6 +547,43 @@ async function clearLlm() {
   llm.api_key_set = false;
   llmMsg.value = '已清除，恢复规则回复';
   llmMsgType.value = 'ok';
+  llmTestResult.value = null;
+}
+
+async function testLlm() {
+  if (!llm.api_key_set && !llm.api_key) {
+    llmMsg.value = '请先保存 API Key 后再测试';
+    llmMsgType.value = 'err';
+    return;
+  }
+  testingLlm.value = true;
+  llmTestResult.value = null;
+  const result = await testLlmConfig();
+  testingLlm.value = false;
+  if (result) {
+    llmTestResult.value = result;
+  } else {
+    llmTestResult.value = {
+      ok: false,
+      provider: llm.provider,
+      model: llm.model,
+      latency_ms: 0,
+      sample_reply: '',
+      error: '请求失败，后端可能未运行',
+    };
+  }
+}
+
+function latencyTag(ms: number): 'fast' | 'mid' | 'slow' {
+  if (ms < 1500) return 'fast';
+  if (ms < 4000) return 'mid';
+  return 'slow';
+}
+
+function latencyHint(ms: number): string {
+  if (ms < 1500) return '很快';
+  if (ms < 4000) return '一般';
+  return '偏慢';
 }
 
 // ── voice config ──
@@ -419,6 +605,22 @@ const savingVoice = ref(false);
 const voiceMsg = ref('');
 const voiceMsgType = ref<'ok' | 'err'>('ok');
 const asrPreset = ref('');
+const testingVoice = ref(false);
+const voiceTestResult = ref<null | {
+  asr_ok: boolean;
+  asr_provider: string;
+  asr_model: string;
+  asr_message: string;
+  tts_ok: boolean;
+  tts_provider: string;
+  tts_model: string;
+  tts_voice: string;
+  tts_latency_ms: number;
+  tts_audio_url: string;
+  tts_duration_ms: number;
+  tts_error: string;
+}>(null);
+const ttsAudioRef = ref<HTMLAudioElement | null>(null);
 
 const ASR_PRESETS: Record<string, { base_url: string; model: string }> = {
   dashscope: { base_url: 'https://dashscope.aliyuncs.com', model: 'paraformer-realtime-v2' },
@@ -428,6 +630,7 @@ const ASR_PRESETS: Record<string, { base_url: string; model: string }> = {
 };
 
 const TTS_PRESETS: Record<string, { base_url: string; model: string; voice: string }> = {
+  xiaomi_mimo: { base_url: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.5-tts', voice: 'default_zh' },
   dashscope: { base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'cosyvoice-v1', voice: 'longxiaochun' },
   siliconflow: { base_url: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/CosyVoice2-0.5B', voice: 'FunAudioLLM/CosyVoice2-0.5B:alex' },
   openai: { base_url: 'https://api.openai.com/v1', model: 'tts-1', voice: 'alloy' },
@@ -545,6 +748,41 @@ async function clearVoice() {
   asrPreset.value = '';
   voiceMsg.value = '语音配置已清除';
   voiceMsgType.value = 'ok';
+  voiceTestResult.value = null;
+}
+
+async function testVoice() {
+  testingVoice.value = true;
+  voiceTestResult.value = null;
+  const result = await testVoiceConfig();
+  testingVoice.value = false;
+  if (result) {
+    voiceTestResult.value = result;
+    if (result.tts_ok && result.tts_audio_url) {
+      // auto-play the synthesized sample
+      setTimeout(() => {
+        const el = ttsAudioRef.value;
+        if (el) {
+          el.src = absoluteAudioUrl(result.tts_audio_url);
+          el.play().catch(() => {/* user interaction needed */});
+        }
+      }, 100);
+    }
+  } else {
+    voiceTestResult.value = {
+      asr_ok: false, asr_provider: '', asr_model: '', asr_message: '请求失败',
+      tts_ok: false, tts_provider: '', tts_model: '', tts_voice: '',
+      tts_latency_ms: 0, tts_audio_url: '', tts_duration_ms: 0,
+      tts_error: '请求失败，后端可能未运行',
+    };
+  }
+}
+
+function absoluteAudioUrl(url: string): string {
+  if (!url) return '';
+  if (/^https?:\/\//i.test(url)) return url;
+  const base = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') || 'http://127.0.0.1:8000';
+  return base + (url.startsWith('/') ? url : '/' + url);
 }
 
 // ── session ──
@@ -732,6 +970,42 @@ function confirmClear() {
   color: #a78bfa;
 }
 
+/* debug section uses a different accent */
+.debug-section {
+  border-color: rgba(74, 222, 128, 0.18);
+  background: rgba(74, 222, 128, 0.04);
+}
+.debug-section .section-title {
+  color: #4ade80;
+}
+
+.debug-value {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(15, 15, 30, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.debug-value code {
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.debug-hint {
+  margin-top: 10px;
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.debug-hint code {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
 .sub-section {
   margin-bottom: 14px;
   padding: 12px;
@@ -870,4 +1144,137 @@ function confirmClear() {
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 .slide-enter-active, .slide-leave-active { transition: transform 0.3s ease; }
 .slide-enter-from, .slide-leave-to { transform: translateX(100%); }
+
+/* ===== LLM Test ===== */
+.test-row {
+  margin-top: 0;
+  margin-bottom: 10px;
+}
+
+.test-btn {
+  flex: 1;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  background: rgba(96, 165, 250, 0.1);
+  color: #93c5fd;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.test-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.test-btn:not(:disabled):hover {
+  background: rgba(96, 165, 250, 0.18);
+  color: #bfdbfe;
+}
+
+.test-result {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.test-result.ok {
+  background: rgba(74, 222, 128, 0.08);
+  border: 1px solid rgba(74, 222, 128, 0.25);
+}
+.test-result.err {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.test-result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.test-status {
+  font-weight: 600;
+}
+.test-result.ok .test-status { color: #4ade80; }
+.test-result.err .test-status { color: #f87171; }
+
+.test-latency {
+  font-size: 11.5px;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.latency-tag {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.latency-tag.fast { background: rgba(74, 222, 128, 0.18); color: #4ade80; }
+.latency-tag.mid { background: rgba(251, 191, 36, 0.2); color: #fbbf24; }
+.latency-tag.slow { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+
+.test-sample {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(15, 15, 30, 0.5);
+  border-radius: 8px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.test-label {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.test-text {
+  flex: 1;
+  color: #cbd5e1;
+  word-break: break-word;
+}
+
+.test-error {
+  margin-top: 6px;
+}
+.test-error-msg {
+  padding: 8px 10px;
+  background: rgba(15, 15, 30, 0.5);
+  border-radius: 8px;
+  color: #fca5a5;
+  word-break: break-word;
+  margin-bottom: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+.test-tips {
+  font-size: 11.5px;
+  color: #94a3b8;
+}
+.test-tips strong { color: #cbd5e1; }
+.test-tips ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.test-tips li {
+  margin-bottom: 3px;
+  line-height: 1.55;
+}
+.tts-audio {
+  flex: 1;
+  height: 32px;
+  min-width: 200px;
+  border-radius: 8px;
+}
+
+.test-tips code {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  color: #cbd5e1;
+}
 </style>

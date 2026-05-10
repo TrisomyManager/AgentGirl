@@ -19,7 +19,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 
-from shared.models import RelationshipMetrics
+from shared_contracts.models import RelationshipMetrics
 
 logger = structlog.get_logger("persona_engine.relationship_tracker")
 

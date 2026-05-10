@@ -9,7 +9,7 @@ import os
 
 os.environ.setdefault("COMPANION_LITE_MODE", "true")
 
-from shared.config import get_settings  # noqa: E402
+from shared_runtime.config import get_settings  # noqa: E402
 
 get_settings.cache_clear()
 

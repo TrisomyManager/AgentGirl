@@ -40,6 +40,8 @@
                 v-for="msg in messages"
                 :key="msg.id"
                 :message="msg"
+                :voice="voice"
+                @assistant-voice-playback="handleAssistantVoicePlayback"
               />
 
               <div v-if="isTyping && !hasStreamingContent" class="typing-row">
@@ -86,6 +88,7 @@
     <VoiceCallPanel
       :visible="callVisible"
       @close="callVisible = false"
+      @open-settings="callVisible = false; settingsVisible = true"
     />
 
     <MemoryViewer
@@ -134,6 +137,7 @@ const {
   clearHistory,
   clearError,
   checkServer,
+  handleAssistantVoicePlayback,
 } = useChat();
 
 // Subscribe to /actions/push (SSE) so reminder_fired events surface as a
@@ -141,14 +145,15 @@ const {
 // close button.
 const { lastReminder, dismissLastReminder } = useProactivePush();
 
-// Suppress the global typing dots once the streamed assistant bubble has
-// real content — the bubble itself shows incremental progress so the dots
-// would just be visual noise.
+// Suppress the global typing dots whenever the latest assistant message is
+// still in a typing state — that bubble (ChatMessage) already renders its
+// own typing-indicator (when content is empty) or a streaming cursor (once
+// chunks arrive). Showing the global dots on top would be a duplicate.
 const hasStreamingContent = computed(() => {
   for (let i = messages.value.length - 1; i >= 0; i--) {
     const m = messages.value[i];
     if (m.role !== 'assistant') break;
-    if (m.isTyping && (m.content || '').length > 0) return true;
+    if (m.isTyping) return true;
     if (!m.isTyping) break;
   }
   return false;

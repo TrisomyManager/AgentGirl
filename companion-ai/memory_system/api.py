@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.events import MemoryRecallEvent, MemorySyncEvent
-from shared.models import MemoryCategory, MemoryEntry, MemoryRecallResult
+from shared_contracts.events import MemoryRecallEvent, MemorySyncEvent
+from shared_contracts.models import MemoryCategory, MemoryEntry, MemoryRecallResult
 
 from memory_system.db import get_db
 from memory_system.graph_store import graph_store

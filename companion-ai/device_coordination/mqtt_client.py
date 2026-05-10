@@ -10,9 +10,9 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 import aiomqtt
 import structlog
 
-from shared.config import get_settings
-from shared.events import DeviceCommandEvent, DeviceHeartbeatEvent
-from shared.models import DeviceInfo
+from shared_runtime.config import get_settings
+from shared_contracts.events import DeviceCommandEvent, DeviceHeartbeatEvent
+from shared_contracts.models import DeviceInfo
 
 logger = structlog.get_logger(__name__)
 

@@ -23,11 +23,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from shared.config import get_settings
-from shared.models import PersonaProfile
+from shared_runtime.config import get_settings
+from shared_contracts.models import PersonaProfile
 
 from persona_engine.api import router
-from shared.llm_client import LLMClient
+from shared_runtime.llm_client import LLMClient
 
 from persona_engine.emotion_engine import EmotionEngine
 from persona_engine.persona_store import get_persona_profile

@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 import structlog
 
-from shared.models import EmotionState, EmotionTag, RelationshipMetrics
+from shared_contracts.models import EmotionState, EmotionTag, RelationshipMetrics
 
 logger = structlog.get_logger("persona_engine.emotion_engine")
 

@@ -12,9 +12,9 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 
-from shared.config import get_settings
-from shared.llm_client import get_runtime_llm_config
-from shared.models import MemoryCategory, MemoryEntry
+from shared_runtime.config import get_settings
+from shared_runtime.llm_client import get_runtime_llm_config
+from shared_contracts.models import MemoryCategory, MemoryEntry
 
 from memory_system.db import MemoryORM
 

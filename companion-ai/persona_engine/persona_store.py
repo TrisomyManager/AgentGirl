@@ -19,12 +19,46 @@ import yaml
 # Allow running inside the package as well as from repo root
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_SOUL_PATH = _PROJECT_ROOT / "persona_engine" / "data" / "soul.yaml"
+_PERSONAS_DIR = _PROJECT_ROOT / "persona_engine" / "data" / "personas"
 
 logger = structlog.get_logger("persona_engine.persona_store")
 
 
 class PersonaStoreError(Exception):
     """Raised when the soul file is missing or malformed."""
+
+
+# ---------------------------------------------------------------------------
+# PersonaRegistry —— 波次 4 多角色化 (ADR-006 硬约束 3)
+# 第三方宿主可通过 role_id 切换人格, 默认 role_id="default" -> data/personas/default.yaml
+# 老路径 data/soul.yaml 仍作为兜底兼容
+# ---------------------------------------------------------------------------
+
+
+def _persona_path_for(role_id: str) -> Path:
+    """Resolve the YAML path for a given role_id."""
+    candidate = _PERSONAS_DIR / f"{role_id}.yaml"
+    if candidate.exists():
+        return candidate
+    # 兼容: 旧 single-soul 部署
+    if role_id == "default" and _DEFAULT_SOUL_PATH.exists():
+        return _DEFAULT_SOUL_PATH
+    raise PersonaStoreError(
+        f"Persona yaml not found for role_id={role_id!r}: {candidate}"
+    )
+
+
+@lru_cache(maxsize=16)
+def load_persona_by_role(role_id: str = "default") -> Dict[str, Any]:
+    """Load a persona yaml by role_id (cached per role_id)."""
+    return load_persona(_persona_path_for(role_id))
+
+
+def list_available_personas() -> list[str]:
+    """List all role_ids available under data/personas/*.yaml."""
+    if not _PERSONAS_DIR.exists():
+        return ["default"] if _DEFAULT_SOUL_PATH.exists() else []
+    return sorted(p.stem for p in _PERSONAS_DIR.glob("*.yaml"))
 
 
 @lru_cache(maxsize=1)
@@ -63,15 +97,27 @@ def _parse_emotion_baseline(raw: Dict[str, Any]) -> Dict[str, Any]:
     return baseline
 
 
-def get_persona_profile(path: str | Path | None = None) -> "PersonaProfile":
-    """Return a fully-hydrated `PersonaProfile` from the soul YAML."""
+def get_persona_profile(path: str | Path | None = None, *, role_id: str | None = None) -> "PersonaProfile":
+    """Return a fully-hydrated `PersonaProfile`.
+
+    Resolution order:
+    - 显式 ``path`` (兼容老 API)
+    - ``role_id`` (波次 4 多角色化, 走 PersonaRegistry)
+    - 兜底: ``data/soul.yaml`` (单角色历史路径)
+    """
     from shared.models import PersonaProfile
 
-    raw = load_persona(path)
+    if path is not None:
+        raw = load_persona(path)
+        resolved_role_id = role_id or "default"
+    else:
+        rid = role_id or "default"
+        raw = load_persona_by_role(rid)
+        resolved_role_id = rid
     baseline_raw = raw.get("emotional_baseline", {})
 
     profile = PersonaProfile(
-        persona_id="default",
+        persona_id=resolved_role_id,
         name=raw["name"],
         age_hint=raw.get("age_hint"),
         gender_hint=raw.get("gender_hint"),
@@ -87,8 +133,8 @@ def get_persona_profile(path: str | Path | None = None) -> "PersonaProfile":
     return profile
 
 
-async def get_persona_profile_async(path: str | Path | None = None) -> "PersonaProfile":
+async def get_persona_profile_async(path: str | Path | None = None, *, role_id: str | None = None) -> "PersonaProfile":
     """Async wrapper around `get_persona_profile` for use in FastAPI handlers."""
     # YAML parsing is fast enough that we can call the sync version directly.
     # If the file were remote, we'd add an async HTTP client here.
-    return get_persona_profile(path)
+    return get_persona_profile(path, role_id=role_id)

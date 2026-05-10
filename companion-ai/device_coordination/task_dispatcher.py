@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import structlog
 
-from shared.models import DeviceInfo
+from shared_contracts.models import DeviceInfo
 
 from .registry import DeviceRegistry
 

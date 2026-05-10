@@ -7,9 +7,9 @@ from typing import Any, Dict, List, Optional
 import redis.asyncio as redis
 import structlog
 
-from shared.config import get_settings
-from shared.lite_mode import InMemoryShortTermMemory
-from shared.models import EmotionTag, MemoryEntry
+from shared_runtime.config import get_settings
+from shared_runtime.lite_mode import InMemoryShortTermMemory
+from shared_contracts.models import EmotionTag, MemoryEntry
 
 logger = structlog.get_logger(__name__)
 

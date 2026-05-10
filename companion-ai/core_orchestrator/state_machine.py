@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 from typing import Annotated, Any, AsyncIterator, Dict, List, Optional, TypedDict
 
+import httpx
 import structlog
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
@@ -21,8 +23,9 @@ from core_orchestrator.http_client import (
     voice_client,
 )
 from core_orchestrator.intent_router import Intent, get_intent_router
-from shared.config import get_settings
-from shared.models import (
+from safety_guard import default_guard, safe_fallback_reply
+from shared_runtime.config import get_settings
+from shared_contracts.models import (
     ActionSequence,
     EmotionState,
     EmotionTag,
@@ -35,6 +38,7 @@ from shared.models import (
     VoiceTranscriptionResult,
 )
 from shared.prompt_engine import build_base_system_prompt, build_conversation_system_prompt
+from voice_layer.resolver import resolve_profile_id
 
 logger = structlog.get_logger()
 
@@ -112,6 +116,8 @@ class OrchestratorState(TypedDict):
     relationship_metrics: Optional[RelationshipMetrics]
     assistant_message: Optional[str]
     voice_url: Optional[str]
+    voice_duration_ms: Optional[int]
+    voice_error: Optional[str]
     action_sequence: Optional[ActionSequence]
     device_command_sent: Optional[bool]
     error: Optional[str]
@@ -136,6 +142,8 @@ def build_initial_state(turn_context: TurnContext) -> OrchestratorState:
         relationship_metrics=None,
         assistant_message=None,
         voice_url=None,
+        voice_duration_ms=None,
+        voice_error=None,
         action_sequence=None,
         device_command_sent=False,
         error=None,
@@ -144,12 +152,66 @@ def build_initial_state(turn_context: TurnContext) -> OrchestratorState:
     )
 
 
+def build_minimal_memory_sync_state(
+    turn_context: TurnContext,
+    assistant_message: str,
+    *,
+    emotion_state: Optional[EmotionState] = None,
+    relationship_metrics: Optional[RelationshipMetrics] = None,
+    intent: Optional[str] = None,
+) -> OrchestratorState:
+    """Orchestrator-shaped state for memory sync only (no chat messages required)."""
+    return OrchestratorState(
+        messages=[],
+        turn_context=turn_context,
+        intent=intent,
+        intent_confidence=None,
+        intent_reasoning=None,
+        intent_entities=None,
+        memory_result=None,
+        persona_profile=None,
+        emotion_state=emotion_state,
+        relationship_metrics=relationship_metrics,
+        assistant_message=assistant_message,
+        voice_url=None,
+        voice_duration_ms=None,
+        voice_error=None,
+        action_sequence=None,
+        device_command_sent=False,
+        error=None,
+        skip_voice=False,
+        skip_action=False,
+    )
+
+
+DEFAULT_PERSONA_NAME = "陪伴者"
+
+
 def _default_persona() -> PersonaProfile:
-    return PersonaProfile(name="小暖")
+    return PersonaProfile(name=DEFAULT_PERSONA_NAME)
 
 
 def _default_memory_result() -> MemoryRecallResult:
     return MemoryRecallResult(entries=[], graph_facts=[])
+
+
+def _safe_emotion(data: Any = None) -> EmotionState:
+    """Safely construct a valid EmotionState from dict or existing state.
+
+    Centralises type validation so callers never need scattered try/except
+    around ``EmotionState(**data)``.  If ``data`` is already an
+    ``EmotionState`` it is returned unchanged; if it is a ``dict`` we
+    attempt ``EmotionState(**data)`` and silently fall back to a neutral
+    default on failure; otherwise ``EmotionState()`` is returned.
+    """
+    if isinstance(data, EmotionState):
+        return data
+    if isinstance(data, dict):
+        try:
+            return EmotionState(**data)
+        except Exception:
+            pass
+    return EmotionState()
 
 
 async def _recall_memory_monolithic(tc: TurnContext, state: OrchestratorState, log: Any) -> OrchestratorState:
@@ -157,24 +219,56 @@ async def _recall_memory_monolithic(tc: TurnContext, state: OrchestratorState, l
 
     Bypasses /persona/get_profile HTTP which requires request.app.state.* and
     may return 503 if persona_engine lifespan failed to initialise those objects.
+
+    Reads persisted emotion_state and relationship_metrics so the companion's
+    personality state evolves across turns instead of resetting to baseline.
     """
     from persona_engine.persona_store import get_persona_profile
 
-    # Persona: read directly from soul.yaml — no HTTP, no app.state dependency
+    # Read user_profile (if any) to honor role_id preference set by onboarding
+    role_id = "default"
     try:
-        persona = get_persona_profile()
+        from user_profile import get_default_store
+
+        snapshot = await get_default_store().get(tc.user.user_id)
+        if snapshot and isinstance(snapshot.preferences, dict):
+            role_id = snapshot.preferences.get("role_id") or "default"
+    except Exception as exc:
+        log.warning("user_profile_load_failed", error=str(exc))
+
+    # Persona: read directly from YAML — no HTTP, no app.state dependency
+    persona = None
+    try:
+        persona = get_persona_profile(role_id=role_id)
         state["persona_profile"] = persona
-        baseline = persona.emotional_baseline
-        try:
-            state["emotion_state"] = EmotionState(**baseline) if baseline else EmotionState()
-        except Exception:
-            state["emotion_state"] = EmotionState()
     except Exception as exc:
         log.warning("monolithic_persona_failed", error=str(exc))
         state["persona_profile"] = _default_persona()
-        state["emotion_state"] = EmotionState()
+        persona = state["persona_profile"]
 
-    state["relationship_metrics"] = RelationshipMetrics(user_id=tc.user.user_id)
+    # Emotion: try persisted state first, fall back to persona baseline
+    try:
+        from persona_engine.runtime import get_emotion_engine
+        emotion_engine = get_emotion_engine()
+        current_emotion = await emotion_engine.get_current_emotion(tc.user.user_id)
+        baseline = persona.emotional_baseline if persona else None
+        if current_emotion.trigger == "baseline" and baseline:
+            state["emotion_state"] = _safe_emotion(baseline)
+        else:
+            state["emotion_state"] = current_emotion
+    except Exception as exc:
+        log.warning("emotion_state_load_failed", error=str(exc))
+        baseline = persona.emotional_baseline if persona else None
+        state["emotion_state"] = _safe_emotion(baseline)
+
+    # Relationship: read persisted metrics from tracker
+    try:
+        from persona_engine.runtime import get_relationship_tracker
+        tracker = get_relationship_tracker()
+        state["relationship_metrics"] = await tracker.get_metrics(tc.user.user_id)
+    except Exception as exc:
+        log.warning("relationship_load_failed", error=str(exc))
+        state["relationship_metrics"] = RelationshipMetrics(user_id=tc.user.user_id)
 
     # Memory: via ASGI transport (memory endpoints use get_db, not request.app.state.*)
     try:
@@ -198,21 +292,35 @@ async def _recall_memory_monolithic(tc: TurnContext, state: OrchestratorState, l
         "monolithic_memory_recalled",
         memory_entries=len(state["memory_result"].entries),
         persona_name=state["persona_profile"].name,
+        emotion_primary=state["emotion_state"].primary.value if state["emotion_state"] else None,
+        relationship_intimacy=round(state["relationship_metrics"].intimacy, 3) if state["relationship_metrics"] else 0,
     )
     return state
 
 
-def _build_memory_payloads(tc: TurnContext, state: OrchestratorState) -> List[Dict[str, Any]]:
+def _memory_channel_prefix(memory_channel: Optional[str]) -> str:
+    if not memory_channel:
+        return ""
+    return f"【来源：{memory_channel}】\n"
+
+
+def _build_memory_payloads(
+    tc: TurnContext,
+    state: OrchestratorState,
+    *,
+    memory_channel: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     assistant_message = (state.get("assistant_message") or "").strip()
     emotion = state.get("emotion_state")
     intent = state.get("intent") or Intent.CHAT.value
     emotion_tags = [emotion.primary.value] if emotion else []
+    prefix = _memory_channel_prefix(memory_channel)
 
     payloads: List[Dict[str, Any]] = [
         {
             "user_id": tc.user.user_id,
             "category": MemoryCategory.EVENT.value,
-            "content": f"用户说：{tc.user_message}\n助手回复：{assistant_message}",
+            "content": prefix + f"用户说：{tc.user_message}\n助手回复：{assistant_message}",
             "importance": 0.55 if intent == Intent.CHAT.value else 0.65,
             "emotion_tags": emotion_tags,
             "source_turn_id": tc.turn_id,
@@ -224,7 +332,7 @@ def _build_memory_payloads(tc: TurnContext, state: OrchestratorState) -> List[Di
             {
                 "user_id": tc.user.user_id,
                 "category": MemoryCategory.FACT.value,
-                "content": f"用户的名字是{match.group(1)}",
+                "content": prefix + f"用户的名字是{match.group(1)}",
                 "importance": 0.95,
                 "emotion_tags": emotion_tags,
                 "source_turn_id": tc.turn_id,
@@ -236,7 +344,7 @@ def _build_memory_payloads(tc: TurnContext, state: OrchestratorState) -> List[Di
             {
                 "user_id": tc.user.user_id,
                 "category": MemoryCategory.PREFERENCE.value,
-                "content": f"用户喜欢{match.group(1).strip()}",
+                "content": prefix + f"用户喜欢{match.group(1).strip()}",
                 "importance": 0.9,
                 "emotion_tags": emotion_tags,
                 "source_turn_id": tc.turn_id,
@@ -252,7 +360,7 @@ def _is_monolithic() -> bool:
     return settings.monolithic or os.environ.get("COMPANION_MONOLITHIC", "false").lower() in ("1", "true", "yes")
 
 
-def _rule_based_reply(user_message: str, persona_name: str = "小暖") -> str:
+def _rule_based_reply(user_message: str, persona_name: str = DEFAULT_PERSONA_NAME) -> str:
     """Rule-based fallback used when no LLM provider is configured."""
     msg = user_message
     if any(tok in msg for tok in ("你叫什么", "你是谁")):
@@ -313,7 +421,7 @@ async def _try_action_executor(tc: TurnContext, intent: str) -> Optional[Dict[st
     }
 
 
-async def _generate_response_monolithic(tc: TurnContext, system_prompt: str, persona_name: str = "小暖") -> str:
+async def _generate_response_monolithic(tc: TurnContext, system_prompt: str, persona_name: str = DEFAULT_PERSONA_NAME) -> str:
     """Call LLM directly (monolithic mode) without HTTP roundtrip to persona_engine."""
     from shared.llm_client import LLMClient
 
@@ -337,7 +445,7 @@ async def _generate_response_monolithic(tc: TurnContext, system_prompt: str, per
 async def _stream_response_monolithic(
     tc: TurnContext,
     system_prompt: str,
-    persona_name: str = "小暖",
+    persona_name: str = DEFAULT_PERSONA_NAME,
 ) -> AsyncIterator[str]:
     """Streaming variant of ``_generate_response_monolithic``.
 
@@ -645,12 +753,35 @@ async def node_receive(state: OrchestratorState) -> OrchestratorState:
             log.error("voice_transcription_failed", error=str(exc))
             state["error"] = f"Voice transcription failed: {exc}"
 
+    # Safety: input pre-check (BLOCK 时直接短路, 绕过 LLM)
+    if not state.get("error") and tc.user_message:
+        verdict = default_guard.check_input(tc.user_message)
+        if verdict.blocked:
+            fallback = safe_fallback_reply(verdict.reason)
+            state["assistant_message"] = fallback
+            state["messages"] = state["messages"] + [AIMessage(content=fallback)]
+            state["skip_voice"] = False
+            state["skip_action"] = True
+            state["intent"] = Intent.CHAT.value
+            state["intent_confidence"] = 0.0
+            log.warning(
+                "input_blocked_by_safety_guard",
+                matched=verdict.matched_terms,
+                reason=verdict.reason,
+            )
+        elif verdict.warned:
+            log.info(
+                "input_safety_warn",
+                matched=verdict.matched_terms,
+                pii=verdict.pii_hits,
+            )
+
     return state
 
 
 async def node_classify_intent(state: OrchestratorState) -> OrchestratorState:
     tc = state["turn_context"]
-    if tc is None or state.get("error"):
+    if tc is None or state.get("error") or state.get("assistant_message"):
         return state
 
     log = logger.bind(turn_id=tc.turn_id)
@@ -666,7 +797,7 @@ async def node_classify_intent(state: OrchestratorState) -> OrchestratorState:
 
 async def node_recall_memory(state: OrchestratorState) -> OrchestratorState:
     tc = state["turn_context"]
-    if tc is None or state.get("error"):
+    if tc is None or state.get("error") or state.get("assistant_message"):
         return state
 
     log = logger.bind(turn_id=tc.turn_id)
@@ -713,10 +844,7 @@ async def node_recall_memory(state: OrchestratorState) -> OrchestratorState:
         emotion_raw = persona_data["emotion"]
     elif persona_raw and isinstance(persona_raw.get("emotional_baseline"), dict):
         emotion_raw = persona_raw["emotional_baseline"]
-    try:
-        state["emotion_state"] = EmotionState(**emotion_raw) if emotion_raw else EmotionState()
-    except Exception:
-        state["emotion_state"] = EmotionState()
+    state["emotion_state"] = _safe_emotion(emotion_raw)
 
     relationship_raw = None
     if isinstance(persona_data.get("relationship"), dict):
@@ -747,7 +875,7 @@ async def node_recall_memory(state: OrchestratorState) -> OrchestratorState:
 
 async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
     tc = state["turn_context"]
-    if tc is None or state.get("error"):
+    if tc is None or state.get("error") or state.get("assistant_message"):
         return state
 
     log = logger.bind(turn_id=tc.turn_id)
@@ -842,11 +970,8 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
         assistant_msg = data.get("assistant_message", "...")
         new_emotion_raw = data.get("new_emotion")
         if isinstance(new_emotion_raw, dict):
-            try:
-                state["emotion_state"] = EmotionState(**new_emotion_raw)
-                emotion_from_persona_api = True
-            except Exception:
-                pass
+            state["emotion_state"] = _safe_emotion(new_emotion_raw)
+            emotion_from_persona_api = True
     except Exception as exc:
         log.warning("persona_generate_failed", error=str(exc))
         assistant_msg = "我在呢，你继续说，我会认真听。"
@@ -866,33 +991,111 @@ async def node_synthesize_voice(state: OrchestratorState) -> OrchestratorState:
     if tc is None or state.get("error"):
         return state
 
+    wants_voice = bool(tc.request_voice_reply or tc.has_voice)
     settings = get_settings()
+
     if not settings.enable_voice:
         state["skip_voice"] = True
+        state["voice_url"] = None
+        state["voice_duration_ms"] = None
+        state["voice_error"] = "voice module disabled" if wants_voice else None
+        logger.bind(turn_id=tc.turn_id).info(
+            "voice_synthesize_skipped",
+            reason="enable_voice_false",
+            wants_voice=wants_voice,
+            voice_error=state["voice_error"],
+        )
         return state
-    if not (tc.request_voice_reply or tc.has_voice):
+
+    if not wants_voice:
         state["skip_voice"] = True
+        state["voice_url"] = None
+        state["voice_duration_ms"] = None
+        state["voice_error"] = None
+        logger.bind(turn_id=tc.turn_id).info("voice_synthesize_skipped", reason="no_voice_flags")
         return state
+
+    state["voice_url"] = None
+    state["voice_duration_ms"] = None
+    state["voice_error"] = None
 
     log = logger.bind(turn_id=tc.turn_id)
     assistant_msg = state.get("assistant_message") or ""
     emotion = state.get("emotion_state")
-    voice_id = state["persona_profile"].voice_preference if state.get("persona_profile") else None
+
+    persona = state.get("persona_profile")
+    voice_profile_id = resolve_profile_id(
+        raw_voice_preference=persona.voice_preference if persona else None,
+        persona_id=persona.persona_id if persona else None,
+    )
 
     req = VoiceSynthesisRequest(
         text=assistant_msg,
-        voice_id=voice_id,
+        voice_id=voice_profile_id,
         emotion=emotion.primary if emotion else EmotionTag.NEUTRAL,
         language=tc.user.language,
     )
 
+    log.info(
+        "voice_synthesize_begin",
+        text_len=len(assistant_msg),
+        has_voice=tc.has_voice,
+        request_voice_reply=tc.request_voice_reply,
+        voice_duration_ms_user=tc.voice_duration_ms,
+    )
+
     try:
         resp = await voice_client.post("/voice/synthesize", json_payload=req.model_dump())
-        state["voice_url"] = resp.json().get("voice_url")
-        log.info("voice_synthesized", voice_url=state["voice_url"])
-    except Exception as exc:
-        log.warning("voice_synthesis_failed", error=str(exc))
+        data = resp.json()
+        url = data.get("voice_url") or data.get("audio_url")
+        if isinstance(url, str):
+            url = url.strip() or None
+        if not url:
+            state["voice_url"] = None
+            state["voice_duration_ms"] = None
+            state["voice_error"] = (
+                f"TTS returned empty audio URL (HTTP {resp.status_code}). Body keys: {list(data.keys())}"
+            )
+            log.warning("voice_synthesis_empty_url", status=resp.status_code, keys=list(data.keys()))
+            return state
+
+        state["voice_url"] = url
+        raw_dur = data.get("duration_ms")
+        if raw_dur is not None:
+            try:
+                state["voice_duration_ms"] = int(raw_dur)
+            except (TypeError, ValueError):
+                state["voice_duration_ms"] = None
+        state["voice_error"] = None
+        log.info(
+            "voice_synthesized",
+            voice_url=state["voice_url"],
+            voice_duration_ms=state["voice_duration_ms"],
+        )
+    except httpx.HTTPStatusError as exc:
+        body = (exc.response.text or "")[:1200]
+        err_msg = f"/voice/synthesize HTTP {exc.response.status_code}: {body or exc.response.reason_phrase}"
+        with contextlib.suppress(Exception):
+            j = exc.response.json()
+            detail = j.get("detail")
+            if isinstance(detail, dict) and detail.get("message"):
+                err_msg = f"/voice/synthesize HTTP {exc.response.status_code}: {detail['message']}"
+            elif isinstance(detail, str):
+                err_msg = f"/voice/synthesize HTTP {exc.response.status_code}: {detail}"
         state["voice_url"] = None
+        state["voice_duration_ms"] = None
+        state["voice_error"] = err_msg
+        log.warning(
+            "voice_synthesis_failed_http",
+            status=exc.response.status_code,
+            body_preview=body[:400],
+        )
+    except Exception as exc:
+        err_msg = str(exc)
+        state["voice_url"] = None
+        state["voice_duration_ms"] = None
+        state["voice_error"] = err_msg
+        log.warning("voice_synthesis_failed", error=err_msg)
 
     return state
 
@@ -934,6 +1137,22 @@ async def node_send_response(state: OrchestratorState) -> OrchestratorState:
     if tc is None or state.get("error"):
         return state
 
+    # Safety: output post-check (BLOCK 时替换为兜底文案)
+    assistant_msg = state.get("assistant_message") or ""
+    if assistant_msg:
+        verdict = default_guard.check_output(assistant_msg)
+        if verdict.blocked:
+            log = logger.bind(turn_id=tc.turn_id)
+            log.warning(
+                "output_blocked_by_safety_guard",
+                matched=verdict.matched_terms,
+                reason=verdict.reason,
+            )
+            fallback = safe_fallback_reply(verdict.reason)
+            state["assistant_message"] = fallback
+            new_msgs = [m for m in state["messages"] if not isinstance(m, AIMessage)]
+            state["messages"] = new_msgs + [AIMessage(content=fallback)]
+
     # In monolithic mode the frontend reads the response directly from the
     # orchestrator HTTP response — no gateway push needed.
     if _is_monolithic():
@@ -960,12 +1179,25 @@ async def node_send_response(state: OrchestratorState) -> OrchestratorState:
     return state
 
 
-async def node_sync_memory(state: OrchestratorState) -> OrchestratorState:
-    tc = state["turn_context"]
-    if tc is None:
-        return state
+async def sync_completed_turn_to_memory(
+    *,
+    turn_context: TurnContext,
+    orchestration_state: OrchestratorState,
+    memory_channel: Optional[str] = None,
+) -> None:
+    """Persist working memory, persona deltas, and long-term memory for one completed turn.
+
+    Shared by the LangGraph ``sync_memory`` node and realtime voice (async hook).
+    """
+    tc = turn_context
+    state = orchestration_state
+    if not (tc.user_message or "").strip():
+        return
 
     log = logger.bind(turn_id=tc.turn_id)
+    assistant_msg = state.get("assistant_message") or ""
+    emotion = state.get("emotion_state")
+    relationship = state.get("relationship_metrics")
 
     # Working memory is layer-1 short-term context; we ALWAYS observe a
     # turn into it (even when the rich pipeline is disabled), because
@@ -976,23 +1208,94 @@ async def node_sync_memory(state: OrchestratorState) -> OrchestratorState:
         from memory_system.working import get_working_memory
 
         wm = get_working_memory()
-        emotion = state.get("emotion_state")
         await wm.observe_turn(
             session_id=tc.session_id,
             turn_id=tc.turn_id,
             user_message=tc.user_message,
-            assistant_message=state.get("assistant_message") or "",
+            assistant_message=assistant_msg,
             emotion=emotion.primary.value if emotion else None,
             intent=state.get("intent"),
         )
     except Exception as exc:
         log.warning("working_memory.observe_failed", error=str(exc))
 
+    # --- Personality state persistence (emotion + relationship) ---------
+    # Write current emotion back so the next turn starts from where we left off
+    if _is_monolithic():
+        try:
+            from persona_engine.runtime import get_emotion_engine
+
+            engine = get_emotion_engine()
+            # Determine sentiment for relationship tracking
+            emotion_valence = emotion.valence if emotion else 0
+            if emotion_valence > 0.2:
+                sentiment = "positive"
+            elif emotion_valence < -0.15:
+                sentiment = "negative"
+            else:
+                sentiment = "neutral"
+
+            # Detect disclosure / shared experience from message content
+            has_disclosure = bool(_NAME_PATTERN.search(tc.user_message)) or any(
+                tok in tc.user_message for tok in ("其实", "说实话", "秘密", "只告诉你", "我有个")
+            )
+            shared_experience = any(
+                tok in tc.user_message for tok in ("一起", "我们也", "我们都", "还记得那次")
+            )
+
+            # Persist emotion
+            await engine.transition_from_user_message(
+                tc.user.user_id,
+                sentiment=sentiment,
+                relationship=relationship or RelationshipMetrics(user_id=tc.user.user_id),
+                message_content=tc.user_message,
+            )
+            log.info("emotion_state_persisted", sentiment=sentiment)
+
+            # Persist relationship
+            from persona_engine.runtime import get_relationship_tracker
+
+            tracker = get_relationship_tracker()
+            await tracker.record_interaction(
+                tc.user.user_id,
+                sentiment=sentiment,
+                has_disclosure=has_disclosure,
+                is_routine=False,
+                shared_experience=shared_experience,
+            )
+            log.info("relationship_persisted", sentiment=sentiment)
+        except Exception as exc:
+            log.warning("personality_state_persist_failed", error=str(exc))
+
+    # --- User profile updates (discovered facts) ------------------------
+    if _is_monolithic():
+        try:
+            from user_profile import get_default_store
+
+            profile_store = get_default_store()
+
+            if match := _NAME_PATTERN.search(tc.user_message):
+                discovered_name = match.group(1)
+                await profile_store.merge_preferences(tc.user.user_id, nickname=discovered_name)
+                log.info("user_profile_name_discovered", name=discovered_name)
+
+            if match := _PREFERENCE_PATTERN.search(tc.user_message):
+                discovered_pref = match.group(1).strip()
+                await profile_store.merge_preferences(
+                    tc.user.user_id,
+                    latest_like=discovered_pref,
+                )
+                log.info("user_profile_preference_discovered", preference=discovered_pref)
+        except Exception as exc:
+            log.warning("user_profile_update_failed", error=str(exc))
+
+    # --- Long-term memory pipeline ---------------------------------------
     if not get_settings().enable_memory_pipeline:
-        return state
+        log.info("memory_synced")
+        return
 
     # Heuristic stash — fast, runs even without LLM key
-    for payload in _build_memory_payloads(tc, state):
+    for payload in _build_memory_payloads(tc, state, memory_channel=memory_channel):
         try:
             await memory_client.post("/memory/store", json_payload=payload)
         except Exception as exc:
@@ -1002,18 +1305,23 @@ async def node_sync_memory(state: OrchestratorState) -> OrchestratorState:
     if _is_monolithic():
         import asyncio as _asyncio
 
+        pipe_meta: Dict[str, Any] = {"intent": state.get("intent")}
+        if memory_channel:
+            pipe_meta["source_channel"] = memory_channel
+
         async def _bg_pipeline() -> None:
             try:
                 from memory_system.pipeline import run_pipeline_async
-                emotion = state.get("emotion_state")
+
+                pipe_emotion = state.get("emotion_state")
                 await run_pipeline_async(
                     {
                         "turn_id": tc.turn_id,
                         "user_id": tc.user.user_id,
                         "user_message": tc.user_message,
-                        "assistant_message": state.get("assistant_message") or "",
-                        "emotion": emotion.primary.value if emotion else None,
-                        "metadata": {"intent": state.get("intent")},
+                        "assistant_message": assistant_msg,
+                        "emotion": pipe_emotion.primary.value if pipe_emotion else None,
+                        "metadata": pipe_meta,
                     }
                 )
             except Exception as exc:
@@ -1023,6 +1331,18 @@ async def node_sync_memory(state: OrchestratorState) -> OrchestratorState:
         _asyncio.create_task(_bg_pipeline())
 
     log.info("memory_synced")
+
+
+async def node_sync_memory(state: OrchestratorState) -> OrchestratorState:
+    tc = state["turn_context"]
+    if tc is None:
+        return state
+
+    await sync_completed_turn_to_memory(
+        turn_context=tc,
+        orchestration_state=state,
+        memory_channel=None,
+    )
     return state
 
 
@@ -1190,7 +1510,7 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
         emotion_from_persona_api = False
         try:
             if _is_monolithic():
-                persona_name = persona.name if persona else "小暖"
+                persona_name = persona.name if persona else DEFAULT_PERSONA_NAME
                 async for token in _stream_response_monolithic(tc, system_prompt, persona_name):
                     accumulated.append(token)
                     yield {"event": "token", "text": token}
@@ -1227,11 +1547,8 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
                             yield {"event": "token", "text": chunk}
                         new_emotion_raw = data.get("new_emotion")
                         if isinstance(new_emotion_raw, dict):
-                            try:
-                                state["emotion_state"] = EmotionState(**new_emotion_raw)
-                                emotion_from_persona_api = True
-                            except Exception:
-                                pass
+                            state["emotion_state"] = _safe_emotion(new_emotion_raw)
+                            emotion_from_persona_api = True
                     except Exception as inner_exc:
                         logger.warning("stream.persona_generate_failed", error=str(inner_exc))
                         accumulated.append("我在呢，你继续说，我会认真听。")

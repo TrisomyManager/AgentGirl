@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from shared.models import Platform, UserProfile
-from shared.events import GatewaySendEvent, GatewayBroadcastEvent
+from shared_contracts.models import Platform, UserProfile
+from shared_contracts.events import GatewaySendEvent, GatewayBroadcastEvent
 
 from gateway_adapter.session_manager import SessionManager, SessionInfo
 from gateway_adapter.event_consumer import GatewayEventConsumer

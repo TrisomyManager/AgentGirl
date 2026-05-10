@@ -12,9 +12,9 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from shared.config import get_settings
-from shared.llm_client import load_llm_config_from_disk
-from shared.voice_runtime_config import load_voice_config_from_disk
+from shared_runtime.config import get_settings
+from shared_runtime.llm_client import load_llm_config_from_disk
+from shared_runtime.voice_runtime_config import load_voice_config_from_disk
 
 from core_orchestrator.api import router as orchestrator_router
 from core_orchestrator.event_bus import shutdown_event_bus

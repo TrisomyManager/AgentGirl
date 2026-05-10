@@ -13,7 +13,7 @@ from typing import List, Optional
 
 import structlog
 
-from shared.models import EmotionState, EmotionTag, PersonaProfile, RelationshipMetrics
+from shared_contracts.models import EmotionState, EmotionTag, PersonaProfile, RelationshipMetrics
 
 logger = structlog.get_logger("persona_engine.tone_generator")
 

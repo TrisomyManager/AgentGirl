@@ -9,9 +9,9 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import structlog
 from langchain_core.messages import AIMessage, SystemMessage
 
-from shared.config import get_settings
-from shared.events import TurnEndEvent
-from shared.models import EmotionTag, TurnContext
+from shared_runtime.config import get_settings
+from shared_contracts.events import TurnEndEvent
+from shared_contracts.models import EmotionTag, TurnContext
 
 from core_orchestrator.event_bus import EventBus, get_event_bus
 from core_orchestrator.http_client import check_all_services
@@ -127,6 +127,8 @@ class Orchestrator:
                                 "assistant_message": result["assistant_message"],
                                 "emotion": result["emotion"],
                                 "voice_url": result["voice_url"],
+                                "voice_duration_ms": result.get("voice_duration_ms"),
+                                "voice_error": result.get("voice_error"),
                                 "action_sequence": result["action_sequence"],
                                 "intent": result["intent"],
                                 "intent_confidence": result["intent_confidence"],
@@ -167,6 +169,8 @@ class Orchestrator:
             "assistant_message": state.get("assistant_message") or "",
             "emotion": emotion.model_dump() if emotion else None,
             "voice_url": state.get("voice_url"),
+            "voice_duration_ms": state.get("voice_duration_ms"),
+            "voice_error": state.get("voice_error"),
             "action_sequence": action_seq.model_dump() if action_seq else None,
             "intent": state.get("intent"),
             "intent_confidence": state.get("intent_confidence"),
@@ -182,6 +186,8 @@ class Orchestrator:
             "assistant_message": "抱歉，我刚刚有点卡住了。你可以再说一次，我会继续陪着你。",
             "emotion": None,
             "voice_url": None,
+            "voice_duration_ms": None,
+            "voice_error": None,
             "action_sequence": None,
             "intent": None,
             "intent_confidence": None,

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from shared.models import EmotionState, MemoryRecallResult, PersonaProfile, RelationshipMetrics
+from shared_contracts.models import EmotionState, MemoryRecallResult, PersonaProfile, RelationshipMetrics
 
-_DEFAULT_NAME = "小暖"
-_DEFAULT_BASE_PROMPT = "你是小暖，一个温柔体贴、善于倾听的陪伴者。请用自然温暖的中文回复。"
+_DEFAULT_NAME = "陪伴者"
+_DEFAULT_BASE_PROMPT = "你是一个温柔体贴、善于倾听的陪伴者。请用自然温暖的中文回复。"
 
 _EMOTION_ZH = {
     "calm": "平静",

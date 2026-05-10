@@ -21,9 +21,9 @@ import structlog
 from celery import Celery
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.config import get_settings
-from shared.llm_client import get_runtime_llm_config
-from shared.models import EmotionTag, MemoryCategory, MemoryEntry
+from shared_runtime.config import get_settings
+from shared_runtime.llm_client import get_runtime_llm_config
+from shared_contracts.models import EmotionTag, MemoryCategory, MemoryEntry
 
 from memory_system.db import AsyncSessionLocal
 from memory_system.graph_store import graph_store

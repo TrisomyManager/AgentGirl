@@ -10,8 +10,8 @@ import asyncpg
 import structlog
 
 import shared.models
-from shared.models import DeviceInfo, DeviceType
-from shared.config import get_settings
+from shared_contracts.models import DeviceInfo, DeviceType
+from shared_runtime.config import get_settings
 
 logger = structlog.get_logger(__name__)
 

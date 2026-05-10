@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from shared.models import EmotionState, EmotionTag, MemoryCategory, MemoryEntry, MemoryRecallResult, PersonaProfile, RelationshipMetrics
+from shared_contracts.models import EmotionState, EmotionTag, MemoryCategory, MemoryEntry, MemoryRecallResult, PersonaProfile, RelationshipMetrics
 from shared.prompt_engine import build_base_system_prompt, build_conversation_system_prompt
 
 
 def test_build_base_system_prompt_without_persona() -> None:
     prompt = build_base_system_prompt()
-    assert "小暖" in prompt
     assert "陪伴者" in prompt
+    assert "温柔体贴" in prompt
 
 
 def test_build_base_system_prompt_with_persona_uses_name() -> None:

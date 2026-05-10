@@ -1,0 +1,160 @@
+; ============================================================================
+; companion-ai 架构契约 (与 ARCHITECTURE.md / MODULE_CONTRACTS.md / ADR-006 对齐)
+;
+; 口径: 内部技术原型 + 模块化通用能力库 + 宿主无关
+; 目的: 把"反向依赖 / 直连 LLM SDK / 模块横向耦合 / 共享层依赖倒置"变成 CI 红灯
+;
+; 波次 3 阶段: shared/ 三层拆分已完成 波次 1-2, 契约覆盖 shared_contracts / shared_runtime
+; ============================================================================
+
+[importlinter]
+root_packages =
+    shared
+    shared_contracts
+    shared_runtime
+    core_orchestrator
+    persona_engine
+    memory_system
+    voice_layer
+    action_layer
+    action_executor
+    device_coordination
+    gateway_adapter
+include_external_packages = True
+
+
+; ----------------------------------------------------------------------------
+; 契约 1: 业务模块 + 共享层 禁止反向 import core_orchestrator (ADR-006 硬约束)
+; core_orchestrator 是参考集成 demo, 任何模块不应依赖它
+; ----------------------------------------------------------------------------
+[importlinter:contract:no-reverse-orchestrator]
+name = 禁止反向 import core_orchestrator
+type = forbidden
+source_modules =
+    shared
+    shared_contracts
+    shared_runtime
+    persona_engine
+    memory_system
+    voice_layer
+    action_layer
+    action_executor
+    device_coordination
+    gateway_adapter
+forbidden_modules =
+    core_orchestrator
+
+
+; ----------------------------------------------------------------------------
+; 契约 2: 业务模块 + core_orchestrator 禁止直连 LLM 厂商 SDK (ADR-006 硬约束)
+; 必须通过 shared_runtime.llm_client 调用
+; voice_layer/providers/ 封装层允许内部导入厂商 SDK
+; ignore: core_orchestrator → voice_layer 是已知跨模块调用 (波次 3-4 解耦)
+; ----------------------------------------------------------------------------
+[importlinter:contract:no-direct-llm-sdk]
+name = 业务模块禁止直连 LLM 厂商 SDK
+type = forbidden
+source_modules =
+    persona_engine
+    memory_system
+    action_layer
+    action_executor
+    device_coordination
+    gateway_adapter
+    core_orchestrator
+forbidden_modules =
+    openai
+    anthropic
+    litellm
+    dashscope
+ignore_imports =
+    ; core_orchestrator → voice_layer → dashscope 传递链 (波次 3-4 解耦)
+    ; L416: core_orchestrator.api → voice_layer.api → voice_layer.asr → dashscope
+    ; L417: core_orchestrator.api → voice_layer.asr → dashscope
+    core_orchestrator.api -> voice_layer.api
+    core_orchestrator.api -> voice_layer.asr
+
+
+; ----------------------------------------------------------------------------
+; 契约 3: shared_contracts 零业务依赖 + 零 shared_runtime 依赖 (核心约束)
+; shared_contracts 是纯数据契约层, 只能依赖 pydantic + stdlib
+; ----------------------------------------------------------------------------
+[importlinter:contract:contracts-zero-dep]
+name = shared_contracts 零业务依赖 + 零运行时依赖
+type = forbidden
+source_modules =
+    shared_contracts
+forbidden_modules =
+    shared_runtime
+    persona_engine
+    memory_system
+    voice_layer
+    action_layer
+    action_executor
+    device_coordination
+    gateway_adapter
+    core_orchestrator
+
+
+; ----------------------------------------------------------------------------
+; 契约 4: shared_runtime 禁止 import 业务模块 (实现层不依赖业务)
+; shared_runtime 是宿主可替换的运行时, 必须保持业务无关
+; ----------------------------------------------------------------------------
+[importlinter:contract:runtime-zero-business-dep]
+name = shared_runtime 禁止 import 业务模块
+type = forbidden
+source_modules =
+    shared_runtime
+forbidden_modules =
+    persona_engine
+    memory_system
+    voice_layer
+    action_layer
+    action_executor
+    device_coordination
+    gateway_adapter
+    core_orchestrator
+
+
+; ----------------------------------------------------------------------------
+; 契约 5: 业务模块之间禁止横向 import (按"独立可拆"原则)
+; 横向通信通过 shared_contracts 的事件/数据模型 或 HTTP API
+; 注意: action_layer → action_executor 是已知技术债, 通过 ignore_imports 管理
+; ----------------------------------------------------------------------------
+[importlinter:contract:no-cross-module-import]
+name = 业务模块之间禁止横向 import
+type = independence
+modules =
+    persona_engine
+    memory_system
+    voice_layer
+    action_layer
+    action_executor
+    device_coordination
+    gateway_adapter
+ignore_imports =
+    ; 已知: action_layer → action_executor (波次 3 待合并/解耦)
+    action_layer -> action_executor.action2d.lip_sync
+    action_layer -> action_executor.action2d.generator_2d
+    action_layer -> action_executor.action2d.sequencer
+    action_layer -> action_executor.action2d.router
+    action_layer.main -> action_executor.action2d.main
+    action_layer.api -> action_executor.action2d.api
+    action_layer.generator_2d -> action_executor.action2d.generator_2d
+    action_layer.lip_sync -> action_executor.action2d.lip_sync
+    action_layer.router -> action_executor.action2d.router
+    action_layer.sequencer -> action_executor.action2d.sequencer
+
+
+; ----------------------------------------------------------------------------
+; 契约 6: shared (已废弃 shim) 不得被 shared_runtime 反向 import
+; 依赖方向: shared_contracts ← shared_runtime ← shared (shim re-export)
+; shared_runtime 不得反向 import shared (会形成循环)
+; ----------------------------------------------------------------------------
+[importlinter:contract:no-runtime-to-shared]
+name = shared_runtime 禁止 import shared (废弃 shim)
+type = forbidden
+source_modules =
+    shared_runtime
+forbidden_modules =
+    shared

@@ -6,8 +6,8 @@ from typing import AsyncGenerator
 import structlog
 from fastapi import FastAPI
 
-from shared.config import get_settings
-from shared.events import DeviceHeartbeatEvent
+from shared_runtime.config import get_settings
+from shared_contracts.events import DeviceHeartbeatEvent
 
 from .api import router, set_dependencies
 from .mqtt_client import DeviceMQTTClient

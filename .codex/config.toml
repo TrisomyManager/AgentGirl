@@ -1,0 +1,10 @@
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+ANTHROPIC_API_KEY = "sk-kimi-zr3kVgoH4Mgm7jfbgAkYSyrleGK0Rv54IEwSeT476OH8Wz94FlH2trWg9FnNkaHn"
+ANTHROPIC_BASE_URL = "https://api.kimi.com/coding/"
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = "50"
+CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = "1"
+ENABLE_TOOL_SEARCH = "false"
+MAX_THINKING_TOKENS = "10000"

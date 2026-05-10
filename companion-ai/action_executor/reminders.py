@@ -36,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import and_
 
 from action_executor.push_bus import PushEvent, get_proactive_push_bus
-from shared.database import AsyncSessionLocal, Base
+from shared_runtime.database import AsyncSessionLocal, Base
 
 logger = structlog.get_logger("action_executor.reminders")
 

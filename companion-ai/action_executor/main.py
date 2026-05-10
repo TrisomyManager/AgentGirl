@@ -16,8 +16,8 @@ from fastapi import FastAPI
 from action_executor import handlers  # noqa: F401 — register builtins
 from action_executor.api import router
 from action_executor.reminders import get_reminder_scheduler
-from shared.config import get_settings
-from shared.database import init_database_schema
+from shared_runtime.config import get_settings
+from shared_runtime.database import init_database_schema
 
 logger = structlog.get_logger("action_executor.main")
 

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from shared.models import ActionType, EmotionTag
+from shared_contracts.models import ActionType, EmotionTag
 from action_layer.generator_2d import Action2DGenerator
 from action_layer.lip_sync import LipSyncGenerator, Viseme
 from action_layer.main import create_app

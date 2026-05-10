@@ -4,7 +4,7 @@ import structlog
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
-from shared.config import get_settings
+from shared_runtime.config import get_settings
 
 from memory_system.api import router as memory_router
 from memory_system.db import close_engine, init_schema

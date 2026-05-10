@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from shared.models import DeviceInfo, DeviceType, Platform
-from shared.events import DeviceHeartbeatEvent
+from shared_contracts.models import DeviceInfo, DeviceType, Platform
+from shared_contracts.events import DeviceHeartbeatEvent
 
 from device_coordination.registry import DeviceRegistry, HEARTBEAT_TIMEOUT_SECONDS
 from device_coordination.task_dispatcher import TaskDispatcher

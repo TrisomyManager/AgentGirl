@@ -1,0 +1,4 @@
+.bin/
+
+# Local voice runtime secrets (default path is user config dir; ignore if copied into repo)
+companion_voice_config.json

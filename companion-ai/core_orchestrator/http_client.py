@@ -10,7 +10,7 @@ import httpx
 import structlog
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from shared.config import get_settings
+from shared_runtime.config import get_settings
 
 logger = structlog.get_logger()
 

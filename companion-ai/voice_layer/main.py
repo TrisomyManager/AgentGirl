@@ -6,11 +6,12 @@ import structlog
 import uvicorn
 from fastapi import FastAPI
 
-from shared.config import get_settings
-from shared.voice_runtime_config import load_voice_config_from_disk
-from voice_layer.api import asr_client, router, tts_client
+from shared_runtime.config import get_settings
+from shared_runtime.voice_runtime_config import load_voice_config_from_disk
+from voice_layer.api import router
 from voice_layer.asr import ASRClient
 from voice_layer.tts import TTSClient
+from voice_layer.voice_static import mount_voice_static_files
 
 logger = structlog.get_logger("voice_layer.main")
 
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
         version="0.2.0",
         lifespan=lifespan,
     )
+    mount_voice_static_files(app)
     app.include_router(router)
     return app
 
