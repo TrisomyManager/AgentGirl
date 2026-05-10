@@ -58,6 +58,7 @@ _TOOL_KEYWORDS = (
     "搜索",
     "查一下",
     "帮我查",
+    "网上搜索",
     "计算",
     "翻译",
     "几点",
@@ -74,6 +75,17 @@ _TOOL_KEYWORDS = (
     "取消提醒",
     "remind me",
     "set reminder",
+    # timer / countdown
+    "计时",
+    "倒计时",
+    "定时",
+    "计时器",
+    # profile update (explicit requests only — "我喜欢" / "我叫" are
+    # kept as CHAT so casual disclosures are not mis-routed to TOOL_USE)
+    "更新设置",
+    "更新我的资料",
+    # memory query via tool
+    "查一下记忆",
 )
 _ACTION_KEYWORDS = (
     "抱抱",
