@@ -134,6 +134,12 @@ export interface LlmConfigSnapshot {
   model: string;
 }
 
+export interface ToolStatusPayload {
+  tool_name: string;
+  status: 'pending' | 'success' | 'error';
+  message?: string;
+}
+
 export function useApi() {
   const isLoading = ref(false);
   const error = ref<string | null>(null);
@@ -196,6 +202,7 @@ export function useApi() {
       memory_entries_count?: number;
     }) => void;
     onToken?: (text: string) => void;
+    onToolStatus?: (payload: ToolStatusPayload) => void;
     onError?: (msg: string) => void;
   }
 
@@ -238,6 +245,11 @@ export function useApi() {
             break;
           case 'token':
             if (typeof parsed.text === 'string') handlers.onToken?.(parsed.text);
+            break;
+          case 'tool_status':
+            if (parsed && typeof parsed === 'object' && 'tool_name' in parsed) {
+              handlers.onToolStatus?.(parsed as ToolStatusPayload);
+            }
             break;
           case 'error':
             handlers.onError?.(parsed.error || 'unknown stream error');
@@ -703,6 +715,15 @@ export function useApi() {
     listMemories,
     getMemorySummary,
     recallMemory,
+    deleteMemory,
+    deleteAllMemories,
+    listReminders,
+    cancelReminder,
+    listActions,
+    clearError,
+  };
+}
+recallMemory,
     deleteMemory,
     deleteAllMemories,
     listReminders,
