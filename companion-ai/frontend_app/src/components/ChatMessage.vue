@@ -62,6 +62,10 @@
           <span v-html="renderedContent"></span>
           <span v-if="message.isTyping" class="streaming-cursor" aria-hidden="true">▍</span>
         </div>
+        <div v-if="toolIndicatorVisible" class="tool-indicator" :class="toolIndicatorClass">
+          <span class="tool-icon" aria-hidden="true">{{ toolIndicatorIcon }}</span>
+          <span class="tool-label">{{ toolIndicatorLabel }}</span>
+        </div>
         <div v-if="assistantVoiceVisible" class="assistant-voice-row">
           <template v-if="message.voiceStatus === 'pending'">
             <span class="voice-pending" aria-live="polite">语音合成中…</span>
@@ -106,10 +110,12 @@
 import { computed, onUnmounted, ref, watch } from 'vue';
 import type { AssistantVoicePlaybackEvent, ChatMessage } from '../composables/useChat';
 import type { useVoice } from '../composables/useVoice';
+import type { ToolExecutionState } from '../composables/useToolStatus';
 
 const props = defineProps<{
   message: ChatMessage;
   voice: ReturnType<typeof useVoice>;
+  toolExecution?: ToolExecutionState | null;
 }>();
 
 const emit = defineEmits<{
@@ -180,6 +186,53 @@ const ttsErrorShort = computed(() => {
   const m = props.message.ttsErrorMessage || '';
   if (m.includes('404')) return '语音文件不存在';
   return '播放失败';
+});
+
+/* ── Tool execution indicator ── */
+const toolIndicatorVisible = computed(() => {
+  if (props.message.role !== 'assistant') return false;
+  return (
+    !!props.toolExecution &&
+    (props.toolExecution.status === 'pending' || props.toolExecution.status === 'error')
+  );
+});
+
+const toolIndicatorClass = computed(() => {
+  return props.toolExecution?.status || '';
+});
+
+const toolIndicatorIcon = computed(() => {
+  switch (props.toolExecution?.status) {
+    case 'pending':
+      return '🔄';
+    case 'error':
+      return '⚠️';
+    default:
+      return '';
+  }
+});
+
+const toolIndicatorLabel = computed(() => {
+  const te = props.toolExecution;
+  if (!te) return '';
+  const nameMap: Record<string, string> = {
+    weather: '查天气',
+    search: '搜索',
+    reminder: '设提醒',
+    memory_recall: '回忆',
+    memory_save: '记住',
+    calculator: '计算',
+    web_search: '网络搜索',
+    image_search: '搜图片',
+    news: '查新闻',
+    translate: '翻译',
+    calendar: '查日历',
+    todo: '待办事项',
+  };
+  const label = nameMap[te.toolName] || te.toolName || '处理';
+  if (te.status === 'pending') return `小暖正在${label}…`;
+  if (te.status === 'error') return `${label}失败`;
+  return '';
 });
 
 function renderMarkdown(text: string): string {
@@ -555,6 +608,56 @@ onUnmounted(() => {
   color: #e94560;
   animation: cursorBlink 1s steps(1) infinite;
   font-weight: 700;
+}
+
+.tool-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  opacity: 0.85;
+  transition: all 0.25s ease;
+  animation: fadeInUp 0.25s ease;
+  width: fit-content;
+}
+
+.tool-indicator.pending {
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.tool-indicator.error {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+.tool-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.tool-indicator.pending .tool-icon {
+  animation: toolSpin 1.5s linear infinite;
+}
+
+.tool-label {
+  white-space: nowrap;
+}
+
+@keyframes toolSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes cursorBlink {
