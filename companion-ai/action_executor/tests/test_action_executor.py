@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import datetime, timedelta, timezone
+from typing import Any, Dict
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -26,10 +28,19 @@ from action_executor.handlers import (
     get_time,
     get_weather,
     list_reminders,
+    query_memory,
     set_reminder,
+    timer_countdown,
+    update_user_profile,
+    web_search,
 )
 from action_executor.push_bus import ProactivePushBus, PushEvent
-from action_executor.registry import ActionRegistry, ActionResult, get_registry
+from action_executor.registry import (
+    ActionDefinition,
+    ActionRegistry,
+    ActionResult,
+    get_registry,
+)
 from action_executor.reminders import (
     ReminderScheduler,
     RemindersStore,
@@ -37,6 +48,7 @@ from action_executor.reminders import (
     parse_relative_delay,
     parse_repeat_interval,
 )
+from action_executor.search_provider import SearchProvider, SearchResult
 from shared_runtime.database import init_database_schema
 
 
@@ -349,3 +361,259 @@ def test_extract_reminder_body_strips_prefix_and_delay() -> None:
     assert extract_reminder_body("提醒我3分钟后喝水") == "喝水"
     assert extract_reminder_body("帮我提醒 10 分钟后下楼拿快递") == "下楼拿快递"
     assert extract_reminder_body("remind me in 5 minutes to stretch") == "to stretch"
+
+
+# ---------------------------------------------------------------------------
+# New handlers — query_memory, update_user_profile, timer_countdown, web_search
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_query_memory_returns_formatted_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """query_memory should recall long-term memories and format them warmly."""
+
+    _fake_entries = [
+        MagicMock(content="喜欢喝绿茶", importance=0.8),
+        MagicMock(content="周末喜欢看电影", importance=0.6),
+    ]
+
+    async def _fake_recall(*, session, user_id, query, top_k, include_graph):  # noqa: ANN001, ANN202
+        class _FakeResult:
+            entries = _fake_entries
+
+        return _FakeResult()
+
+    async def _fake_list_memories(*, session, user_id, limit):  # noqa: ANN001, ANN202
+        return _fake_entries
+
+    # Patch the source modules where handlers import from.
+    monkeypatch.setattr("memory_system.recall.recall_memory", _fake_recall)
+    monkeypatch.setattr("memory_system.vector_store.list_user_memories", _fake_list_memories)
+
+    # Mock working memory.
+    _fake_wm_state = MagicMock(
+        session_id="sess-1",
+        turns=[MagicMock()],
+        user_name="小明",
+        dominant_topic="生活",
+        session_digest="聊得很开心",
+        last_user_emotion="happy",
+    )
+    _fake_wm = MagicMock()
+    _fake_wm.snapshot = AsyncMock(return_value=_fake_wm_state)
+    monkeypatch.setattr("memory_system.working.get_working_memory", lambda: _fake_wm)
+
+    # Mock AsyncSessionLocal as a context manager.
+    class _FakeSessionCtx:
+        async def __aenter__(self):
+            return MagicMock()
+
+        async def __aexit__(self, *args):
+            return None
+
+    monkeypatch.setattr("shared_runtime.database.AsyncSessionLocal", _FakeSessionCtx)
+
+    result = await query_memory({"user_id": "u-1", "query": "爱好", "session_id": "sess-1"})
+
+    assert result.ok, result.message
+    assert "喜欢喝绿茶" in result.message
+    assert "周末喜欢看电影" in result.message
+    assert result.data["long_term_count"] == 2
+    assert result.data["working_memory"]["user_name"] == "小明"
+
+
+@pytest.mark.asyncio
+async def test_update_user_profile_updates_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """update_user_profile should update preferences and return warm confirmation."""
+
+    _stored: Dict[str, Any] = {}
+
+    class _FakeStore:
+        async def get(self, user_id: str):
+            return _stored.get(user_id)
+
+        async def upsert(self, snap):
+            _stored[snap.user_id] = snap
+
+        async def merge_preferences(self, user_id: str, **prefs):
+            class _FakeSnap:
+                def __init__(self):
+                    self.user_id = user_id
+                    self.preferences = prefs
+
+            _stored[user_id] = _FakeSnap()
+            return _FakeSnap()
+
+    # Patch the source module where handlers imports from.
+    monkeypatch.setattr("user_profile.get_default_store", _FakeStore)
+
+    class _FakeSnapshot:
+        def __init__(self, user_id, display_name=None, locale="zh-CN"):  # noqa: ANN001
+            self.user_id = user_id
+            self.display_name = display_name
+            self.locale = locale
+            self.preferences = {}
+            self.traits = {}
+            self.metadata = {}
+
+    monkeypatch.setattr("user_profile.UserProfileSnapshot", _FakeSnapshot)
+
+    result = await update_user_profile(
+        {"user_id": "u-1", "field": "preference", "value": "喜欢喝抹茶"}
+    )
+    assert result.ok, result.message
+    assert "记下啦" in result.message
+    assert "喜欢喝抹茶" in result.message
+
+    # Test display_name special case.
+    result2 = await update_user_profile(
+        {"user_id": "u-1", "field": "name", "value": "小华"}
+    )
+    assert result2.ok
+    assert "小华" in result2.message
+
+
+@pytest.mark.asyncio
+async def test_update_user_profile_rejects_missing_params() -> None:
+    result = await update_user_profile({})
+    assert result.ok is False
+    assert "user_id" in result.message or "告诉" in result.message
+
+    result2 = await update_user_profile({"user_id": "u-1"})
+    assert result2.ok is False
+    assert "字段" in result2.message or "field" in result2.message.lower()
+
+
+@pytest.mark.asyncio
+async def test_timer_countdown_creates_reminder_like_entry() -> None:
+    """timer_countdown should create a reminder-style entry with correct fire_at."""
+    now = datetime.now(timezone.utc)
+
+    result = await timer_countdown(
+        {
+            "user_id": "timer-user",
+            "duration_seconds": 300,
+            "label": "泡茶",
+        }
+    )
+
+    assert result.ok, result.message
+    assert result.data.get("fire_in_seconds", 0) > 0
+    assert "泡茶" in result.data.get("label", "")
+    reminder = result.data.get("reminder")
+    assert reminder is not None
+    fire_at = datetime.fromisoformat(reminder["fire_at"])
+    delta = (fire_at - now).total_seconds()
+    assert 290 <= delta <= 310  # generous window
+
+
+@pytest.mark.asyncio
+async def test_timer_countdown_parses_raw_text() -> None:
+    """timer_countdown should parse duration from raw_text when duration_seconds is absent."""
+    result = await timer_countdown(
+        {
+            "user_id": "timer-user",
+            "raw_text": "5 分钟后",
+        }
+    )
+    assert result.ok, result.message
+    assert result.data.get("fire_in_seconds", 0) > 0
+
+
+@pytest.mark.asyncio
+async def test_timer_countdown_rejects_no_duration() -> None:
+    result = await timer_countdown({"user_id": "u-1"})
+    assert result.ok is False
+    assert "duration" in result.data.get("error", "") or "计时" in result.message
+
+
+@pytest.mark.asyncio
+async def test_web_search_without_api_key_returns_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """web_search should return a graceful message when no search API key is configured."""
+
+    class _NoKeySettings:
+        search_api_key = None
+
+    monkeypatch.setattr("shared_runtime.config.get_settings", lambda: _NoKeySettings())
+
+    result = await web_search({"query": "Python 教程"})
+    assert result.ok is False
+    assert "连不上搜索引擎" in result.message or "抱歉" in result.message
+
+
+class _MockSearchProvider(SearchProvider):
+    """Mock provider for testing web_search with a key."""
+
+    async def search(self, query: str) -> SearchResult:
+        return SearchResult(
+            query=query,
+            results=[
+                {"title": "Python 教程", "snippet": "Python 入门指南", "url": "https://example.com/python"}
+            ],
+            answer="Python 是一种编程语言。",
+            source="mock",
+        )
+
+
+@pytest.mark.asyncio
+async def test_web_search_with_mock_provider_returns_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    """web_search should return formatted results when a provider is available."""
+
+    class _WithKeySettings:
+        search_api_key = "fake-key"
+
+    monkeypatch.setattr("shared_runtime.config.get_settings", lambda: _WithKeySettings())
+    monkeypatch.setattr(
+        "action_executor.handlers.get_search_provider",
+        _MockSearchProvider,
+    )
+
+    result = await web_search({"query": "Python"})
+    assert result.ok, result.message
+    assert "Python 是一种编程语言" in result.message
+    assert "mock" in result.data.get("source", "")
+
+
+# ---------------------------------------------------------------------------
+# Metadata fields
+# ---------------------------------------------------------------------------
+
+
+def test_action_definition_has_api_key_metadata() -> None:
+    """ActionDefinition should expose needs_api_key, api_key_env_var, category, requires_user_id."""
+
+    async def _dummy_handler(_p):
+        return ActionResult()
+
+    ad = ActionDefinition(
+        name="test",
+        description="test desc",
+        params_schema={},
+        keywords=[],
+        handler=_dummy_handler,
+        needs_api_key=True,
+        api_key_env_var="COMPANION_TEST_KEY",
+        category="info",
+        requires_user_id=True,
+    )
+    meta = ad.to_meta()
+    assert meta["needs_api_key"] is True
+    assert meta["api_key_env_var"] == "COMPANION_TEST_KEY"
+    assert meta["category"] == "info"
+    assert meta["requires_user_id"] is True
+
+
+def test_builtin_actions_have_metadata() -> None:
+    """All built-in actions should expose the new metadata fields in registry."""
+    registry = get_registry()
+    actions = registry.list_actions()
+    for meta in actions:
+        assert "needs_api_key" in meta
+        assert "category" in meta
+        assert "requires_user_id" in meta
+
+    # Specifically check web_search has key metadata.
+    web_search_meta = next((m for m in actions if m["name"] == "web_search"), None)
+    assert web_search_meta is not None
+    assert web_search_meta["needs_api_key"] is True
+    assert web_search_meta["api_key_env_var"] == "COMPANION_SEARCH_API_KEY"
