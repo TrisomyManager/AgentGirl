@@ -421,6 +421,156 @@ async def _try_action_executor(tc: TurnContext, intent: str) -> Optional[Dict[st
     }
 
 
+async def _record_tool_interaction_to_memory(
+    tc: TurnContext,
+    action_result: Dict[str, Any],
+) -> None:
+    """Record tool usage to long-term memory.
+
+    This ensures the companion remembers:
+    - What tool the user asked for
+    - What the result was
+    - Any important facts extracted from the interaction
+    """
+    tool_name = action_result.get("name", "unknown")
+    tool_message = action_result.get("message", "")
+    tool_data = action_result.get("data") or {}
+
+    # Build a summary of the tool interaction
+    summary_parts: List[str] = [f"用户请求了 {tool_name} 工具"]
+
+    # Tool-specific detail extraction
+    if tool_name == "set_reminder":
+        reminder_content = (
+            tool_data.get("content")
+            or tool_data.get("reminder_content")
+            or ""
+        )
+        reminder_time = (
+            tool_data.get("fire_at")
+            or tool_data.get("remind_at")
+            or tool_data.get("time")
+            or ""
+        )
+        if reminder_content:
+            summary_parts.append(f"提醒内容：{reminder_content}")
+        if reminder_time:
+            summary_parts.append(f"提醒时间：{reminder_time}")
+    elif tool_name == "get_weather":
+        location = (
+            tool_data.get("location")
+            or tool_data.get("city")
+            or ""
+        )
+        weather = (
+            tool_data.get("weather")
+            or tool_data.get("description")
+            or tool_data.get("condition")
+            or ""
+        )
+        temperature = (
+            tool_data.get("temperature")
+            or tool_data.get("temp")
+            or ""
+        )
+        if location:
+            summary_parts.append(f"查询地点：{location}")
+        if weather:
+            summary_parts.append(f"天气：{weather}")
+        if temperature:
+            summary_parts.append(f"温度：{temperature}")
+    elif tool_name == "query_memory":
+        query = tool_data.get("query") or tool_data.get("topic") or ""
+        if query:
+            summary_parts.append(f"查询主题：{query}")
+    elif tool_name == "update_user_profile":
+        field = tool_data.get("field") or ""
+        value = tool_data.get("value") or ""
+        if field and value:
+            summary_parts.append(f"更新字段：{field} = {value}")
+    elif tool_name == "timer_countdown":
+        duration = (
+            tool_data.get("duration")
+            or tool_data.get("seconds")
+            or ""
+        )
+        label = tool_data.get("label") or ""
+        if duration:
+            summary_parts.append(f"计时时长：{duration}秒")
+        if label:
+            summary_parts.append(f"标签：{label}")
+    elif tool_name == "web_search":
+        query = tool_data.get("query") or tool_data.get("q") or ""
+        if query:
+            summary_parts.append(f"搜索关键词：{query}")
+
+    summary_parts.append(f"结果：{tool_message[:200]}")
+    content = "，".join(summary_parts)
+
+    # Store tool interaction as a long-term memory event
+    try:
+        await memory_client.post(
+            "/memory/store",
+            json_payload={
+                "user_id": tc.user.user_id,
+                "category": MemoryCategory.EVENT.value,
+                "content": content,
+                "importance": 0.6,
+                "emotion_tags": [],
+                "source_turn_id": tc.turn_id,
+            },
+        )
+    except Exception as exc:
+        logger.debug(
+            "tool_interaction_memory_store_failed",
+            error=str(exc),
+            tool=tool_name,
+        )
+
+    # Extract important facts from the tool interaction for long-term memory
+    fact_content: Optional[str] = None
+    fact_category: Optional[str] = None
+    fact_importance = 0.7
+
+    if tool_name == "set_reminder":
+        reminder_content = (
+            tool_data.get("content")
+            or tool_data.get("reminder_content")
+            or ""
+        )
+        if reminder_content:
+            fact_content = f"用户设置了一个提醒：{reminder_content}"
+            fact_category = MemoryCategory.ROUTINE.value
+            fact_importance = 0.75
+    elif tool_name == "update_user_profile":
+        field = tool_data.get("field") or ""
+        value = tool_data.get("value") or ""
+        if field and value:
+            fact_content = f"用户的 {field} 是 {value}"
+            fact_category = MemoryCategory.FACT.value
+            fact_importance = 0.85
+
+    if fact_content and fact_category:
+        try:
+            await memory_client.post(
+                "/memory/store",
+                json_payload={
+                    "user_id": tc.user.user_id,
+                    "category": fact_category,
+                    "content": fact_content,
+                    "importance": fact_importance,
+                    "emotion_tags": [],
+                    "source_turn_id": tc.turn_id,
+                },
+            )
+        except Exception as exc:
+            logger.debug(
+                "tool_fact_memory_store_failed",
+                error=str(exc),
+                tool=tool_name,
+            )
+
+
 async def _generate_response_monolithic(tc: TurnContext, system_prompt: str, persona_name: str = DEFAULT_PERSONA_NAME) -> str:
     """Call LLM directly (monolithic mode) without HTTP roundtrip to persona_engine."""
     from shared.llm_client import LLMClient
@@ -931,15 +1081,27 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
             return state
 
     action_handled = await _try_action_executor(tc, intent)
-    if action_handled is not None and action_handled.get("ok"):
-        assistant_msg = action_handled.get("message") or "好的。"
-        state["assistant_message"] = assistant_msg
-        state["messages"] = messages + [AIMessage(content=assistant_msg)]
-        state["emotion_state"] = _derive_emotion(
-            tc.user_message, assistant_msg, state.get("emotion_state")
-        )
-        log.info("action_executor_handled", name=action_handled.get("name"))
-        return state
+    if action_handled is not None:
+        if action_handled.get("ok"):
+            assistant_msg = action_handled.get("message") or "好的。"
+            state["assistant_message"] = assistant_msg
+            state["messages"] = messages + [AIMessage(content=assistant_msg)]
+            state["emotion_state"] = _derive_emotion(
+                tc.user_message, assistant_msg, state.get("emotion_state")
+            )
+            await _record_tool_interaction_to_memory(tc, action_handled)
+            log.info("action_executor_handled", name=action_handled.get("name"))
+            return state
+        else:
+            # Tool failed: inject error context into LLM prompt so the
+            # companion can explain gently instead of surfacing raw errors.
+            tool_error_msg = action_handled.get("message", "")
+            error_note = (
+                f"\n\n【系统提示】你尝试调用工具但遇到了问题：{tool_error_msg}。"
+                "请用温柔的口吻告诉用户发生了什么，并建议替代方案。"
+            )
+            system_prompt += error_note
+            messages = messages + [SystemMessage(content=error_note)]
 
     # Monolithic mode: call LLM/fallback directly, skip HTTP to persona_engine
     if _is_monolithic():
@@ -1465,6 +1627,13 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
 
     intent = state.get("intent") or Intent.CHAT.value
 
+    # Evaluate tool execution before branching so we can handle both
+    # success (stream deterministic reply) and failure (inject error
+    # context into LLM prompt) without duplicating LLM streaming code.
+    action_handled: Optional[Dict[str, Any]] = None
+    if intent == Intent.TOOL_USE.value:
+        action_handled = await _try_action_executor(tc, intent)
+
     # Device-command intents short-circuit the LLM entirely (same logic as
     # node_generate_response). We still emit the device response as a single
     # token so the UI can render it like a streamed reply.
@@ -1489,10 +1658,11 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
         state["emotion_state"] = _derive_emotion(
             tc.user_message, assistant_msg, state.get("emotion_state")
         )
-    elif (action_handled := await _try_action_executor(tc, intent)) and action_handled.get("ok"):
-        # Action executor handled it (set_reminder / get_time / ...). Stream
-        # the deterministic reply through chunk_text_stream so the UI gets
-        # the same token-by-token feel as an LLM reply.
+    elif action_handled is not None and action_handled.get("ok"):
+        # Tool success — stream the deterministic reply through
+        # chunk_text_stream so the UI gets the same token-by-token feel
+        # as an LLM reply. Record the interaction to memory first.
+        await _record_tool_interaction_to_memory(tc, action_handled)
         from shared.llm_client import chunk_text_stream
 
         assistant_msg = action_handled.get("message") or "好的。"
@@ -1506,6 +1676,15 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
         state["emotion_state"] = _derive_emotion(tc.user_message, full, state.get("emotion_state"))
         logger.info("stream.action_executor_handled", name=action_handled.get("name"))
     else:
+        # Tool failed or normal chat — if tool failed, inject error context
+        # into the system prompt so the LLM can explain gently.
+        if action_handled is not None and not action_handled.get("ok"):
+            tool_error_msg = action_handled.get("message", "")
+            system_prompt += (
+                f"\n\n【系统提示】你尝试调用工具但遇到了问题：{tool_error_msg}。"
+                "请用温柔的口吻告诉用户发生了什么，并建议替代方案。"
+            )
+
         accumulated: List[str] = []
         emotion_from_persona_api = False
         try:
