@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue';
 import { useApi, type TranscribeVoiceResult, type TurnResponse } from './useApi';
 import { useVoice } from './useVoice';
+import { useToolStatus } from './useToolStatus';
 
 type AsrFailureCode = Extract<TranscribeVoiceResult, { ok: false }>['code'];
 
@@ -200,6 +201,7 @@ export function useChat() {
     checkServer,
   } = useApi();
   const voice = useVoice();
+  const toolStatus = useToolStatus();
 
   if (!localStorage.getItem(STORAGE_SESSION_KEY)) {
     localStorage.setItem(STORAGE_SESSION_KEY, sessionId.value);
@@ -297,6 +299,7 @@ export function useChat() {
   }
 
   async function runStreamedTurn(userMessage: string, options: SendMessageOptions = {}): Promise<void> {
+    toolStatus.resetForNewTurn();
     const wantsVoiceReply = options.requestVoiceReply ?? voice.autoPlayEnabled.value;
     const turnReq = {
       session_id: sessionId.value,
@@ -334,15 +337,25 @@ export function useChat() {
           currentEmotion.value = meta.emotion.primary;
         }
       },
+      onToolStatus: (payload) => {
+        if (payload.status === 'pending') {
+          toolStatus.startTool(payload.tool_name, payload.message);
+        } else {
+          toolStatus.endTool(payload.status === 'success', payload.message);
+        }
+      },
       onError: () => {
         /* error ref set in useApi */
+        toolStatus.endTool(false, '流式传输出错');
       },
     });
     isTyping.value = false;
 
     if (resp) {
       finalizeStreamedMessage(assistantId, resp);
+      toolStatus.endTool(true);
     } else {
+      toolStatus.endTool(false, '连接中断');
       const idx = findMessageIndex(assistantId);
       if (idx !== -1) {
         const partial = messages.value[idx].content;
@@ -550,5 +563,6 @@ export function useChat() {
     clearError,
     checkServer,
     handleAssistantVoicePlayback,
+    toolStatus,
   };
 }
