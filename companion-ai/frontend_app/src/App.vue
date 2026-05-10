@@ -41,6 +41,7 @@
                 :key="msg.id"
                 :message="msg"
                 :voice="voice"
+                :tool-execution="msg.isTyping ? currentToolExecution : null"
                 @assistant-voice-playback="handleAssistantVoicePlayback"
               />
 
@@ -60,6 +61,10 @@
             </div>
           </div>
 
+          <div v-if="currentToolExecution?.status === 'pending'" class="tool-status-bar" role="status" aria-live="polite">
+            <span class="tool-status-icon" aria-hidden="true">🔄</span>
+            <span class="tool-status-text">{{ toolStatus.currentToolLabel.value }}中…</span>
+          </div>
           <LlmStatusBar />
           <ChatInput
             :is-loading="isLoading"
@@ -118,6 +123,7 @@ import MemoryViewer from './components/MemoryViewer.vue';
 import ReminderToast from './components/ReminderToast.vue';
 import { useChat } from './composables/useChat';
 import { useProactivePush } from './composables/useProactivePush';
+import type { ToolExecutionState } from './composables/useToolStatus';
 
 const {
   messages,
@@ -138,12 +144,18 @@ const {
   clearError,
   checkServer,
   handleAssistantVoicePlayback,
+  toolStatus,
 } = useChat();
 
 // Subscribe to /actions/push (SSE) so reminder_fired events surface as a
 // floating toast in the corner. dismissLastReminder is wired to the toast's
 // close button.
 const { lastReminder, dismissLastReminder } = useProactivePush();
+
+// Current tool execution state (for ChatMessage and global banner)
+const currentToolExecution = computed<ToolExecutionState | null>(
+  () => toolStatus.currentTool.value,
+);
 
 // Suppress the global typing dots whenever the latest assistant message is
 // still in a typing state — that bubble (ChatMessage) already renders its
@@ -425,6 +437,40 @@ onMounted(() => {
   }
 }
 
+.tool-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: #94a3b8;
+  background: rgba(15, 23, 42, 0.6);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(8px);
+  animation: fadeInUp 0.25s ease;
+  transition: all 0.25s ease;
+}
+
+.tool-status-icon {
+  font-size: 13px;
+  animation: toolSpin 1.5s linear infinite;
+}
+
+.tool-status-text {
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+@keyframes toolSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @keyframes fadeInUp {
   from {
     opacity: 0;
@@ -482,11 +528,4 @@ onMounted(() => {
   }
 
   .chat-area {
-    border-radius: 20px;
-  }
-
-  .messages-inner {
-    padding: 18px 14px 14px;
-  }
-}
-</style>
+    border-radius: 20px        
