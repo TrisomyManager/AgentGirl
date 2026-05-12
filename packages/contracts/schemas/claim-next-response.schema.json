@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xiaonuan.local/schemas/claim-next-response.json",
+  "title": "ClaimNextResponse",
+  "type": "object",
+  "properties": {
+    "success": { "type": "boolean" },
+    "command": {
+      "oneOf": [{ "$ref": "device-command.schema.json" }, { "type": "null" }]
+    }
+  },
+  "required": ["success"]
+}

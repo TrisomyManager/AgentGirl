@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xiaonuan.local/schemas/command-result-request.json",
+  "title": "CommandResultRequest",
+  "type": "object",
+  "properties": {
+    "command_id": { "type": "string" },
+    "device_id": { "type": "string" },
+    "device_token": { "type": "string" },
+    "status": { "type": "string", "description": "e.g. succeeded, failed" },
+    "result": { "type": "object", "additionalProperties": true },
+    "error": { "type": ["string", "null"] }
+  },
+  "required": ["command_id", "device_id", "device_token", "status"]
+}

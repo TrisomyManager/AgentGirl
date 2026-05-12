@@ -32,7 +32,7 @@
 | **辅助通用模块** | `safety_guard` / `user_profile` / `onboarding` | 用于安全边界、用户画像和新用户破冰，可作为业务模块或宿主侧能力实现 |
 | **契约层（零依赖）** | `shared_contracts` | 纯 Pydantic + 事件类型，所有模块都能 import，本身不 import 任何业务模块 |
 | **运行时层（宿主可注入）** | `shared_runtime` | LLMClient、配置加载器、统一日志；宿主可替换实现 |
-| **参考集成层** | `core_orchestrator`（LangGraph 编排示例） / `frontend_app`（Web + Live2D 渲染前端示例） | 用于演示端到端链路，第三方接入时可整体替换 |
+| **参考集成层** | `core_orchestrator`（LangGraph 编排示例） / `apps/web`（Web + Live2D 渲染前端示例） | 用于演示端到端链路，第三方接入时可整体替换 |
 
 ### 0.4 使用边界
 

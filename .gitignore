@@ -30,6 +30,7 @@ wheels/
 .mypy_cache/
 .ruff_cache/
 venv/
+.venv/
 ENV/
 env/
 uv.lock
@@ -63,9 +64,14 @@ Thumbs.db
 *.log
 .local-test.log
 .local-test.err.log
+apps/backend/.local-*.log
 
 # Scratch test artifacts (do not commit)
 companion-ai/tmp_*.mp3
+apps/backend/tmp_*.mp3
+
+# Legacy path: leftover node_modules if Windows held locks during monorepo migration
+companion-ai/frontend_app/
 
 # Local configs
 .claude/

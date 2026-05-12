@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xiaonuan.local/schemas/register-response.json",
+  "title": "RegisterDeviceResponse",
+  "type": "object",
+  "properties": {
+    "success": { "type": "boolean" },
+    "device_token": { "type": "string" },
+    "device": { "type": "object", "description": "See device-info.schema.json" }
+  },
+  "required": ["success", "device_token"]
+}

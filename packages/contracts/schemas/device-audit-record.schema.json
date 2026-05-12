@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xiaonuan.local/schemas/device-audit-record.json",
+  "title": "DeviceAuditRecord",
+  "description": "Append-only audit row from GET /device/audit (shape varies slightly by event; additionalProperties allowed).",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "audit_id": { "type": "string" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "event": { "type": "string" },
+    "user_id": { "type": ["string", "null"] },
+    "device_id": { "type": ["string", "null"] },
+    "command_id": { "type": ["string", "null"] },
+    "detail": { "type": "object", "additionalProperties": true }
+  }
+}

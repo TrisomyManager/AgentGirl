@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xiaonuan.local/schemas/send-command-request.json",
+  "title": "SendCommandRequest",
+  "type": "object",
+  "properties": {
+    "user_id": { "type": "string" },
+    "command": { "type": "string" },
+    "payload": { "type": "object", "additionalProperties": true, "default": {} },
+    "device_id": { "type": ["string", "null"] }
+  },
+  "required": ["user_id", "command"]
+}

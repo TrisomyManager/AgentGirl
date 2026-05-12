@@ -1,7 +1,7 @@
 ---
 name: cloud-agents-starter
 description: "Cloud-agent starter runbook for companion-ai. Read this first when joining the repo."
-version: 2.0.0
+version: 2.1.0
 metadata:
   cursor:
     audience: cloud-agents
@@ -10,63 +10,65 @@ metadata:
 
 # Cloud Agent Starter Runbook
 
-This repository has one active codebase:
+This repository uses a **monorepo** for 小暖 Companion AI:
 
-| Area | Path | Role |
-|---|---|---|
-| companion-ai | `companion-ai/` | Companion AI module library and reference app |
+| Area | Path |
+|------|------|
+| Backend | `apps/backend/` |
+| Web | `apps/web/` |
+| PC simulator | `apps/pc-client/` |
+| Contracts (draft) | `packages/contracts/` |
+| Integration scripts | `integration/` |
 
-Historical upstream reference sources (`hermes-agent/`, `airi-analysis/`) were
-removed because they made every task burn context on inactive code. Do not
-search for, test, or modify those directories.
+Legacy bookmark: `companion-ai/README.md` → new paths.
 
-Always assume **no Docker, no Postgres, no Redis, no internet creds** unless
-the user has wired up secrets. Work in Lite Mode where possible.
+Historical upstream (`hermes-agent/`, `airi-analysis/`) was removed. Do not search or test those paths. **Do not import AIRI/Hermes/OpenTalking source trees.**
+
+Always assume **no Docker, no Postgres, no Redis, no internet creds** unless the user wired secrets. Work in Lite Mode where possible.
 
 ---
 
 ## 0. Pre-flight
 
 ```bash
-ls /workspace/companion-ai/.venv/bin/python
+ls /workspace/apps/backend/.venv/bin/python
 which uv
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+Do **not** use `companion-ai/frontend_app` or `companion-ai/examples/device_client`; use `apps/web` and `apps/pc-client`. The `companion-ai/README.md` file is only a legacy bookmark.
+
 If the venv is missing:
 
 ```bash
-cd /workspace/companion-ai
+cd /workspace/apps/backend
 uv pip install -e ".[dev]"
 uv pip install aiosqlite
 ```
 
-There is no login step. LLM access happens via env vars
-(`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) injected by the environment. If absent,
-chat endpoints may fail, but health, memory, persona, and most tests still work.
+LLM access: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc. If absent, chat may fail; health, memory, persona, and most tests often still pass.
 
 ---
 
-## 1. Run companion-ai
+## 1. Run backend
 
 ```bash
-cd /workspace/companion-ai
+cd /workspace/apps/backend
 source .venv/bin/activate
 COMPANION_LITE_MODE=true python scripts/start_lite_server.py
 ```
 
-Or directly:
+Or:
 
 ```bash
 COMPANION_LITE_MODE=true uvicorn main:app --reload --port 8000
 ```
 
-Health checks:
+Health:
 
 ```bash
 curl -s http://127.0.0.1:8000/health | jq .
 curl -s http://127.0.0.1:8000/orchestrator/project_status | jq '.modules | keys'
-curl -s http://127.0.0.1:8000/orchestrator/settings/llm | jq .
 ```
 
 If `OPENAI_API_KEY` is configured:
@@ -79,20 +81,13 @@ python scripts/smoke_lite_chat.py
 
 ## 2. Tests
 
-Full companion-ai test command:
-
 ```bash
-cd /workspace/companion-ai
+cd /workspace/apps/backend
 source .venv/bin/activate
 pytest -q --ignore=voice_layer/tests/test_voice.py
 ```
 
-Expected caveats on a clean Cloud Agent VM:
-
-- `voice_layer/tests/test_voice.py` must be excluded if `numpy` is missing.
-- `memory_system/tests/test_memory.py` has 5 expected collection/runtime errors in Lite Mode because it needs PostgreSQL + pgvector.
-
-Fast clean command:
+Fast clean:
 
 ```bash
 pytest -q \
@@ -112,27 +107,35 @@ lint-imports
 
 ## 3. Frontend
 
-Vue 3 + Vite lives in `companion-ai/frontend_app/`.
+Vue 3 + Vite: `apps/web/`.
 
 ```bash
-cd /workspace/companion-ai/frontend_app
+cd /workspace/apps/web
 npm install
 VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 ```
 
-Only run `npm install` when the change touches `frontend_app/` or you need a UI
-verification loop.
+Run `npm install` when changing `apps/web/` or verifying UI.
+
+### Device gateway smoke (Lite Mode)
+
+With backend on port 8000:
+
+1. Optional: `cd apps/pc-client && pip install httpx && python sim_client.py` (set `XIAONUAN_API_BASE_URL` if needed).
+2. UI: capabilities → **我的设备**, or `POST /device/send_command` with `{"user_id":"…","command":"ping"}` and confirm the sim logs execution + `command_result`.
+
+On Windows, `integration/scripts/smoke-device-flow.ps1` covers register → heartbeat → send → claim → mark_running → result → audit.
 
 ---
 
 ## 4. Documentation
 
-Primary references:
+- `AGENTS.md` — root development guide
+- `README.md` — monorepo map
+- `apps/backend/README.md` — backend overview
+- `apps/backend/ARCHITECTURE.md` — architecture
+- `apps/backend/MODULE_CONTRACTS.md` — module contracts
+- `apps/backend/main.py:_ENABLED_MODULES` — startup toggles
+- `integration/README.md` — triage IDs + smoke scripts
 
-- `AGENTS.md` - root development guide
-- `companion-ai/README.md` - project overview
-- `companion-ai/ARCHITECTURE.md` - architecture
-- `companion-ai/MODULE_CONTRACTS.md` - module contracts
-- `companion-ai/main.py:_ENABLED_MODULES` - authoritative startup module toggles
-
-When adding a new workflow, update this skill and the root `AGENTS.md`.
+When adding a workflow, update this skill and `AGENTS.md`.

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xiaonuan.local/schemas/device-info.json",
+  "title": "DeviceInfo",
+  "description": "Public device record returned by the gateway (subset of shared_contracts.DeviceInfo).",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "device_id": { "type": "string" },
+    "user_id": { "type": "string" },
+    "device_type": { "type": "string", "description": "e.g. pc, mobile" },
+    "device_name": { "type": "string" },
+    "platform": { "type": "string", "description": "e.g. app" },
+    "capabilities": { "type": "array", "items": { "type": "string" } },
+    "is_online": { "type": "boolean" },
+    "last_heartbeat": { "type": "string", "format": "date-time" },
+    "ip_address": { "type": ["string", "null"] },
+    "metadata": { "type": "object", "additionalProperties": true }
+  },
+  "required": ["device_id", "user_id"]
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xiaonuan.local/schemas/device-command.json",
+  "title": "DeviceCommand",
+  "description": "Command object from send_command / claim_next / get_command responses.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "command_id": { "type": "string" },
+    "user_id": { "type": "string" },
+    "device_id": { "type": ["string", "null"] },
+    "command": { "type": "string", "description": "Action name e.g. ping" },
+    "payload": { "type": "object", "additionalProperties": true },
+    "status": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  },
+  "required": ["command_id", "command"]
+}

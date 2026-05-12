@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xiaonuan-pc-client"
+version = "0.1.0"
+description = "PC simulator for Xiaonuan Device Operation Gateway"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.28.1,<1"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["xiaonuan_pc_client*"]

@@ -31,14 +31,14 @@ companion-ai（本仓库）= 通用陪伴 AI 模块库 + 一个参考集成 demo
   │   └── shared_runtime (待建)  — LLMClient / 配置 / 日志
   └── 参考集成 demo
       ├── core_orchestrator     — 一种 LangGraph 编排实现（不是模块本体）
-      └── frontend_app          — 一种 Web 调试台 + Live2D 渲染示例
+      └── apps/web              — 一种 Web 调试台 + Live2D 渲染示例（仓库内路径）
 ```
 
 ### 关键决策
 
 - **不存在"必交付清单"**：本工程对任何具体项目都不承担交付承诺。任何模块的"完成度"以**对外契约稳定 + 可独立运行 + 可独立集成**为衡量标准，而不是"对账某份功能清单"。
 - **`core_orchestrator` 是参考实现，不是模块本体**：第三方接入不应被迫使用我们的编排器。模块通过契约对外开放，宿主用自己的编排去组合。
-- **`frontend_app` + Live2D 是"参考 UI / 验收 demo"**：演示"模块对接得多容易"。第三方可换 Unity / Unreal / Web Three.js / 桌面 / 车机 / MR，本仓库不锁渲染端。
+- **`apps/web` + Live2D 是"参考 UI / 验收 demo"**：演示"模块对接得多容易"。第三方可换 Unity / Unreal / Web Three.js / 桌面 / 车机 / MR，本仓库不锁渲染端。
 - **去商业化口径**：本计划之前所有"小汐 ¥XX万 / 报价表 / 子集 / 灵魂工程必交付"措辞全部废弃。
 
 ---
@@ -136,11 +136,11 @@ companion-ai（本仓库）= 通用陪伴 AI 模块库 + 一个参考集成 demo
 ### 建议命令
 
 ```powershell
-cd companion-ai
+cd apps/backend
 python -m pytest -q
 uvicorn main:app --reload --port 8000
 
-cd frontend_app
+cd ../web
 npm run build
 ```
 
@@ -213,7 +213,7 @@ npm run build
 
 后续只要代码真实状态发生变化，至少同步这三处：
 
-1. `companion-ai/core_orchestrator/project_status.py`
+1. `apps/backend/core_orchestrator/project_status.py`
 2. `AI_HANDOFF.md`
 3. 本文件 `PROJECT_PLAN.md`
 

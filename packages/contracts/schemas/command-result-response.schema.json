@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xiaonuan.local/schemas/command-result-response.json",
+  "title": "CommandResultResponse",
+  "type": "object",
+  "properties": {
+    "success": { "type": "boolean" },
+    "command": { "$ref": "device-command.schema.json" }
+  },
+  "required": ["success"]
+}

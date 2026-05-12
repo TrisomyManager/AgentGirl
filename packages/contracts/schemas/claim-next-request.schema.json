@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xiaonuan.local/schemas/claim-next-request.json",
+  "title": "ClaimNextRequest",
+  "type": "object",
+  "properties": {
+    "device_id": { "type": "string" },
+    "device_token": { "type": "string" }
+  },
+  "required": ["device_id", "device_token"]
+}
