@@ -1,7 +1,26 @@
 # 陪伴类 AI 智能体 – 完整项目架构与技术选型文档
 
+> **版本**: V2.0 | **日期**: 2026-05-18
+> 
 > **文档口径（前期技术选型参考）**：
 > 本文用于沉淀陪伴类 AI / 数字生命方向的架构思路、模块划分、技术选型、风险与质量评估。内容仅作为方案参考，不记录具体工程进度、交付状态、报价排期或对外承诺。
+
+### V2.0 更新说明 (2026-05-18)
+
+基于以下调研成果全面刷新本文档：
+- **[技术选型调研与对比建议报告](./技术选型调研与对比建议报告.md)** — 60+ 论文、50+ OSS 项目、10 大技术域
+- **[整体化开源项目对比评估报告](./整体化开源项目对比评估报告.md)** — 5 个全栈框架模块级对比
+- **[OpenTalking vs AgentGril 差异分析](../.claude/plans/opentalking-encapsulated-hammock.md)** — 9 模块维度对比
+- **[Bailongma 技术迁移方案](./Bailongma技术迁移方案.md)** — 7 模块迁移方案
+- **[项目优化整合方案](./项目优化整合方案.md)** — 三波次优化路线图
+
+V2.0 主要变化：
+- 记忆系统选型更新（主线从 Mem0 调整为 Letta）
+- TTS 多线并行 + 自动 fallback 链（Fish Audio S2 -> CosyVoice -> Edge TTS）
+- 安全方案升级为多层防御（NeMo Guardrails + LLM Guard + Constitutional AI）
+- 新增 ADR-007~009（RouteLLM 路由 / TTS fallback 链 / 统一能力注册表）
+- 降级策略 TTS 方案更新
+- 新增工程质量工具链章节
 
 ---
 
@@ -227,7 +246,7 @@ flowchart TB
 |-------|---------|
 | ASR引擎 | Whisper / Qwen3-ASR / VibeVoice-ASR |
 | 说话人分离 | WhisperLiveKit / VibeVoice-ASR |
-| TTS引擎 | Fish Audio S2 / ChatTTS / VoxCPM |
+| TTS引擎 | Fish Audio S2 (主线) / CosyVoice (情感) / ChatTTS (对话) / GPT-SoVITS (克隆备选) / Edge TTS (免费降级) |
 | **2D 渲染（推荐主路径）** | **Live2D Cubism（PixiJS / pixi-live2d-display）** — 实时、低成本、参数化口型与表情绑定 |
 | 2D 动作迁移（备选） | 通义万相 wan2.2-animate-move（适合离线高保真片段，不适合实时） |
 | 3D骨骼动作 | 腾讯混元 HY-Motion 1.0 |
@@ -240,7 +259,7 @@ flowchart TB
 
 | 记忆类型 | 推荐项目 |
 |---------|---------|
-| 用户画像+设备清单 | Mem0 / GetProfile |
+| 用户画像+设备清单 | Letta (结构化记忆核心) / Mem0 (快速集成备选) / GetProfile |
 | 向量数据库 | pgvector / Milvus / Pinecone |
 | 知识图谱 | Neo4j + LangChain GraphRAG |
 | 情感/关系指标 | 自研状态机 |
@@ -252,7 +271,7 @@ flowchart TB
 
 | 技术点 | 推荐项目 |
 |-------|---------|
-| 模型网关 | LiteLLM / OpenRouter |
+| 模型网关 | LiteLLM (统一代理+成本管理) / RouteLLM (分级路由降本40-85%) / OpenRouter |
 | 本地部署 | Ollama / vLLM / llama.cpp |
 | 人格微调 | LoRA + PEFT |
 | 提示词管理 | LangSmith / DSPy |
@@ -395,6 +414,47 @@ flowchart TB
 | **缓解** | 把 examples 与单元测试合并维护；使用 import 静态检查持续约束依赖方向 |
 | **评审人** | 方案评审人 |
 | **日期** | 决策日期 |
+
+---
+
+### ADR-007: TTS 多线并行 + 自动回退链
+
+| 维度 | 分析 |
+|------|------|
+| **决策** | 建立 TTS provider fallback 链：Fish Audio S2 (主线) -> CosyVoice (情感/角色扮演) -> Edge TTS (免费兜底) |
+| **背景** | 单一 TTS 依赖存在单点故障风险。调研发现 OpenTalking 和多数生产系统均使用多级 TTS fallback。ChatTTS 的对话自然度、CosyVoice 的中文 SOTA 表现各有优势 |
+| **备选方案** | (A) 只保留 Fish Audio S2 单线；(B) ChatTTS 替代主线 |
+| **决策依据** | Fish Audio S2 声音克隆+中文表现优秀；CosyVoice LLM 驱动+角色扮演模式适合多角色场景；Edge TTS 完全免费+无需 API Key 作为最终兜底。ChatTTS 的 CC BY-NC 4.0 许可对商业化有限制 |
+| **风险** | 多条线增加维护成本；不同 TTS 音色一致性需额外处理 |
+| **缓解** | 统一 TTS 接口抽象（shared_runtime）；每条线独立封装；通过 provider 配置切换 |
+| **借鉴来源** | OpenTalking TTS 回退设计 + 技术选型报告 Section 4 |
+| **日期** | 2026-05-18 |
+
+### ADR-008: 模型路由引入 RouteLLM 分级策略
+
+| 维度 | 分析 |
+|------|------|
+| **决策** | 引入 LLM 分级路由策略：简单问候->低成本小模型，深度对话->高质量大模型 |
+| **背景** | 陪伴场景中简单问候和日常寒暄占比 >60%，无需大模型处理。RouteLLM 论文证明分级路由可降 40-85% 成本 |
+| **备选方案** | (A) 全部用同一模型；(B) 规则路由（关键词匹配）；(C) RouteLLM 学习路由 |
+| **决策依据** | 成本效益显著（月成本预计降低 40-60%）；简单规则路由已足够 Phase 1；未来可接入 RouteLLM 学习路由器 |
+| **风险** | 误路由导致质量下降；小模型缺乏人格一致性 |
+| **缓解** | 人格相关对话始终走大模型；建立路由回退规则；定期 A/B 评测路由质量 |
+| **借鉴来源** | 论文 RouteLLM (2406.03654) + LiteLLM 内置路由支持 |
+| **日期** | 2026-05-18 |
+
+### ADR-009: 统一能力注册表
+
+| 维度 | 分析 |
+|------|------|
+| **决策** | 引入全局能力注册表（参考 OpenTalking @register + resolve()），将 voice/action/llm provider 统一管理 |
+| **背景** | 当前各模块独立管理 provider 注册，缺乏统一的发现、配置、切换机制 |
+| **备选方案** | (A) 保持各模块独立注册；(B) 全局 YAML 配置驱动注册表 |
+| **决策依据** | OpenTalking 的 @register('capability', 'key') + YAML config 驱动方案成熟简洁；全局注册表支持运行时切换、能力发现、健康检查 |
+| **风险** | 过度抽象增加复杂度；全局注册表成为新单点 |
+| **缓解** | 先应用于 voice_layer 和 action_executor 验证可行性；每个 provider 仍可独立测试 |
+| **借鉴来源** | OpenTalking core/registry.py + 技术选型报告 Section 2 |
+| **日期** | 2026-05-18 |
 
 ---
 
@@ -991,7 +1051,61 @@ DEGRADATION_MESSAGES = {
 
 ---
 
-## 12. 质量指标与可测试性
+## 11. OpenTalking 对比分析与可借鉴清单
+
+> 基于 [OpenTalking vs AgentGril 差异分析](../.claude/plans/opentalking-encapsulated-hammock.md) 的完整 9 模块维度对比。
+
+### 11.1 两项目定位互补
+
+| 维度 | OpenTalking | AgentGril | 关系 |
+|------|-----------|-----------|------|
+| 核心场景 | 视频数字人实时对话 + WebRTC 推流 | 多端 AI 陪伴（聊天/语音/设备控制/记忆） | 互补 |
+| 强项 | 视频渲染管线、实时音视频推流、多模型后端适配 | 记忆系统、人格引擎、设备协调、安全护栏 | 各自领先 |
+| GPU 需求 | Mock 模式无 GPU，生产需 GPU | 完全云原生，无需 GPU | 不同路线 |
+
+### 11.2 可直接借鉴项
+
+| 借鉴点 | OpenTalking 实现 | AgentGril 应用 |
+|--------|-----------------|---------------|
+| 统一能力注册表 |  +  | 将 voice/action/llm provider 统一注册 |
+| TTS 自动回退链 | 任意 TTS 失败 -> Edge TTS | voice_layer 加入 fallback 链 |
+| 时序打点体系 |  dict 记录 LLM/TTS/渲染延迟 | project_status 面板扩展 |
+| 配置驱动 provider 切换 | YAML config 决定 provider key | 替代运行时手动切换 |
+| 空闲帧生成+缓存 | 防止画面冻结 | Live2D 空闲动画优化 |
+| ruff + mypy + pre-commit | 标准化质量体系 | 替代自定义 check_arch |
+| Loguru 日志 | 结构化日志 | 替换 Python logging |
+
+### 11.3 不建议整合的领域
+
+- **WebRTC 视频推流**: AgentGril 当前无视频数字人需求，保持 Live2D 渲染路径
+- **本地 GPU 模型推理**: AgentGril 云原生定位，本地推理非当前优先级
+- **OpenTalking 作为替代**: AgentGril 的记忆/人格/设备协调是独特优势，仅借鉴管线层面设计
+
+---
+
+## 12. 工程质量工具链（V2.0 新增）
+
+### 12.1 推荐工具链
+
+| 工具 | 用途 | 替代现有 |
+|------|------|---------|
+| **ruff** | Python linter + formatter | 自定义 check_arch.py (补充，非完全替代) |
+| **mypy** | 静态类型检查 | 新增 |
+| **pre-commit** | Git hooks 管理 | 新增 |
+| **Loguru** | 结构化日志 | Python logging |
+| **pytest** | 测试框架 | 保持（已在用） |
+
+### 12.2 引入计划
+
+
+
+### 12.3 架构检查保留
+
+自定义  保留作为**模块依赖方向检查**（反向依赖=0, 直连SDK=0），ruff/mypy 负责代码风格和类型检查，两者互补不替代。
+
+---
+
+## 13. 质量指标与可测试性
 
 ### 12.1 陪伴感量化指标体系
 
@@ -1076,7 +1190,7 @@ class CompanionQualityTests:
 
 ---
 
-## 13. 附录：技术选型决策矩阵模板
+## 14. 附录：技术选型决策矩阵模板
 
 > 后续每个新选型决策应填写此模板并追加到第4节。
 

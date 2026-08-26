@@ -1002,4 +1002,4 @@ async def list_personas() -> Dict[str, Any]:
                 personas.append({"role_id": rid, "name": rid})
         return {"personas": personas}
     except Exception:
-        return {"personas": [{"role_id": "default", "name": "陪伴者"}]}
+        return {"personas": [{"role_id": "default", "name": "小暖"}]}

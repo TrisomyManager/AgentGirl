@@ -1,0 +1,14 @@
+.venv/
+build/
+dist/
+dist-electron/
+*.spec.bak
+node_modules/
+__pycache__/
+*.pyc
+.env
+.env.local
+out/
+release/
+*.exe
+*.log

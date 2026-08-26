@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
@@ -55,11 +56,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         wrapper_class=structlog.make_filtering_bound_logger(getattr(__import__("logging"), settings.log_level, 20)),
     )
 
+    _lite = settings.lite_mode or settings.monolithic or os.environ.get("COMPANION_MONOLITHIC", "false").lower() in ("1", "true", "yes")
+
     registry = DeviceRegistry()
     await registry.start()
 
     mqtt: Optional[DeviceMQTTClient] = None
-    if not settings.lite_mode:
+    if not _lite:
         mqtt = DeviceMQTTClient(on_heartbeat=_heartbeat_handler(registry))
         await mqtt.start()
         logger.info("device_coordination.mqtt_started")

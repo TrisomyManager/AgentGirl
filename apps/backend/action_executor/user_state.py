@@ -71,6 +71,17 @@ async def build_user_state(user_id: str) -> dict[str, Any]:
             "completed_recent": [],
         },
         "proactive": {
-            "rules": [],
+            "rules": _get_proactive_rules(user_id),
         },
     }
+
+
+def _get_proactive_rules(user_id: str) -> list[dict[str, Any]]:
+    """Return proactive care rules for the frontend capability panel."""
+    try:
+        from action_executor.proactive_care import get_proactive_care_scheduler
+
+        scheduler = get_proactive_care_scheduler()
+        return scheduler.user_proactive_rules(user_id)
+    except Exception:
+        return []

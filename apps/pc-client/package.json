@@ -1,0 +1,33 @@
+{
+  "name": "xiaonuan-pc-client",
+  "version": "0.2.0",
+  "description": "小暖 Companion AI - PC Desktop Client (Electron + Vue 3)",
+  "private": true,
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "set ELECTRON_RUN_AS_NODE=&& vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "build:electron": "npm run build && electron-builder",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@ricky0123/vad-web": "^0.0.30",
+    "electron-store": "^8.2.0",
+    "onnxruntime-web": "^1.25.1",
+    "pixi-live2d-display": "^0.4.0",
+    "pixi.js": "^6.5.10",
+    "vue": "~3.4.21"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "~5.1.0",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.8",
+    "vite-plugin-electron": "^0.28.8",
+    "vite-plugin-electron-renderer": "^0.14.6",
+    "vue-tsc": "^2.0.11"
+  }
+}

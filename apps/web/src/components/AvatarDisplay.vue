@@ -66,8 +66,7 @@ const {
   setExpression,
   getMotionGroups,
 } = useLive2D(live2dContainer, {
-  modelPath:
-    'https://raw.githubusercontent.com/guansss/pixi-live2d-display/master/test/assets/shizuku/shizuku.model.json',
+  modelPath: '/live2d/shizuku/shizuku.model.json',
   width: 260,
   height: 390,
   autoInteract: true,

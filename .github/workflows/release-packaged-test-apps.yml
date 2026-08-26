@@ -1,0 +1,56 @@
+name: Packaged test apps (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: "Skip smoke tests (faster CI)"
+        type: boolean
+        default: true
+      package_web:
+        description: "Also build Xiaonuan-Web-*.zip (miniserve)"
+        type: boolean
+        default: false
+      vite_api_base_url:
+        description: "VITE_API_BASE_URL for web production build"
+        type: string
+        default: "http://127.0.0.1:8000"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Ensure Python 3.11 for PyInstaller venv
+        shell: pwsh
+        run: uv python install 3.11
+
+      - name: build-release.ps1
+        shell: pwsh
+        working-directory: packaged-test-apps
+        env:
+          SKIP_TESTS: ${{ inputs.skip_tests }}
+          PACKAGE_WEB: ${{ inputs.package_web }}
+          VITE_URL: ${{ inputs.vite_api_base_url }}
+        run: |
+          $args = @('-ViteApiBaseUrl', $env:VITE_URL)
+          if ($env:SKIP_TESTS -eq 'true') { $args += '-SkipTests' }
+          if ($env:PACKAGE_WEB -eq 'true') { $args += '-PackageWeb' }
+          & ./build-release.ps1 @args
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packaged-test-apps-${{ github.sha }}
+          path: packaged-test-apps/out/**/*
+          if-no-files-found: error

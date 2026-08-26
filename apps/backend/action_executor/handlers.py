@@ -41,6 +41,10 @@ from action_executor.search_provider import get_search_provider
 
 logger = structlog.get_logger("action_executor.handlers")
 
+# Companion display name used in user-facing messages.
+# TODO: read from active persona profile once persona switching is wired through params.
+_COMPANION_NAME = "小暖"
+
 
 def _now_local() -> datetime:
     return datetime.now()
@@ -402,7 +406,7 @@ async def query_memory(params: Dict[str, Any]) -> ActionResult:
     if not user_id:
         return ActionResult(
             ok=False,
-            message="小暖需要知道你在问谁的记忆呢，告诉我 user_id 吧～",
+            message=f"{_COMPANION_NAME}需要知道你在问谁的记忆呢，告诉我 user_id 吧～",
             data={"error": "missing_user_id"},
         )
 
@@ -440,7 +444,7 @@ async def query_memory(params: Dict[str, Any]) -> ActionResult:
         if query_text:
             parts.append(f"关于「{query_text}」的记忆：")
         else:
-            parts.append("这是小暖记得的和你有关的事：")
+            parts.append(f"这是{_COMPANION_NAME}记得的和你有关的事：")
 
         if long_term_entries:
             for entry in long_term_entries[:5]:
@@ -475,7 +479,7 @@ async def query_memory(params: Dict[str, Any]) -> ActionResult:
         logger.exception("query_memory.unexpected_error", user_id=user_id, error=str(exc))
         return ActionResult(
             ok=False,
-            message="小暖查记忆的时候遇到了小意外，再试一次好吗？",
+            message=f"{_COMPANION_NAME}查记忆的时候遇到了小意外，再试一次好吗？",
             data={"error": "unexpected", "detail": str(exc)},
         )
 
@@ -500,13 +504,13 @@ async def update_user_profile(params: Dict[str, Any]) -> ActionResult:
     if not user_id:
         return ActionResult(
             ok=False,
-            message="告诉小暖你要更新谁的资料呀～",
+            message=f"告诉{_COMPANION_NAME}你要更新谁的资料呀～",
             data={"error": "missing_user_id"},
         )
     if not field or value is None:
         return ActionResult(
             ok=False,
-            message="需要告诉小暖要更新什么字段和值哦，比如 field=preference, value=喜欢喝茶。",
+            message=f"需要告诉{_COMPANION_NAME}要更新什么字段和值哦，比如 field=preference, value=喜欢喝茶。",
             data={"error": "missing_field_or_value"},
         )
 
@@ -530,7 +534,7 @@ async def update_user_profile(params: Dict[str, Any]) -> ActionResult:
             await store.upsert(snap)
             return ActionResult(
                 ok=True,
-                message=f"记住啦，你叫 {value}～以后小暖就这么称呼你啦。",
+                message=f"记住啦，你叫 {value}～以后{_COMPANION_NAME}就这么称呼你啦。",
                 data={"field": "display_name", "value": value},
             )
 
@@ -548,7 +552,7 @@ async def update_user_profile(params: Dict[str, Any]) -> ActionResult:
         await store.merge_preferences(str(user_id), **{field: value})
         return ActionResult(
             ok=True,
-            message=f"小暖记下啦，你的 {field} 是 {value}～",
+            message=f"{_COMPANION_NAME}记下啦，你的 {field} 是 {value}～",
             data={"field": field, "value": value},
         )
     except Exception as exc:
@@ -598,7 +602,7 @@ async def timer_countdown(params: Dict[str, Any]) -> ActionResult:
     if fire_at is None:
         return ActionResult(
             ok=False,
-            message="小暖没听懂要计时多久，你可以说「5 分钟」或者传 duration_seconds 哦。",
+            message=f"{_COMPANION_NAME}没听懂要计时多久，你可以说「5 分钟」或者传 duration_seconds 哦。",
             data={"error": "no_duration"},
         )
 
@@ -619,7 +623,7 @@ async def timer_countdown(params: Dict[str, Any]) -> ActionResult:
     when_friendly = _format_relative(delta_sec)
     return ActionResult(
         ok=True,
-        message=f"好哒，小暖开始计时啦，{when_friendly} 会提醒你的～",
+        message=f"好哒，{_COMPANION_NAME}开始计时啦，{when_friendly} 会提醒你的～",
         data={
             "reminder": reminder.to_dict(),
             "fire_in_seconds": int(max(0, delta_sec)),
@@ -643,7 +647,7 @@ async def web_search(params: Dict[str, Any]) -> ActionResult:
     if not query:
         return ActionResult(
             ok=False,
-            message="告诉小暖你想搜什么呀～",
+            message=f"告诉{_COMPANION_NAME}你想搜什么呀～",
             data={"error": "empty_query"},
         )
 
@@ -674,7 +678,7 @@ async def web_search(params: Dict[str, Any]) -> ActionResult:
 
         return ActionResult(
             ok=True,
-            message=f"这是小暖帮你搜到的关于「{query}」的信息：\n\n{result.to_text()}",
+            message=f"这是{_COMPANION_NAME}帮你搜到的关于「{query}」的信息：\n\n{result.to_text()}",
             data={
                 "query": query,
                 "source": result.source,
@@ -686,7 +690,7 @@ async def web_search(params: Dict[str, Any]) -> ActionResult:
         logger.exception("web_search.error", query=query, error=str(exc))
         return ActionResult(
             ok=False,
-            message="搜索时遇到了意外，直接问我吧，小暖会尽力回答你的～",
+            message=f"搜索时遇到了意外，直接问我吧，{_COMPANION_NAME}会尽力回答你的～",
             data={"error": "unexpected", "detail": str(exc)},
         )
 
@@ -747,7 +751,7 @@ async def list_devices_handler(params: Dict[str, Any]) -> ActionResult:
         return ActionResult(ok=False, message="设备模块暂时不可用，稍后再试好吗？", data={"error": "device_module_unavailable"})
     devices = data.get("devices", [])
     if not devices:
-        return ActionResult(ok=True, message="你还没有绑定任何设备哦，可以先在小暖 PC 版上登录绑定。", data={"devices": []})
+        return ActionResult(ok=True, message=f"你还没有绑定任何设备哦，可以先在{_COMPANION_NAME} PC 版上登录绑定。", data={"devices": []})
     lines = []
     for d in devices:
         status = "在线" if d.get("is_online") else "离线"
@@ -767,7 +771,7 @@ def _interpret_device_send_command(resp: dict | None, message_for_ok: Callable[[
     if resp.get("success") is False and resp.get("error") == "high_risk_blocked":
         return ActionResult(
             ok=False,
-            message=resp.get("message") or "该操作风险较高，小暖暂未开放。",
+            message=resp.get("message") or f"该操作风险较高，{_COMPANION_NAME}暂未开放。",
             data={"error": "high_risk_blocked"},
         )
     st = int(resp.get("_http_status") or 200)
@@ -776,7 +780,7 @@ def _interpret_device_send_command(resp: dict | None, message_for_ok: Callable[[
         if isinstance(det, dict) and det.get("error_code") == "multi_device":
             return ActionResult(
                 ok=False,
-                message="你有多个设备在线，请在小暖里打开「我的设备」选定一台，或告诉我设备名称。",
+                message=f"你有多个设备在线，请在{_COMPANION_NAME}里打开「我的设备」选定一台，或告诉我设备名称。",
                 data={"error": "multi_device"},
             )
     if st >= 400 or resp.get("success") is False:
@@ -823,14 +827,14 @@ async def device_notify_handler(params: Dict[str, Any]) -> ActionResult:
     if not text:
         text = _extract_notify_body_from_raw(params.get("raw_text") or "")
     if not text:
-        text = "小暖提醒"
+        text = f"{_COMPANION_NAME}提醒"
     resp = await _call_device_api(
         "/device/send_command",
         method="POST",
         json_data={
             "user_id": user_id,
             "command": "show_notification",
-            "payload": {"title": "小暖提醒", "text": text},
+            "payload": {"title": f"{_COMPANION_NAME}提醒", "text": text},
             "device_id": params.get("device_id"),
         },
     )
@@ -939,7 +943,11 @@ BUILTIN_ACTIONS = (
             "query": "string — optional semantic query",
             "session_id": "string — optional for working memory lookup",
         },
-        "keywords": ["记忆", "记得", "query memory", "recall", "remember"],
+        "keywords": [
+            "记忆", "记得", "还记得", "之前说过", "上次说", "我说过什么",
+            "聊过什么", "回忆", "翻记录", "以前聊的", "之前聊的",
+            "query memory", "recall", "remember",
+        ],
         "handler": query_memory,
         "needs_api_key": False,
         "category": "info",

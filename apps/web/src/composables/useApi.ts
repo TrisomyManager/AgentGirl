@@ -193,6 +193,7 @@ export function useApi() {
   const isLoading = ref(false);
   const error = ref<string | null>(null);
   const serverAvailable = ref<boolean | null>(null);
+  let _autoCheckT: ReturnType<typeof setInterval> | null = null;
 
   async function checkServer(): Promise<boolean> {
     try {
@@ -204,9 +205,16 @@ export function useApi() {
       }).catch(() => null);
       clearTimeout(timeout);
       serverAvailable.value = resp !== null && resp.ok;
+      if (serverAvailable.value && _autoCheckT) {
+        clearInterval(_autoCheckT);
+        _autoCheckT = null;
+      } else if (!serverAvailable.value && !_autoCheckT) {
+        _autoCheckT = setInterval(checkServer, 10_000);
+      }
       return serverAvailable.value;
     } catch {
       serverAvailable.value = false;
+      if (!_autoCheckT) _autoCheckT = setInterval(checkServer, 10_000);
       return false;
     }
   }

@@ -25,6 +25,60 @@ from core_orchestrator.state_machine import (
 logger = structlog.get_logger()
 
 
+# ---------------------------------------------------------------------------
+# Proactive turn helpers
+# ---------------------------------------------------------------------------
+
+_PROACTIVE_SYSTEM_INSTRUCTIONS = """【主动发起对话】
+你现在正在主动发起一次对话。不需要等待用户先说话，请直接根据以下触发原因和你们的对话历史，用温暖自然的口吻开启对话。
+
+请严格遵循以下原则：
+- 绝对不要提及这是由"系统"、"程序"、"定时器"或"自动"触发的
+- 说1-3句话，简洁自然，像朋友突然想起对方一样
+- 根据你们的关系亲密度调整语气——越亲密越随意
+- 如果触发原因是记忆关怀，自然地把你记得的事融入对话，当作你主动想起的
+- 不要用疑问句堆砌——可以分享你的感受，也可以温和地陈述"""
+
+_TRIGGER_USER_PROMPTS = {
+    "idle_checkin": (
+        "用户已经 {hours_inactive:.1f} 小时没有联系你了。"
+        "请主动问候，表达你的关心和想念。语气温柔，不要责备。"
+    ),
+    "morning_greeting": (
+        "现在是早晨（当地时间 {local_hour} 点左右）。"
+        "请用温暖愉快的语气向用户道早安，可以简单问一下对方今天的计划或心情。"
+    ),
+    "evening_greeting": (
+        "现在是傍晚（当地时间 {local_hour} 点左右）。"
+        "关心一下用户今天过得怎么样，用温柔体贴的语气，像在一天结束时陪在对方身边。"
+    ),
+    "memory_followup": (
+        "你记得用户之前提过这件事：{memory_content}。"
+        "请自然地提起这件事，表达你的关心和你在意对方说过的话。"
+        "不要生硬地说'我记得你说过'——而是像朋友自然地想起一样。"
+    ),
+}
+
+_DEFAULT_USER_PROMPT = (
+    "请主动发起一次对话。用温暖自然的口吻，像朋友突然想起对方一样。"
+)
+
+
+def _build_proactive_instructions(
+    trigger_type: str, trigger_context: Dict[str, Any]
+) -> str:
+    """Assemble the system + user prompt block for proactive message generation."""
+    user_prompt_template = _TRIGGER_USER_PROMPTS.get(
+        trigger_type, _DEFAULT_USER_PROMPT
+    )
+    try:
+        user_prompt = user_prompt_template.format(**trigger_context)
+    except KeyError:
+        user_prompt = user_prompt_template
+
+    return _PROACTIVE_SYSTEM_INSTRUCTIONS + "\n\n" + user_prompt
+
+
 def tc_dict_id(tc: TurnContext) -> str:
     """Tiny helper exposed for the streaming code path."""
     return tc.turn_id
@@ -223,6 +277,129 @@ class Orchestrator:
             await self._event_bus.publish(event)
         except Exception as exc:
             logger.warning("turn_end_publish_failed", error=str(exc))
+
+    async def generate_proactive_turn(
+        self,
+        user_id: str,
+        session_id: str,
+        trigger_type: str,
+        trigger_context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Generate a proactive AI-initiated message without a real user turn.
+
+        This bypasses the full LangGraph pipeline and calls the monolithic
+        recall → prompt → LLM → sync path directly.  No voice, no actions,
+        no intent classification — just a warm, contextual check-in.
+
+        Returns a dict with ``assistant_message``, ``emotion``,
+        ``trigger_type``, and ``session_id``.
+        """
+        import structlog
+        _log = structlog.get_logger(__name__).bind(
+            user_id=user_id,
+            trigger_type=trigger_type,
+        )
+
+        from core_orchestrator.state_machine import (
+            OrchestratorState,
+            _recall_memory_monolithic,
+            _generate_response_monolithic,
+            sync_completed_turn_to_memory,
+        )
+        from shared_contracts.models import (
+            EmotionState,
+            Platform,
+            TurnContext,
+            UserProfile,
+        )
+        from shared_runtime.prompt_engine import build_conversation_system_prompt
+
+        # 1. Build a synthetic TurnContext and minimal OrchestratorState
+        turn_id = str(uuid.uuid4())
+        tc = TurnContext(
+            turn_id=turn_id,
+            session_id=session_id,
+            user=UserProfile(user_id=user_id, platform=Platform.APP),
+            user_message=f"[PROACTIVE:{trigger_type}]",
+            platform=Platform.APP,
+        )
+
+        state: OrchestratorState = {
+            "messages": [],
+            "turn_context": tc,
+            "intent": None,
+            "intent_confidence": None,
+            "intent_reasoning": None,
+            "intent_entities": None,
+            "memory_result": None,
+            "persona_profile": None,
+            "emotion_state": None,
+            "relationship_metrics": None,
+            "assistant_message": None,
+            "voice_url": None,
+            "voice_duration_ms": None,
+            "voice_error": None,
+            "action_sequence": None,
+            "device_command_sent": None,
+            "error": None,
+            "skip_voice": True,
+            "skip_action": True,
+        }
+
+        # 2. Hydrate persona / emotion / relationship / memory in-process
+        try:
+            state = await _recall_memory_monolithic(tc, state, _log)
+        except Exception as exc:
+            _log.warning("proactive_recall_failed", error=str(exc))
+
+        # 3. Build the system prompt with proactive framing
+        base_prompt = build_conversation_system_prompt(
+            persona=state.get("persona_profile"),
+            emotion=state.get("emotion_state"),
+            relationship=state.get("relationship_metrics"),
+            memory=state.get("memory_result"),
+        )
+        proactive_instructions = _build_proactive_instructions(trigger_type, trigger_context)
+        system_prompt = base_prompt + "\n\n" + proactive_instructions
+
+        persona_name = (
+            state["persona_profile"].name
+            if state.get("persona_profile")
+            else "小暖"
+        )
+
+        # 4. Generate via LLM
+        try:
+            assistant_msg = await _generate_response_monolithic(
+                tc, system_prompt, persona_name
+            )
+        except Exception as exc:
+            _log.exception("proactive_generate_failed", error=str(exc))
+            return {
+                "assistant_message": "",
+                "emotion": None,
+                "trigger_type": trigger_type,
+                "session_id": session_id,
+            }
+
+        state["assistant_message"] = assistant_msg
+
+        # 5. Sync memory (so proactive messages are part of conversation history)
+        try:
+            await sync_completed_turn_to_memory(
+                turn_context=tc,
+                orchestration_state=state,
+            )
+        except Exception as exc:
+            _log.warning("proactive_sync_memory_failed", error=str(exc))
+
+        emotion = state.get("emotion_state")
+        return {
+            "assistant_message": assistant_msg,
+            "emotion": emotion.model_dump() if emotion else None,
+            "trigger_type": trigger_type,
+            "session_id": session_id,
+        }
 
     async def service_status(self) -> List[Dict[str, Any]]:
         """Return health status for all downstream services."""

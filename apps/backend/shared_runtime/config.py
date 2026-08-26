@@ -144,10 +144,45 @@ class Settings(BaseSettings):
     """Skip repeat LLM calls for the same session when transcript fingerprint unchanged within TTL."""
 
     # ------------------------------------------------------------------
+    # Proactive care (V2.5 — 主动关怀)
+    # ------------------------------------------------------------------
+    proactive_enabled: bool = Field(
+        default=True,
+        description="Master switch for the proactive-care background scheduler.",
+    )
+    proactive_poll_interval_seconds: int = Field(
+        default=60, ge=5, le=3600,
+        description="How often the proactive scheduler evaluates trigger conditions.",
+    )
+    proactive_idle_checkin_minutes: int = Field(
+        default=240, ge=1, le=1440,
+        description="Idle threshold: send a check-in after this many minutes of user inactivity.",
+    )
+    proactive_cooldown_minutes: int = Field(
+        default=60, ge=1, le=480,
+        description="Minimum gap between any two proactive messages for the same user.",
+    )
+    proactive_dnd_start_hour: int = Field(
+        default=22, ge=0, le=23,
+        description="Do-not-disturb window start hour (local time, inclusive).",
+    )
+    proactive_dnd_end_hour: int = Field(
+        default=7, ge=0, le=23,
+        description="Do-not-disturb window end hour (local time, exclusive).",
+    )
+    proactive_max_per_day: int = Field(
+        default=6, ge=0, le=24,
+        description="Hard cap on proactive messages per user per calendar day.",
+    )
+    proactive_morning_greeting_enabled: bool = Field(default=True)
+    proactive_evening_greeting_enabled: bool = Field(default=True)
+    proactive_memory_followup_enabled: bool = Field(default=True)
+
+    # ------------------------------------------------------------------
     # CORS
     # ------------------------------------------------------------------
     cors_origins: str = Field(
-        default="http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000"
+        default="http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:3000,http://127.0.0.1:3000"
     )
     """Comma-separated list of allowed CORS origins. Set to '*' to allow all (not recommended for production)."""
 

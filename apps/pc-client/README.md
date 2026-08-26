@@ -41,6 +41,17 @@ python -m xiaonuan_pc_client
 python sim_client.py --help   # 仅显示参数说明（当前无额外参数）
 ```
 
+## Windows 单文件 exe（分发）
+
+在仓库根或本目录执行（需 **uv** 或已安装 PyInstaller 的 Python；推荐 **Python 3.11**，与仓库约定一致）：
+
+```powershell
+cd apps/pc-client
+.\tools\build-windows-exe.ps1 -OutputDir D:\out
+```
+
+产出 `XiaonuanPCSim.exe`（PyInstaller onefile）。逻辑与 `python -m xiaonuan_pc_client` 相同。
+
 ## 行为说明
 
 1. **注册** `POST /device/register`，保存 `device_token`。

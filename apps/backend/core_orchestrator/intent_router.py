@@ -27,16 +27,17 @@ class Intent(str, Enum):
 
 INTENT_ROUTER_SYSTEM_PROMPT = """You are an intent classifier.
 Classify the user's message into one of these intents and return strict JSON:
-- chat
-- memory_query
-- tool_use
-- action_request
-- device_command
+- chat: casual conversation, greetings, emotional sharing, general chat
+- memory_query: asking about past conversations or what they've said before
+  (e.g. "上次说了什么", "还记得吗", "我之前说过什么")
+- tool_use: requesting a specific action — set reminders ("提醒我"), timers ("计时"),
+  weather ("天气"), web search ("搜索"), profile update ("更新资料")
+- action_request: asking the avatar to perform a gesture ("抱抱", "挥手", "笑一个")
+- device_command: controlling a bound PC/device ("电脑在线吗", "给电脑发通知",
+  "打开网址")
 
-Use device_command when the user asks about their bound PC/device status, listing devices,
-pinging a device, sending a notification to a device, or opening a URL on a device.
-Examples of device_command: "我的电脑在线吗", "我有哪些设备", "Ping 一下电脑",
-"给电脑发个通知：喝水", "让电脑打开 https://example.com".
+Important: "记得提醒我" is tool_use (setting a reminder), NOT memory_query.
+If the user says "记得提醒我喝水" or "帮我提醒", classify as tool_use.
 
 Response format:
 {
@@ -178,12 +179,11 @@ class IntentRouter:
         text = user_message.lower().strip()
         combined_text = f"{text} {(session_context or '').lower()}".strip()
 
-        if any(token in combined_text for token in _MEMORY_KEYWORDS):
-            return IntentResult(Intent.MEMORY_QUERY, 0.72, "Matched memory keywords", {})
-
-        # Reminders / timers / weather etc. must win over generic device tokens like「电脑」.
         if any(token in combined_text for token in _TOOL_KEYWORDS):
             return IntentResult(Intent.TOOL_USE, 0.66, "Matched tool-use keywords", {})
+
+        if any(token in combined_text for token in _MEMORY_KEYWORDS):
+            return IntentResult(Intent.MEMORY_QUERY, 0.72, "Matched memory keywords", {})
 
         if any(token in combined_text for token in _DEVICE_KEYWORDS):
             return IntentResult(

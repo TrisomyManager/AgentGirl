@@ -1,9 +1,34 @@
 import { ref, onMounted, onUnmounted, type Ref } from 'vue';
 import * as PIXI from 'pixi.js';
-import { Live2DModel } from 'pixi-live2d-display';
 
 if (typeof window !== 'undefined') {
   (window as any).PIXI = PIXI;
+}
+
+type Live2DModelCtor = typeof import('pixi-live2d-display')['Live2DModel'];
+
+function waitForCubism2Runtime(timeoutMs = 10_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+    const tick = () => {
+      if (typeof (window as any).Live2D !== 'undefined') {
+        resolve();
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(new Error('Live2D Cubism 2 runtime (live2d.min.js) not loaded'));
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    tick();
+  });
+}
+
+async function loadLive2DModelClass(): Promise<Live2DModelCtor> {
+  await waitForCubism2Runtime();
+  const { Live2DModel } = await import('pixi-live2d-display/cubism2');
+  return Live2DModel;
 }
 
 export interface Live2DOptions {
@@ -116,6 +141,7 @@ export function useLive2D(
       canvas.style.height = '100%';
       containerRef.value.appendChild(canvas);
 
+      const Live2DModel = await loadLive2DModelClass();
       const loadedModel = await Live2DModel.from(options.modelPath, {
         autoInteract: options.autoInteract ?? true,
       });

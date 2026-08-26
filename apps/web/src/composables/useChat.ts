@@ -250,6 +250,20 @@ export function useChat() {
     saveHistory(messages.value);
   }
 
+  /** Inject an assistant message into the chat (used for proactive messages). */
+  function injectAssistantMessage(content: string, extra?: { emotion?: string; actionText?: string }) {
+    const msg: ChatMessage = {
+      id: generateId(),
+      role: 'assistant',
+      type: 'text',
+      content,
+      timestamp: Date.now(),
+      emotion: extra?.emotion,
+      actionText: extra?.actionText,
+    };
+    addMessage(msg);
+  }
+
   function updateUserName(name: string) {
     userName.value = name || '用户';
     localStorage.setItem(STORAGE_USER_KEY, userName.value);
@@ -564,5 +578,6 @@ export function useChat() {
     checkServer,
     handleAssistantVoicePlayback,
     toolStatus,
+    injectAssistantMessage,
   };
 }

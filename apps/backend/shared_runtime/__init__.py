@@ -59,6 +59,12 @@ from .database import (
     init_database_schema,
 )
 
+# --- Prompt 引擎 (物理位于 shared_runtime.prompt_engine) ---
+from .prompt_engine import (
+    build_base_system_prompt,
+    build_conversation_system_prompt,
+)
+
 
 def is_lite_mode() -> bool:
     """是否处于 Lite Mode (无 Docker 依赖, 使用 SQLite + 内存替代)."""

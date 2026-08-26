@@ -37,7 +37,7 @@ from shared_contracts.models import (
     VoiceSynthesisRequest,
     VoiceTranscriptionResult,
 )
-from shared.prompt_engine import build_base_system_prompt, build_conversation_system_prompt
+from shared_runtime.prompt_engine import build_base_system_prompt, build_conversation_system_prompt
 from voice_layer.resolver import resolve_profile_id
 
 logger = structlog.get_logger()
@@ -188,7 +188,7 @@ def build_minimal_memory_sync_state(
     )
 
 
-DEFAULT_PERSONA_NAME = "陪伴者"
+DEFAULT_PERSONA_NAME = "小暖"
 
 
 def _default_persona() -> PersonaProfile:
@@ -409,13 +409,14 @@ async def _try_action_executor(tc: TurnContext, intent: str) -> Optional[Dict[st
     without spending an LLM call.
 
     Routing rule (deliberately simple, all keyword-based):
-      1. The intent_router routed to TOOL_USE or DEVICE_COMMAND.
+      1. The intent_router routed to TOOL_USE, DEVICE_COMMAND, or
+         MEMORY_QUERY.
       2. ``ActionRegistry.find_by_keyword`` matches one of the
          registered handlers' keyword list.
       3. We dispatch with a ``raw_text`` param so handlers like
          ``set_reminder`` can re-parse the natural-language delay.
     """
-    if intent not in (Intent.TOOL_USE.value, Intent.DEVICE_COMMAND.value):
+    if intent not in (Intent.TOOL_USE.value, Intent.DEVICE_COMMAND.value, Intent.MEMORY_QUERY.value):
         return None
     try:
         from action_executor import handlers as _handlers  # noqa: F401
@@ -625,7 +626,7 @@ async def _record_tool_interaction_to_memory(
 
 async def _generate_response_monolithic(tc: TurnContext, system_prompt: str, persona_name: str = DEFAULT_PERSONA_NAME) -> str:
     """Call LLM directly (monolithic mode) without HTTP roundtrip to persona_engine."""
-    from shared.llm_client import LLMClient
+    from shared_runtime.llm_client import LLMClient
 
     llm = LLMClient()
     if llm.has_configured_provider():
@@ -656,7 +657,7 @@ async def _stream_response_monolithic(
     incremental on the client side. On provider error it yields a single
     user-facing error message chunk and stops.
     """
-    from shared.llm_client import LLMClient, chunk_text_stream
+    from shared_runtime.llm_client import LLMClient, chunk_text_stream
 
     llm = LLMClient()
     if llm.has_configured_provider():
@@ -1107,7 +1108,7 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
             messages.append(msg)
 
     action_handled: Optional[Dict[str, Any]] = None
-    if intent in (Intent.TOOL_USE.value, Intent.DEVICE_COMMAND.value):
+    if intent in (Intent.TOOL_USE.value, Intent.DEVICE_COMMAND.value, Intent.MEMORY_QUERY.value):
         action_handled = await _try_action_executor(tc, intent)
     if action_handled is None:
         action_handled = await _try_device_actions_by_keyword(tc)
@@ -1684,7 +1685,7 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
     # success (stream deterministic reply) and failure (inject error
     # context into LLM prompt) without duplicating LLM streaming code.
     action_handled: Optional[Dict[str, Any]] = None
-    if intent in (Intent.TOOL_USE.value, Intent.DEVICE_COMMAND.value):
+    if intent in (Intent.TOOL_USE.value, Intent.DEVICE_COMMAND.value, Intent.MEMORY_QUERY.value):
         action_handled = await _try_action_executor(tc, intent)
     if action_handled is None:
         action_handled = await _try_device_actions_by_keyword(tc)
@@ -1694,7 +1695,7 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
     )
 
     if is_device_stream and action_handled is not None:
-        from shared.llm_client import chunk_text_stream
+        from shared_runtime.llm_client import chunk_text_stream
 
         assistant_msg = action_handled.get("message") or (
             "好的。" if action_handled.get("ok") else "暂时帮不上，稍后再试好吗？"
@@ -1718,7 +1719,7 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
         # chunk_text_stream so the UI gets the same token-by-token feel
         # as an LLM reply. Record the interaction to memory first.
         await _record_tool_interaction_to_memory(tc, action_handled)
-        from shared.llm_client import chunk_text_stream
+        from shared_runtime.llm_client import chunk_text_stream
 
         assistant_msg = action_handled.get("message") or "好的。"
         accumulated: List[str] = []
@@ -1774,7 +1775,7 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
                         )
                         data = resp.json()
                         assistant_msg = data.get("assistant_message", "...")
-                        from shared.llm_client import chunk_text_stream
+                        from shared_runtime.llm_client import chunk_text_stream
 
                         async for chunk in chunk_text_stream(assistant_msg):
                             accumulated.append(chunk)

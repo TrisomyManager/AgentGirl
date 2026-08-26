@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -31,7 +32,8 @@ class DeviceRegistry:
 
     @property
     def _lite_mode(self) -> bool:
-        return get_settings().lite_mode
+        s = get_settings()
+        return s.lite_mode or s.monolithic or os.environ.get("COMPANION_MONOLITHIC", "false").lower() in ("1", "true", "yes")
 
     async def _ensure_pool(self) -> Any:
         if self._lite_mode:

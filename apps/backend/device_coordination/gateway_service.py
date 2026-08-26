@@ -254,25 +254,44 @@ class DeviceGatewayService:
             details="",
         )
 
+        # Try WebSocket push first for real-time delivery
+        ws_delivered = False
         try:
-            await self._transport.subscribe(target.device_id)
-            await self._transport.deliver(dict(entry))
-        except Exception as exc:
-            logger.warning("gateway.transport_deliver_failed", command_id=cmd_id, error=str(exc))
+            from .api import get_ws_push
+            ws_delivered = await get_ws_push()(target.device_id, {"type": "command", "command": dict(entry)})
+        except Exception:
+            pass
+
+        if ws_delivered:
             await self._commands.update(
                 cmd_id,
-                {"status": "failed", "error": str(exc), "updated_at": _iso(_utcnow())},
+                {"status": "delivered", "updated_at": _iso(_utcnow())},
             )
-            await self._audit_row(
-                user_id=user_id,
-                device_id=target.device_id,
-                command_id=cmd_id,
-                command=command,
-                actor="system",
-                action="failed",
-                details=str(exc),
+        else:
+            try:
+                await self._transport.subscribe(target.device_id)
+                await self._transport.deliver(dict(entry))
+            except Exception as exc:
+                logger.warning("gateway.transport_deliver_failed", command_id=cmd_id, error=str(exc))
+                await self._commands.update(
+                    cmd_id,
+                    {"status": "failed", "error": str(exc), "updated_at": _iso(_utcnow())},
+                )
+                await self._audit_row(
+                    user_id=user_id,
+                    device_id=target.device_id,
+                    command_id=cmd_id,
+                    command=command,
+                    actor="system",
+                    action="failed",
+                    details=str(exc),
+                )
+                return False, {}, f"Delivery failed: {exc}"
+            # Mark delivered so polling devices can claim it
+            await self._commands.update(
+                cmd_id,
+                {"status": "delivered", "delivered_at": _iso(_utcnow()), "updated_at": _iso(_utcnow())},
             )
-            return False, {}, f"Delivery failed: {exc}"
 
         delivered = await self._commands.update(
             cmd_id,

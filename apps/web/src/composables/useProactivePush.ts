@@ -22,15 +22,30 @@ export interface ProactiveEvent {
   receivedAt: number;
 }
 
+export interface ProactiveMessagePayload {
+  id: string;
+  user_id: string;
+  message: string;
+  trigger_type: string;
+  timestamp: string;
+  emotion?: string | null;
+}
+
+export interface ProactivePushOptions {
+  /** Called when a proactive_message event arrives via SSE or poll. */
+  onProactiveMessage?: (payload: ProactiveMessagePayload) => void;
+}
+
 /**
  * Subscribes to /actions/push (SSE) for proactive events such as
- * `reminder_fired`. Since-seq and per-user seen-reminder IDs are
- * persisted to localStorage so that page refreshes never replay
- * historical toasts.
- * 
+ * `reminder_fired` and `proactive_message`. Since-seq and per-user
+ * seen-reminder IDs are persisted to localStorage so that page
+ * refreshes never replay historical toasts.
+ *
  * @param userId - scopes subscriptions + persistence to this user
+ * @param options - optional callbacks for specific event kinds
  */
-export function useProactivePush(userId: string) {
+export function useProactivePush(userId: string, options?: ProactivePushOptions) {
   const events = ref<ProactiveEvent[]>([]);
   const lastReminder = ref<ReminderFiredPayload | null>(null);
   const connected = ref(false);
@@ -136,6 +151,9 @@ export function useProactivePush(userId: string) {
           if (eventName === 'reminder_fired') {
             showReminderToast(parsed as ReminderFiredPayload);
           }
+          if (eventName === 'proactive_message') {
+            options?.onProactiveMessage?.(parsed as ProactiveMessagePayload);
+          }
         }
       }
     } catch (err) {
@@ -169,8 +187,12 @@ export function useProactivePush(userId: string) {
       }
 
       for (const ev of body.events ?? []) {
-        if (ev.kind !== 'reminder_fired' || !ev.payload || typeof ev.payload !== 'object') continue;
-        showReminderToast(ev.payload as ReminderFiredPayload);
+        if (!ev.payload || typeof ev.payload !== 'object') continue;
+        if (ev.kind === 'reminder_fired') {
+          showReminderToast(ev.payload as ReminderFiredPayload);
+        } else if (ev.kind === 'proactive_message') {
+          options?.onProactiveMessage?.(ev.payload as ProactiveMessagePayload);
+        }
       }
 
       sinceSeq = latest;

@@ -45,7 +45,7 @@ class OnboardingResult:
 def default_steps() -> List[OnboardingStep]:
     """默认四步引导, 第三方宿主可替换."""
     return [
-        OnboardingStep("role", "想先和谁聊聊呢？(默认:陪伴者 / 也可以选择 aria)"),
+        OnboardingStep("role", "想先和谁聊聊呢？(默认:小暖 / 也可以选择 aria)"),
         OnboardingStep("nickname", "希望我怎么称呼你呀？", optional=True),
         OnboardingStep("locale", "你更习惯中文还是英文？(zh-CN / en-US)", optional=True),
         OnboardingStep("greeting", "想聊点什么开始？心情、计划，或者只是随便说说都可以~"),

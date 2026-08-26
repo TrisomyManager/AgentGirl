@@ -31,7 +31,7 @@ from shared_contracts.models import (
     RelationshipMetrics,
     WorkingMemorySnapshot,
 )
-from shared.prompt_engine import build_conversation_system_prompt
+from shared_runtime.prompt_engine import build_conversation_system_prompt
 
 
 def _new_wm() -> WorkingMemory:

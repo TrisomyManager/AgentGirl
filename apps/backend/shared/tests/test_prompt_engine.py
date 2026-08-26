@@ -10,7 +10,7 @@ from shared.prompt_engine import build_base_system_prompt, build_conversation_sy
 
 def test_build_base_system_prompt_without_persona() -> None:
     prompt = build_base_system_prompt()
-    assert "陪伴者" in prompt
+    assert "小暖" in prompt
     assert "温柔体贴" in prompt
 
 
@@ -18,7 +18,7 @@ def test_build_base_system_prompt_with_persona_uses_name() -> None:
     persona = PersonaProfile(name="星野")
     prompt = build_base_system_prompt(persona=persona)
     assert "星野" in prompt
-    assert "陪伴者" in prompt
+    assert "小暖" in prompt
 
 
 def test_build_conversation_system_prompt_includes_context() -> None:

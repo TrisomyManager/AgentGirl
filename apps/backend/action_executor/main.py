@@ -15,6 +15,7 @@ from fastapi import FastAPI
 
 from action_executor import handlers  # noqa: F401 — register builtins
 from action_executor.api import router
+from action_executor.proactive_care import ProactiveLogORM  # noqa: F401 — register ORM table
 from action_executor.reminders import get_reminder_scheduler
 from shared_runtime.config import get_settings
 from shared_runtime.database import init_database_schema
@@ -30,12 +31,27 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("action_executor.schema_init_failed", error=str(exc))
 
+    settings = get_settings()
+
     scheduler = get_reminder_scheduler()
     await scheduler.start()
+
+    # Proactive care scheduler (V2.5)
+    proactive_scheduler = None
+    if settings.proactive_enabled:
+        from action_executor.proactive_care import get_proactive_care_scheduler
+
+        proactive_scheduler = get_proactive_care_scheduler(
+            poll_interval=settings.proactive_poll_interval_seconds,
+        )
+        await proactive_scheduler.start()
+
     try:
         yield
     finally:
         await scheduler.stop()
+        if proactive_scheduler is not None:
+            await proactive_scheduler.stop()
         logger.info("action_executor.shutdown")
 
 

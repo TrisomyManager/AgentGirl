@@ -170,13 +170,19 @@ const {
   checkServer,
   handleAssistantVoicePlayback,
   toolStatus,
+  injectAssistantMessage,
 } = useChat();
 
 // Subscribe to /actions/push (SSE) so reminder_fired events surface as a
-// floating toast in the corner. dismissLastReminder is wired to the toast's
-// close button. Per-user since-seq and seen-reminder-ids are persisted
-// to localStorage so refreshes never replay historical toasts.
-const { lastReminder, dismissLastReminder } = useProactivePush(userId);
+// floating toast in the corner, and proactive_message events inject an
+// assistant message directly into the chat. Per-user since-seq and
+// seen-reminder-ids are persisted to localStorage so refreshes never
+// replay historical messages.
+const { lastReminder, dismissLastReminder } = useProactivePush(userId, {
+  onProactiveMessage: (payload) => {
+    injectAssistantMessage(payload.message, { emotion: payload.emotion ?? undefined });
+  },
+});
 
 // Current tool execution state (for ChatMessage and global banner)
 const currentToolExecution = computed<ToolExecutionState | null>(

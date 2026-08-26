@@ -6,7 +6,9 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from asyncio import Lock as AsyncLock
+
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
 
 from shared_contracts.models import DeviceInfo, DeviceType, Platform
@@ -381,6 +383,80 @@ async def list_audit(
     return {"success": True, "audit": rows, "count": len(rows)}
 
 
+# ── WebSocket push transport ────────────────────────────────────────────
+
+# device_id -> list of active WebSocket connections
+_ws_connections: Dict[str, List[WebSocket]] = {}
+_ws_lock = AsyncLock()
+
+
+async def _push_to_device(device_id: str, message: Dict[str, Any]) -> bool:
+    """Push a message to all WS connections for a device. Returns True if delivered."""
+    async with _ws_lock:
+        conns = _ws_connections.get(device_id, [])
+    if not conns:
+        return False
+    dead: List[WebSocket] = []
+    for ws in conns:
+        try:
+            await ws.send_json(message)
+        except Exception:
+            dead.append(ws)
+    if dead:
+        async with _ws_lock:
+            for ws in dead:
+                if ws in _ws_connections.get(device_id, []):
+                    _ws_connections[device_id].remove(ws)
+    return len(dead) < len(conns)
+
+
+@router.websocket("/ws/{device_id}")
+async def device_websocket(
+    websocket: WebSocket,
+    device_id: str,
+    token: str = Query(...),
+    gateway: DeviceGatewayService = Depends(get_gateway),
+):
+    """Real-time push channel for device commands.
+    Devices connect here to receive commands instantly instead of polling.
+    Query param: ?token=<device_token>
+    """
+    # Authenticate
+    try:
+        await gateway._ensure_device_auth(device_id, token)
+    except PermissionError:
+        await websocket.close(code=4001, reason="Invalid device credentials")
+        return
+
+    await websocket.accept()
+    await websocket.send_json({"type": "connected", "device_id": device_id})
+
+    async with _ws_lock:
+        _ws_connections.setdefault(device_id, []).append(websocket)
+    logger.info("device.ws_connected", device_id=device_id)
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            if data.get("type") == "pong":
+                pass  # keep-alive
+    except (WebSocketDisconnect, Exception):
+        pass
+    finally:
+        async with _ws_lock:
+            conns = _ws_connections.get(device_id, [])
+            if websocket in conns:
+                conns.remove(websocket)
+        logger.info("device.ws_disconnected", device_id=device_id)
+
+
+# Export the push function so gateway_service can use it
+def get_ws_push():
+    return _push_to_device
+
+
 @router.get("/transport/health")
 async def transport_health(gateway: DeviceGatewayService = Depends(get_gateway)) -> Dict[str, Any]:
-    return {"success": True, "transport": gateway.transport_health()}
+    health = gateway.transport_health()
+    health["ws_connections"] = sum(len(v) for v in _ws_connections.values())
+    return {"success": True, "transport": health}

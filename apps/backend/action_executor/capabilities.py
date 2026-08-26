@@ -131,6 +131,16 @@ _USER_CAPABILITIES: list[dict[str, Any]] = [
         ],
         "action_names": ["device_ping", "device_open_url"],
     },
+    {
+        "id": "proactive_care",
+        "title": "主动陪伴",
+        "group": "主动陪伴",
+        "description": "你长时间不说话时主动问候、根据时间道早安晚安、记得你在意的事情。",
+        "examples": [
+            "（小暖自动触发，无需你说话）",
+        ],
+        "action_names": [],
+    },
 ]
 
 # ---------------------------------------------------------------------------
