@@ -85,6 +85,22 @@
 
 ---
 
+## Phase 8：实时流式管线与 3D 形象（DLP3D 借鉴）
+
+> 来源：[dlp3d-ai/dlp3d.ai](https://github.com/dlp3d-ai/dlp3d.ai)（Digital Life Project 2，SIGGRAPH Asia 2025，MIT）。
+> 重点借鉴其 orchestrator 的流式工程，不引入其 3D 模型资产（示例含原神角色，仅限非商用）。
+
+| # | 任务 | 状态 | 难度 | 预计工时 | 产出 |
+|---|------|------|------|----------|------|
+| 8.1 | **LLM 分段 → TTS 并行流式管线** | 🔵 设计中 | ⭐⭐⭐⭐ | 10h | 参考 DLP3D Aggregator 模式：长回复按句切段，TTS/情感分析并行起跑，首字延迟显著下降；落在 `voice_layer/` + `core_orchestrator/` 流式路径。设计稿：[docs/streaming-tts-pipeline-design.md](docs/streaming-tts-pipeline-design.md) |
+| 8.2 | **打断处理与自适应缓冲** | 🟡 待开始 | ⭐⭐⭐ | 6h | 用户插话时取消在途 TTS/动作流、缓冲水位自适应；补 5.1 的"支持打断"，参考 DLP3D interruption/adaptive buffering 机制 |
+| 8.3 | **Classification/Reaction 小模型独立环节** | 🟡 待开始 | ⭐⭐ | 4h | 每轮用小模型独立打标（用户意图 + 角色情绪/关系变化），结果喂给 `persona_engine` 状态机，替代主 LLM 自报情绪；与 3.1 二维情绪模型联动 |
+| 8.4 | 音频/表情同步聚合器 | 🟡 待开始 | ⭐⭐⭐ | 6h | 参考 `tts_reaction_aggregator` / `blendshapes_aggregator`：TTS 音频与表情动作时间轴对齐后统一下发，强化 5.3 Live2D 唇形/表情同步 |
+| 8.5 | 流式传输协议升级（Protobuf/二进制帧） | 🔵 长期 | ⭐⭐⭐ | 8h | 评估将 SSE/JSON 流升级为 DLP3D 式 Protobuf 流式结构，降低音频+动作多路流的传输开销 |
+| 8.6 | 3D 形象升级路径：接入 speech2motion / audio2face | 🔵 长期 | ⭐⭐⭐⭐ | 16h | 补 `action_layer` 占位模块：将 DLP3D 的 speech2motion（语音→肢体）与 audio2face（音频→面部）作为独立微服务接入，前端可换 Three.js 3D 形象，Live2D 保留为轻量选项 |
+
+---
+
 ## 快速启动指南（选一个开始）
 
 ### 如果只有 2 小时
@@ -98,3 +114,6 @@
 
 ### 如果想做架构升级
 → 做 **4.1 SubAgent 编排**（`intent_router.py` 拆分为多个 SubAgent，打开复杂任务处理的想象力）
+
+### 如果想做语音体验升级
+→ 做 **8.1 LLM 分段 → TTS 并行流式管线**（DLP3D Aggregator 模式，首字延迟立竿见影，并为 8.2 打断处理打底）

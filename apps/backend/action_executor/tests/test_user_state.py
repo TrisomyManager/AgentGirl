@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -30,7 +30,22 @@ def test_user_state_empty_returns_valid_structure(client: TestClient) -> None:
     assert data["reminders"]["recent"] == []
     assert data["tasks"]["open"] == []
     assert data["tasks"]["completed_recent"] == []
-    assert data["proactive"]["rules"] == []
+    # Proactive rules are capability metadata (not per-user state): with
+    # proactive_enabled=True (the default since V2.5), even a fresh user sees
+    # the default trigger list so the frontend CapabilityPanel can render
+    # toggles (roadmap 1.7). Assert the contract, not emptiness.
+    rules = data["proactive"]["rules"]
+    rule_ids = {r["id"] for r in rules}
+    assert rule_ids == {
+        "idle_checkin",
+        "morning_greeting",
+        "evening_greeting",
+        "memory_followup",
+    }
+    for rule in rules:
+        assert isinstance(rule["enabled"], bool)
+        assert rule["title"]
+        assert rule["schedule"]
 
 
 async def test_user_state_after_reminder_created(client: TestClient) -> None:
@@ -38,7 +53,7 @@ async def test_user_state_after_reminder_created(client: TestClient) -> None:
     from action_executor.reminders import get_reminders_store
 
     store = get_reminders_store()
-    fire_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    fire_at = datetime.now(UTC) + timedelta(hours=1)
     reminder = await store.add(
         user_id="test_reminder_user",
         text="交材料",
@@ -62,7 +77,7 @@ async def test_user_state_fired_reminder_in_recent(client: TestClient) -> None:
     from action_executor.reminders import get_reminders_store
 
     store = get_reminders_store()
-    fire_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    fire_at = datetime.now(UTC) + timedelta(hours=1)
     reminder = await store.add(
         user_id="test_fired_user",
         text="喝水",
@@ -89,7 +104,7 @@ async def test_user_state_cancelled_reminder_in_recent(client: TestClient) -> No
     from action_executor.reminders import get_reminders_store
 
     store = get_reminders_store()
-    fire_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    fire_at = datetime.now(UTC) + timedelta(hours=1)
     reminder = await store.add(
         user_id="test_cancel_user",
         text="看邮件",
