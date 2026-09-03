@@ -10,21 +10,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import re
 import uuid
 
 import structlog
 
+from shared_runtime.text_segmenter import SENTENCE_END_RE as _SENTENCE_END
 from voice_layer.asr import ASRClient
 from voice_layer.providers.realtime._llm_stream import (
-    DEFAULT_SYSTEM_PROMPT as _SYSTEM_PROMPT,
     stream_llm as _stream_llm,
 )
 from voice_layer.tts import TTSClient
 
 logger = structlog.get_logger("voice_layer.providers.cloud_realtime")
-
-_SENTENCE_END = re.compile(r"[。！？!?\n]|[，、,;；](?=.{6,})")
 
 
 class CloudRealtimeProvider:

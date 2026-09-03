@@ -24,6 +24,17 @@ import os
 # --- 配置 (物理位于 shared_runtime.config) ---
 from .config import Settings, get_settings
 
+# --- 数据库 (物理位于 shared_runtime.database) ---
+from .database import (
+    AsyncSessionLocal,
+    Base,
+    close_database,
+    engine,
+    get_db,
+    get_db_session,
+    init_database_schema,
+)
+
 # --- Lite Mode (物理位于 shared_runtime.lite_mode) ---
 from .lite_mode import EventHandler, InMemoryEventBus, InMemoryShortTermMemory
 
@@ -38,6 +49,18 @@ from .llm_client import (
     update_runtime_llm_config,
 )
 
+# --- Prompt 引擎 (物理位于 shared_runtime.prompt_engine) ---
+from .prompt_engine import (
+    build_base_system_prompt,
+    build_conversation_system_prompt,
+)
+
+# --- 文本分段器 (物理位于 shared_runtime.text_segmenter) ---
+from .text_segmenter import (
+    SENTENCE_END_RE,
+    SentenceSegmenter,
+)
+
 # --- 语音运行时配置 (物理位于 shared_runtime.voice_runtime_config) ---
 from .voice_runtime_config import (
     clear_runtime_voice_config,
@@ -46,23 +69,6 @@ from .voice_runtime_config import (
     save_voice_config_to_disk,
     update_runtime_voice_config,
     voice_config_file_path,
-)
-
-# --- 数据库 (物理位于 shared_runtime.database) ---
-from .database import (
-    AsyncSessionLocal,
-    Base,
-    close_database,
-    engine,
-    get_db,
-    get_db_session,
-    init_database_schema,
-)
-
-# --- Prompt 引擎 (物理位于 shared_runtime.prompt_engine) ---
-from .prompt_engine import (
-    build_base_system_prompt,
-    build_conversation_system_prompt,
 )
 
 
@@ -103,4 +109,10 @@ __all__ = [
     "get_db_session",
     "close_database",
     "init_database_schema",
+    # Prompt 引擎
+    "build_base_system_prompt",
+    "build_conversation_system_prompt",
+    # 文本分段器
+    "SENTENCE_END_RE",
+    "SentenceSegmenter",
 ]
