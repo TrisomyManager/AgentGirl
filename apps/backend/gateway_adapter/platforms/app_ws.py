@@ -73,9 +73,10 @@ class AppWebSocketAdapter(BasePlatformAdapter):
         sent = await self._push_to_user(user_id, message)
         return str(sent) if sent else None
 
-    async def broadcast(self, user_id: str, content: str) -> None:
+    async def broadcast(self, user_id: str, content: str) -> Optional[str]:
         message = {"type": "broadcast", "content": content}
-        await self._push_to_user(user_id, message)
+        count = await self._push_to_user(user_id, message)
+        return str(count) if count else None
 
     async def _push_to_user(self, user_id: str, message: Dict[str, Any]) -> int:
         text = json.dumps(message, ensure_ascii=False)

@@ -19,15 +19,15 @@ from typing import Any, Dict, List, Optional
 import httpx
 import structlog
 from celery import Celery
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from shared_runtime.config import get_settings
-from shared_runtime.llm_client import get_runtime_llm_config
-from shared_contracts.models import EmotionTag, MemoryCategory, MemoryEntry
 
 from memory_system.db import AsyncSessionLocal
-from memory_system.graph_store import graph_store
+from memory_system.graph_lifecycle import write_extracted_graph
+from memory_system.importance import apply_importance, enrich_frequency, ground_extraction, importance_evidence
+from memory_system.lifecycle import StaleMemoryWriteError, capture_memory_epoch
 from memory_system.vector_store import store_memory
+from shared_contracts.models import EmotionTag, MemoryCategory, MemoryEntry
+from shared_runtime.config import get_settings
+from shared_runtime.llm_client import get_effective_chat_config
 
 logger = structlog.get_logger(__name__)
 
@@ -88,14 +88,12 @@ async def _llm_chat(
     json_mode: bool = False,
 ) -> str:
     """Call OpenAI-compatible chat completion API. Reads runtime LLM config first."""
-    rt = get_runtime_llm_config()
-    api_key = rt.get("openai_api_key") or settings.openai_api_key
+    config = get_effective_chat_config()
+    api_key = config["api_key"]
     if not api_key:
         raise RuntimeError("LLM API key not configured")
-    base_url = (
-        rt.get("openai_base_url") or settings.openai_base_url or "https://api.openai.com/v1"
-    ).rstrip("/")
-    chosen_model = model or rt.get("default_model") or settings.default_llm_model
+    base_url = config["base_url"]
+    chosen_model = model or config["model"]
     payload: Dict[str, Any] = {
         "model": chosen_model,
         "messages": messages,
@@ -103,6 +101,8 @@ async def _llm_chat(
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    if "volces.com" in base_url:
+        payload["thinking"] = {"type": "disabled"}
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(
@@ -191,7 +191,7 @@ Conversation:
                 [
                     {
                         "role": "system",
-                        "content": "You are an entity extraction assistant. Output valid JSON only.",
+                        "content": "Extract only facts stated by the user. Assistant suggestions are not user facts. Use literal user words for entity and event names. Output valid JSON only.",
                     },
                     {"role": "user", "content": prompt},
                 ],
@@ -204,6 +204,7 @@ Conversation:
         self.retry(countdown=10, exc=exc)
         raise
 
+    extracted = ground_extraction(extracted, user_message)
     turn_data["extracted"] = extracted
     logger.info(
         "pipeline.stage2_done",
@@ -221,6 +222,9 @@ Conversation:
 def stage3_importance_scoring(self, turn_data: Dict[str, Any]) -> Dict[str, Any]:
     """Score memory importance on a 0-1 scale using LLM."""
     logger.info("pipeline.stage3_start", turn_id=turn_data.get("turn_id"))
+    if "low_information" in importance_evidence(turn_data).reasons:
+        return apply_importance(turn_data)
+    _run_async(enrich_frequency(turn_data))
 
     user_message = turn_data.get("user_message", "")
     assistant_message = turn_data.get("assistant_message", "")
@@ -247,17 +251,13 @@ Conversation:
                 json_mode=True,
             )
         )
-        scored = json.loads(result)
+        scored = json.loads(_strip_json_fence(result))
     except Exception as exc:
-        logger.error("pipeline.stage3_failed", error=str(exc))
-        self.retry(countdown=10, exc=exc)
-        raise
+        logger.warning("pipeline.stage3_rule_fallback", error=type(exc).__name__)
+        scored = {}
 
-    importance = max(0.0, min(1.0, float(scored.get("importance", 0.5))))
-    turn_data["importance"] = importance
-    turn_data["importance_reason"] = scored.get("reason", "")
-    turn_data["suggested_category"] = scored.get("category", "fact")
-    logger.info("pipeline.stage3_done", importance=importance)
+    apply_importance(turn_data, scored if isinstance(scored, dict) else {})
+    logger.info("pipeline.stage3_done", importance=turn_data["importance"])
     return turn_data
 
 
@@ -308,9 +308,10 @@ def stage4_conflict_resolution(self, turn_data: Dict[str, Any]) -> Dict[str, Any
 @celery_app.task(bind=True, max_retries=3)
 def stage5_long_term_storage(self, turn_data: Dict[str, Any]) -> Dict[str, Any]:
     """Write processed memory to vector DB and knowledge graph."""
-    import asyncio
 
     logger.info("pipeline.stage5_start", turn_id=turn_data.get("turn_id"))
+    if "low_information" in importance_evidence(turn_data).reasons:
+        return turn_data | {"memory_entry_id": None, "memory_skipped": "low_information"}
 
     user_id = turn_data["user_id"]
     turn_id = turn_data["turn_id"]
@@ -353,48 +354,17 @@ def stage5_long_term_storage(self, turn_data: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     async def _store() -> None:
+        if "source_epoch" not in turn_data:
+            turn_data["source_epoch"] = await capture_memory_epoch(user_id)
         async with AsyncSessionLocal() as session:
-            await store_memory(session, entry)
+            await store_memory(session, entry, extracted=extracted, expected_epoch=turn_data.get("source_epoch"))
 
-            # Knowledge graph writes
-            await graph_store.merge_user(user_id)
-            for ent in extracted.get("entities", []):
-                await graph_store.merge_entity(
-                    user_id=user_id,
-                    entity_name=ent["name"],
-                    entity_type=ent.get("type", "generic"),
-                    properties=ent.get("properties"),
-                )
-            for rel in extracted.get("relationships", []):
-                await graph_store.merge_relationship(
-                    user_id=user_id,
-                    source_name=rel["source"],
-                    target_name=rel["target"],
-                    rel_type=rel.get("type", "RELATED_TO"),
-                    properties=rel.get("properties"),
-                )
-            for ev in extracted.get("events", []):
-                await graph_store.log_event(
-                    user_id=user_id,
-                    event_name=ev["name"],
-                    properties=ev.get("properties"),
-                )
-            for pref in extracted.get("preferences", []):
-                await graph_store.add_preference(
-                    user_id=user_id,
-                    key=pref["key"],
-                    value=pref.get("value"),
-                    strength=pref.get("strength", 0.5),
-                )
-            for em in extracted.get("emotions", []):
-                await graph_store.add_emotion(
-                    user_id=user_id,
-                    emotion_tag=em.get("tag", "neutral"),
-                    intensity=em.get("intensity", 0.5),
-                    trigger=em.get("trigger"),
-                )
+        await write_extracted_graph(user_id, turn_data["source_epoch"], extracted, memory_id=entry.entry_id)
 
-    _run_async(_store())
+    try:
+        _run_async(_store())
+    except StaleMemoryWriteError:
+        return turn_data | {"memory_entry_id": None, "memory_skipped": "user_cleared"}
 
     turn_data["memory_entry_id"] = entry.entry_id
     logger.info(
@@ -466,13 +436,13 @@ Conversation:
             [
                 {
                     "role": "system",
-                    "content": "You extract structured info from conversations. Output valid JSON only.",
+                    "content": "Extract only facts stated by the user. Assistant suggestions are not user facts. Use literal user words for entity and event names. Output valid JSON only.",
                 },
                 {"role": "user", "content": prompt},
             ],
             json_mode=True,
         )
-        td["extracted"] = json.loads(_strip_json_fence(raw))
+        td["extracted"] = ground_extraction(json.loads(_strip_json_fence(raw)), user_message)
     except Exception as exc:
         logger.warning("pipeline.async.stage2_failed", error=str(exc))
         td["extracted"] = {"entities": [], "relationships": [], "events": [], "preferences": [], "emotions": []}
@@ -480,6 +450,9 @@ Conversation:
 
 
 async def _stage3_score(td: Dict[str, Any]) -> Dict[str, Any]:
+    if "low_information" in importance_evidence(td).reasons:
+        return apply_importance(td)
+    await enrich_frequency(td)
     user_message = td.get("user_message", "")
     assistant_message = td.get("assistant_message", "")
     combined = f"User: {user_message}\nAssistant: {assistant_message}"
@@ -501,18 +474,10 @@ Conversation:
             json_mode=True,
         )
         scored = json.loads(_strip_json_fence(raw))
-        td["importance"] = max(0.0, min(1.0, float(scored.get("importance", 0.5))))
-        td["importance_reason"] = scored.get("reason", "")
-        td["suggested_category"] = scored.get("category", "fact")
     except Exception as exc:
-        logger.warning("pipeline.async.stage3_failed", error=str(exc))
-        # Heuristic fallback: longer + more emotional content scores higher.
-        msg = (user_message or "") + (assistant_message or "")
-        boost = 0.1 if any(k in msg for k in ["喜欢", "讨厌", "记住", "重要", "最爱", "生日", "纪念", "梦想"]) else 0.0
-        td["importance"] = min(1.0, 0.4 + boost + min(0.2, len(msg) / 1000))
-        td["importance_reason"] = "fallback heuristic (LLM unavailable)"
-        td["suggested_category"] = "fact"
-    return td
+        logger.warning("pipeline.async.stage3_rule_fallback", error=type(exc).__name__)
+        scored = {}
+    return apply_importance(td, scored if isinstance(scored, dict) else {})
 
 
 async def _stage4_dedupe(td: Dict[str, Any]) -> Dict[str, Any]:
@@ -537,7 +502,11 @@ async def _stage4_dedupe(td: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def _stage5_store(td: Dict[str, Any]) -> Dict[str, Any]:
+    if "low_information" in importance_evidence(td).reasons:
+        return td | {"memory_entry_id": None, "memory_skipped": "low_information"}
     user_id = td["user_id"]
+    if "source_epoch" not in td:
+        td["source_epoch"] = await capture_memory_epoch(user_id)
     turn_id = td["turn_id"]
     importance = td.get("importance", 0.5)
     category_str = td.get("suggested_category", "fact")
@@ -575,49 +544,15 @@ async def _stage5_store(td: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     async with AsyncSessionLocal() as session:
-        await store_memory(session, entry)
+        try:
+            await store_memory(session, entry, extracted=extracted, expected_epoch=td.get("source_epoch"))
+        except StaleMemoryWriteError:
+            return td | {"memory_entry_id": None, "memory_skipped": "user_cleared"}
 
-        # Knowledge graph writes — skipped if Neo4j driver not connected.
-        if getattr(graph_store, "_driver", None) is not None:
-            try:
-                await graph_store.merge_user(user_id)
-                for ent in extracted.get("entities", []) or []:
-                    await graph_store.merge_entity(
-                        user_id=user_id,
-                        entity_name=ent["name"],
-                        entity_type=ent.get("type", "generic"),
-                        properties=ent.get("properties"),
-                    )
-                for rel in extracted.get("relationships", []) or []:
-                    await graph_store.merge_relationship(
-                        user_id=user_id,
-                        source_name=rel["source"],
-                        target_name=rel["target"],
-                        rel_type=rel.get("type", "RELATED_TO"),
-                        properties=rel.get("properties"),
-                    )
-                for ev in extracted.get("events", []) or []:
-                    await graph_store.log_event(
-                        user_id=user_id,
-                        event_name=ev["name"],
-                        properties=ev.get("properties"),
-                    )
-                for pref in extracted.get("preferences", []) or []:
-                    await graph_store.add_preference(
-                        user_id=user_id,
-                        key=pref["key"],
-                        value=pref.get("value"),
-                        strength=pref.get("strength", 0.5),
-                    )
-                for em in extracted.get("emotions", []) or []:
-                    await graph_store.add_emotion(
-                        user_id=user_id,
-                        emotion_tag=em.get("tag", "neutral"),
-                        intensity=em.get("intensity", 0.5),
-                        trigger=em.get("trigger"),
-                    )
-            except Exception as exc:
-                logger.warning("pipeline.async.graph_failed", error=str(exc))
+    try:
+        await write_extracted_graph(user_id, td["source_epoch"], extracted, memory_id=entry.entry_id)
+    except Exception as exc:
+        logger.warning("pipeline.async.graph_failed", error=type(exc).__name__)
 
     td["memory_entry_id"] = entry.entry_id
     td["memory_category"] = category.value
@@ -626,6 +561,9 @@ async def _stage5_store(td: Dict[str, Any]) -> Dict[str, Any]:
 
 async def run_pipeline_async(turn_data: Dict[str, Any]) -> Dict[str, Any]:
     """Execute all 5 pipeline stages without Celery — used in monolithic mode."""
+    turn_data = dict(turn_data)
+    if "source_epoch" not in turn_data:
+        turn_data["source_epoch"] = await capture_memory_epoch(turn_data["user_id"])
     log = logger.bind(turn_id=turn_data.get("turn_id"))
     log.info("pipeline.async.start")
     td = await _stage1_archive(turn_data)

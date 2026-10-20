@@ -1,7 +1,7 @@
 """Prompt assembly helpers shared across companion-ai modules.
 
 P1-F (V2.2): 物理实现从 ``shared.prompt_engine`` 搬迁至此.
-``shared.prompt_engine`` 现为 deprecated re-export shim.
+旧 ``shared.prompt_engine`` 入口在 V2.22 已移除.
 """
 
 from __future__ import annotations
@@ -70,11 +70,14 @@ def build_conversation_system_prompt(
         parts.append(f"【关系目标】\n{goal_lines}")
 
     if emotion:
+        from shared_runtime.response_behavior import response_behavior
+
         emo_zh = _emotion_zh(emotion.primary.value)
         parts.append(
             f"【当前情绪】{emo_zh}（强度 {emotion.intensity:.2f}，"
             f"情感色彩 {emotion.valence:+.2f}，唤醒度 {emotion.arousal:.2f}）"
         )
+        parts.append("【回复节奏】" + response_behavior(emotion).instruction)
 
     if relationship and relationship.total_interactions > 0:
         parts.append(
@@ -93,6 +96,10 @@ def build_conversation_system_prompt(
 
     if memory and memory.graph_facts:
         parts.append("【已知事实】\n- " + "\n- ".join(memory.graph_facts[:3]))
+    if memory and memory.previous_session_digest:
+        parts.append("【此前会话回顾】\n" + memory.previous_session_digest)
+    if memory and memory.daily_summary:
+        parts.append(f"【对话日总结 · {memory.daily_summary_date or '最近'}】\n{memory.daily_summary}")
 
     if memory and memory.working_memory:
         wm = memory.working_memory
@@ -107,6 +114,8 @@ def build_conversation_system_prompt(
             wm_bits.append(f"（启发式主题参考：{wm.dominant_topic_heuristic}）")
         if wm.session_digest:
             wm_bits.append(f"本段对话摘要：{wm.session_digest}")
+        if wm.history_digest:
+            wm_bits.append(f"更早对话摘要：{wm.history_digest}")
         if wm.last_user_emotion:
             wm_bits.append(f"用户上一句的情绪：{_emotion_zh(wm.last_user_emotion)}")
         if wm.likes:

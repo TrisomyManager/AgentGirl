@@ -1,12 +1,45 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, globalShortcut, Notification } from 'electron';
-import { join } from 'path';
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, globalShortcut, protocol, net } from 'electron';
+import { join, resolve, relative, isAbsolute, sep } from 'path';
+import { pathToFileURL } from 'url';
+import { mkdirSync } from 'fs';
 import Store from 'electron-store';
 import { startDeviceClient, stopDeviceClient, getDeviceStatus } from './device-client';
+import { execTool, listTools, stopToolServer } from './tool-bridge';
+import { closeNotifications, setNotificationActivator, showLocalNotification } from './notifications';
+
+if (process.env.XIAONUAN_PROFILE_DIR) {
+  const profile = process.env.XIAONUAN_PROFILE_DIR;
+  if (!isAbsolute(profile)) throw new Error('桌面资料目录必须是绝对路径。');
+  mkdirSync(profile, { recursive: true });
+  app.setPath('userData', profile);
+}
+
+protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: {
+  standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true,
+} }]);
+
+function registerApplicationAssets() {
+  const root = resolve(__dirname, '../dist');
+  protocol.handle('app', async request => {
+    try {
+      const url = new URL(request.url);
+      if (url.hostname !== 'companion' || url.username || url.password || !['GET', 'HEAD'].includes(request.method)) {
+        return new Response('Not found', { status: 404 });
+      }
+      const pathname = decodeURIComponent(url.pathname);
+      if (pathname.includes('\\') || pathname.includes('\0')) return new Response('Not found', { status: 404 });
+      const filename = resolve(root, pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, ''));
+      const scoped = relative(root, filename);
+      if (scoped === '..' || scoped.startsWith('..' + sep) || isAbsolute(scoped)) return new Response('Not found', { status: 404 });
+      return await net.fetch(pathToFileURL(filename).toString());
+    } catch { return new Response('Not found', { status: 404 }); }
+  });
+}
 
 const store = new Store({
   defaults: {
     windowBounds: { width: 1200, height: 800 },
-    autoLaunch: true,
+    autoLaunch: false,
   },
 });
 
@@ -16,7 +49,7 @@ let isQuitting = false;
 
 // ── Tray icon (programmatic 16x16 PNG) ────────────────────────────────
 
-function createTrayIcon(): nativeImage {
+function createTrayIcon(): Electron.NativeImage {
   // 16x16 RGBA favicon: warm coral circle with a heart center
   const size = 16;
   const buf = Buffer.alloc(size * size * 4);
@@ -30,9 +63,9 @@ function createTrayIcon(): nativeImage {
 
       if (dist <= r) {
         // Coral circle
-        buf[i] = 255;   // R
+        buf[i] = 120;   // B (native bitmap uses premultiplied BGRA)
         buf[i + 1] = 140; // G
-        buf[i + 2] = 120; // B
+        buf[i + 2] = 255; // R
         buf[i + 3] = 255; // A
       } else {
         buf[i + 3] = 0;  // transparent
@@ -40,7 +73,7 @@ function createTrayIcon(): nativeImage {
     }
   }
 
-  return nativeImage.createFromBuffer(buf, { width: size, height: size });
+  return nativeImage.createFromBitmap(buf, { width: size, height: size });
 }
 
 // ── Window ────────────────────────────────────────────────────────────
@@ -59,8 +92,13 @@ function createWindow() {
       preload: join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url !== mainWindow?.webContents.getURL()) event.preventDefault();
   });
 
   mainWindow.once('ready-to-show', () => mainWindow?.show());
@@ -79,19 +117,9 @@ function createWindow() {
     }
   });
 
-  const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5174';
-
-  // Try Vite dev server first; fall back to production build
-  (async () => {
-    try {
-      const resp = await fetch(devUrl);
-      if (resp.ok) {
-        mainWindow!.loadURL(devUrl);
-        return;
-      }
-    } catch {}
-    mainWindow!.loadFile(join(__dirname, '../dist/index.html'));
-  })();
+  const devUrl = !app.isPackaged && process.env.VITE_DEV_SERVER_URL;
+  if (devUrl) void mainWindow.loadURL(devUrl);
+  else void mainWindow.loadURL('app://companion/');
 }
 
 // ── Tray ──────────────────────────────────────────────────────────────
@@ -124,22 +152,29 @@ function createTray() {
 // ── IPC ───────────────────────────────────────────────────────────────
 
 function setupIPC() {
-  ipcMain.handle('store:get', (_e, key: string) => store.get(key));
-  ipcMain.handle('store:set', (_e, key: string, value: any) => store.set(key, value));
+  function trusted(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) {
+    return !!mainWindow && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame;
+  }
+  function requireTrusted(event: Electron.IpcMainInvokeEvent) {
+    if (!trusted(event)) throw new Error('请求来源不受信任。');
+  }
+  ipcMain.handle('store:get', (event, key: string) => { requireTrusted(event); return ['windowBounds', 'autoLaunch'].includes(key) ? store.get(key) : undefined; });
+  ipcMain.handle('store:set', (event, key: string, value: any) => { requireTrusted(event); if (['windowBounds', 'autoLaunch'].includes(key)) store.set(key, value); });
 
   ipcMain.handle('tool:exec', async (_e, name: string, params: Record<string, any>) => {
-    const { execTool } = await import('./tool-bridge');
+    requireTrusted(_e);
     return execTool(name, params);
   });
 
-  ipcMain.handle('tool:list', async () => {
-    const { listTools } = await import('./tool-bridge');
+  ipcMain.handle('tool:list', async (event) => {
+    requireTrusted(event);
     return listTools();
   });
 
-  ipcMain.handle('device:status', () => getDeviceStatus());
+  ipcMain.handle('device:status', (event) => { requireTrusted(event); return getDeviceStatus(); });
 
   ipcMain.handle('app:autoLaunch', (_e, enabled?: boolean) => {
+    requireTrusted(_e);
     if (typeof enabled === 'boolean') {
       store.set('autoLaunch', enabled);
       app.setLoginItemSettings({ openAtLogin: enabled });
@@ -147,16 +182,21 @@ function setupIPC() {
     return store.get('autoLaunch');
   });
 
-  ipcMain.on('notification:show', (_e, title: string, body: string) => {
-    if (Notification.isSupported()) {
-      new Notification({ title, body }).show();
-    }
-  });
+  function notify(_e: Electron.IpcMainEvent, title: string, body: string, background: boolean) {
+    if (!trusted(_e) || typeof title !== 'string' || typeof body !== 'string' || title.length > 100 || body.length > 2000) return;
+    if (background && mainWindow?.isVisible() && mainWindow.isFocused()) return;
+    void showLocalNotification(title, body);
+  }
+  ipcMain.on('notification:show', (event, title, body) => notify(event, title, body, false));
+  ipcMain.on('notification:background', (event, title, body) => notify(event, title, body, true));
 }
 
 // ── App lifecycle ─────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
+  registerApplicationAssets();
+  if (process.platform === 'win32') app.setAppUserModelId('com.companion.xiaonuan');
+  setNotificationActivator(() => { mainWindow?.show(); mainWindow?.focus(); });
   setupIPC();
   createWindow();
   createTray();
@@ -189,5 +229,7 @@ app.on('window-all-closed', () => {});
 app.on('before-quit', () => {
   isQuitting = true;
   stopDeviceClient();
+  stopToolServer();
+  closeNotifications();
   globalShortcut.unregisterAll();
 });

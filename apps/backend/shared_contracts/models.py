@@ -2,7 +2,7 @@
 
 P1-C 物理搬迁完成 (V2.1):
 - 原 ``shared.models`` 的物理实现现在位于本文件
-- ``shared.models`` 反向 re-export, 保留向后兼容
+- 旧 ``shared.models`` 兼容包在 V2.22 已物理移除
 - 业务侧应优先 ``from shared_contracts import X``
 
 ADR-006 硬约束 1: 契约层零运行时副作用, 仅 Pydantic + stdlib.
@@ -10,11 +10,11 @@ ADR-006 硬约束 1: 契约层零运行时副作用, 仅 Pydantic + stdlib.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -25,6 +25,7 @@ class Platform(str, Enum):
     APP = "app"
     TELEGRAM = "telegram"
     DISCORD = "discord"
+    QQ = "qq"
     WECHAT = "wechat"
     FEISHU = "feishu"
     DINGTALK = "dingtalk"
@@ -107,6 +108,10 @@ class EmotionState(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     trigger: str | None = Field(default=None, description="What triggered this emotion")
 
+    @field_serializer("timestamp", when_used="json")
+    def serialize_timestamp(self, value: datetime) -> datetime:
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
 
 class RelationshipMetrics(BaseModel):
     """Relationship depth indicators for a single user."""
@@ -148,6 +153,7 @@ class TurnContext(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     has_voice: bool = Field(default=False)
     request_voice_reply: bool = Field(default=False)
+    supports_segmented_voice: bool = Field(default=False)
     voice_duration_ms: int | None = Field(default=None)
     has_image: bool = Field(default=False)
     image_urls: list[str] = Field(default_factory=list)
@@ -166,6 +172,21 @@ class MemoryEntry(BaseModel):
     embedding: list[float] | None = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     expires_at: datetime | None = Field(default=None)
+    memory_status: Literal["active", "dormant"] = Field(default="active")
+    effective_importance: float | None = Field(default=None)
+    access_count: int = Field(default=0)
+    last_accessed_at: datetime | None = Field(default=None)
+    similarity: float | None = Field(default=None)
+
+    @field_serializer("created_at", when_used="json")
+    def serialize_created_at(self, value: datetime) -> datetime:
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+    @field_serializer("expires_at", "last_accessed_at", when_used="json")
+    def serialize_utc_timestamp(self, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 class WorkingMemorySnapshot(BaseModel):
@@ -189,6 +210,7 @@ class WorkingMemorySnapshot(BaseModel):
         default=None,
         description="Optional one-line LLM summary of recent in-window turns for the prompt.",
     )
+    history_digest: str | None = Field(default=None, description="Compacted context preceding the raw rolling window.")
     last_user_emotion: str | None = Field(default=None)
     last_assistant_preview: str | None = Field(default=None)
     recent_turns: list[dict[str, Any]] = Field(
@@ -201,6 +223,9 @@ class MemoryRecallResult(BaseModel):
     """Result of a memory recall query."""
     entries: list[MemoryEntry]
     graph_facts: list[str] = Field(default_factory=list)
+    previous_session_digest: str | None = Field(default=None)
+    daily_summary: str | None = Field(default=None)
+    daily_summary_date: str | None = Field(default=None)
     relationship_snapshot: RelationshipMetrics | None = Field(default=None)
     user_profile_summary: str | None = Field(default=None)
     working_memory: WorkingMemorySnapshot | None = Field(

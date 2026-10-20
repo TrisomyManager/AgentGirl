@@ -7,7 +7,9 @@ executor can also be split out independently if needed later.
 
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import structlog
 import uvicorn
@@ -32,23 +34,45 @@ async def lifespan(app: FastAPI):
         logger.warning("action_executor.schema_init_failed", error=str(exc))
 
     settings = get_settings()
+    from action_executor.mcp_client import mcp_hub
+    from action_executor.task_agent import task_agent
+    from action_executor.task_store import task_store
+
+    await task_store.recover_interrupted()
+    from action_executor.plugins import plugin_manager
+
+    backend_root = Path(__file__).resolve().parent.parent
+    plugin_dir = Path(os.environ.get("COMPANION_PLUGINS_DIR") or settings.plugins_dir or "plugins")
+    plugin_manager.directory = plugin_dir if plugin_dir.is_absolute() else backend_root / plugin_dir
+    plugin_file = os.environ.get("COMPANION_PLUGINS_CONFIG_FILE") or settings.plugins_config_file
+    config_path = Path(plugin_file) if plugin_file else None
+    plugin_manager.config_file = (
+        backend_root / config_path if config_path and not config_path.is_absolute() else config_path
+    )
+    mcp_config = (os.environ.get("COMPANION_MCP_CONFIG_FILE") or settings.mcp_config_file or "").strip()
+    if mcp_config:
+        try:
+            mcp_hub.load_file(mcp_config)
+        except Exception:
+            logger.warning("action_executor.mcp_configuration_invalid")
 
     scheduler = get_reminder_scheduler()
-    await scheduler.start()
-
-    # Proactive care scheduler (V2.5)
     proactive_scheduler = None
-    if settings.proactive_enabled:
-        from action_executor.proactive_care import get_proactive_care_scheduler
-
-        proactive_scheduler = get_proactive_care_scheduler(
-            poll_interval=settings.proactive_poll_interval_seconds,
-        )
-        await proactive_scheduler.start()
-
     try:
+        await plugin_manager.start()
+        await scheduler.start()
+        if settings.proactive_enabled:
+            from action_executor.proactive_care import get_proactive_care_scheduler
+
+            proactive_scheduler = get_proactive_care_scheduler(
+                poll_interval=settings.proactive_poll_interval_seconds,
+            )
+            await proactive_scheduler.start()
         yield
     finally:
+        await task_agent.close()
+        await plugin_manager.close()
+        await mcp_hub.close()
         await scheduler.stop()
         if proactive_scheduler is not None:
             await proactive_scheduler.stop()
@@ -59,8 +83,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Companion AI — Action Executor",
         description=(
-            "Pluggable action handlers (reminders, time, weather stub) plus "
-            "an SSE stream for proactive push events."
+            "Pluggable action handlers (reminders, time, weather stub) plus an SSE stream for proactive push events."
         ),
         version="0.2.0",
         lifespan=lifespan,

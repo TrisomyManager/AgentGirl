@@ -1,0 +1,8 @@
+{
+  "source": "https://github.com/tencent-connect/botgo/blob/master/interaction/signature/interaction_test.go",
+  "upstream_blob_sha": "8a8f234b774cf4e38367fb511f976b25585e0968",
+  "synthetic_secret": "123456abcdef",
+  "signature": "e949b5b94ef4103df903fb031d1d16e358db3db83e79e117edd404c8508be3ce8a76d7bad1bed353194c126a1a5915b4ad8b5288c1191cc53a12acffccd82004",
+  "timestamp": "1728981195",
+  "body_base64": "eyJpZCI6IlJPQk9UMS4wX3Zlb2loU0VYRGM4US5nLTZlTHBOSWExMWJIOE1pc09qbi1tLUxLeENQbnRNazZleFVYZ2NXQ0dwVk83TDJRS1ROWnpqWnpGRkRTYmlPRmNxQVBXeVZBISEiLCJjb250ZW50Ijoi5ZOm5LiA5LiLIiwidGltZXN0YW1wIjoiMjAyNC0xMC0xNVQxNjozMzoxNSswODowMCIsImF1dGhvciI6eyJpZCI6IjY3NTg2MDI3MyIsInVzZXJfb3BlbmlkIjoiNjc1ODYwMjczIn19"
+}

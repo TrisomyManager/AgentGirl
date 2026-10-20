@@ -1,3 +1,7 @@
+# 2026-10-20 实施状态
+
+已落地后端纯时间轴组装、独立 TypeScript 播放时钟和参考 Live2D 适配器，见 [avatar-audio-synchronization.md](avatar-audio-synchronization.md)。普通/SSE/实时音频携带或消费公开时间轴；没有实现下文规划的独立 HTTP 会话服务，也未接入 3D/audio2face。后端不依赖 shared_runtime、语音模块或宿主。下方保留原始设计。
+
 # Avatar Runtime / Digital Human Pipeline Architecture
 
 ## Purpose

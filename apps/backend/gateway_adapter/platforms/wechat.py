@@ -36,8 +36,8 @@ class WeChatAdapter(BasePlatformAdapter):
             data = resp.json()
             self._access_token = data.get("access_token")
             return self._access_token
-        except Exception:
-            self._logger.exception("wechat.token_failed")
+        except Exception as exc:
+            self._logger.warning("wechat.token_failed", reason=type(exc).__name__)
             return None
 
     async def send_message(
@@ -65,10 +65,10 @@ class WeChatAdapter(BasePlatformAdapter):
             if data.get("errcode") == 0:
                 self._logger.info("wechat.sent", user_id=user_id)
                 return data.get("msgid")
-            self._logger.warning("wechat.api_error", errcode=data.get("errcode"), errmsg=data.get("errmsg"))
-        except Exception:
-            self._logger.exception("wechat.send_failed", user_id=user_id)
+            self._logger.warning("wechat.api_error", errcode=data.get("errcode"))
+        except Exception as exc:
+            self._logger.warning("wechat.send_failed", user_id=user_id, reason=type(exc).__name__)
         return None
 
-    async def broadcast(self, user_id: str, content: str) -> None:
-        await self.send_message(user_id, content)
+    async def broadcast(self, user_id: str, content: str) -> Optional[str]:
+        return await self.send_message(user_id, content)

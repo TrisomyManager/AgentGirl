@@ -30,6 +30,14 @@ class TestSentenceEndRegex:
 
 
 class TestSentenceSegmenter:
+    def test_long_punctuated_token_still_obeys_the_sentence_limit(self) -> None:
+        segmenter = SentenceSegmenter(max_chars=80)
+        source = "长" * 250 + "。"
+        sentences = segmenter.feed(source)
+        assert "".join(sentences) == source
+        assert all(len(sentence) <= 80 for sentence in sentences)
+        assert segmenter.flush() is None
+
     def test_single_sentence(self) -> None:
         seg = SentenceSegmenter()
         assert seg.feed("今天天气") == []

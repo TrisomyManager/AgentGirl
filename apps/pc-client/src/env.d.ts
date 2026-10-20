@@ -15,6 +15,7 @@ interface Window {
     minimizeToTray: () => void;
     onTrayCommand: (callback: (cmd: string) => void) => void;
     toolExec: (name: string, params: Record<string, any>) => Promise<any>;
+    showBackgroundNotification: (title: string, body: string) => void;
     toolList: () => Promise<any[]>;
     getDeviceStatus: () => Promise<{
       deviceId: string; userId: string; deviceName: string;

@@ -5,6 +5,7 @@
 
 import { hostname } from 'os';
 import { connect as wsConnect, disconnect as wsDisconnect, isConnected as wsIsConnected } from './device-ws';
+import { execTool } from './tool-bridge';
 
 const API_BASE = process.env.XIAONUAN_API_BASE_URL || 'http://127.0.0.1:8000';
 const DEVICE_ID = process.env.XIAONUAN_DEVICE_ID || `pc-${hostname().toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
@@ -14,8 +15,6 @@ const CLIENT_VERSION = '0.2.0';
 
 const CAPABILITIES = [
   'ping', 'show_notification', 'open_url', 'get_device_status',
-  'clipboard_read', 'clipboard_write', 'list_files', 'read_file',
-  'write_file', 'list_processes', 'launch_app', 'screenshot', 'system_info',
 ];
 
 // Tool name mapping: backend command -> local tool
@@ -24,21 +23,15 @@ const TOOL_MAP: Record<string, string> = {
   show_notification: 'show_notification',
   open_url: 'open_url',
   get_device_status: 'get_device_status',
-  clipboard_read: 'clipboard_read',
-  clipboard_write: 'clipboard_write',
-  list_files: 'list_files',
-  read_file: 'read_file',
-  write_file: 'write_file',
-  list_processes: 'list_processes',
-  launch_app: 'launch_app',
-  screenshot: 'screenshot',
-  system_info: 'system_info',
 };
 
 let deviceToken: string | null = null;
 let pollingT: ReturnType<typeof setInterval> | null = null;
 let heartbeatT: ReturnType<typeof setInterval> | null = null;
 let running = false;
+let polling = false;
+let queued = 0;
+let commandQueue: Promise<void> = Promise.resolve();
 
 export function getDeviceStatus() {
   return {
@@ -75,19 +68,12 @@ export async function startDeviceClient(): Promise<void> {
   }
   heartbeatT = setInterval(sendHeartbeat, 10_000);
 
-  // Try WebSocket first for real-time push
+  // Polling is bounded and remains a fallback if a live socket later closes.
+  pollingT = setInterval(pollCommands, 3_000);
   if (deviceToken) {
     try {
       wsConnect(deviceToken, handleCommand);
-      // Give WS a moment to connect; polling is the fallback
-      setTimeout(() => {
-        if (!wsIsConnected()) pollingT = setInterval(pollCommands, 3_000);
-      }, 3000);
-    } catch {
-      pollingT = setInterval(pollCommands, 3_000);
-    }
-  } else {
-    pollingT = setInterval(pollCommands, 3_000);
+    } catch {}
   }
 
   console.log('[device] client started');
@@ -105,8 +91,11 @@ export function stopDeviceClient(): void {
 async function req(path: string, body?: Record<string, any>): Promise<any> {
   const resp = await fetch(`${API_BASE}${path}`, {
     method: body ? 'POST' : 'GET',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json',
+      ...(process.env.XIAONUAN_ACCESS_KEY ? { Authorization: `Bearer ${process.env.XIAONUAN_ACCESS_KEY}` } : {}),
+    },
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(10000),
   });
   if (!resp.ok) throw new Error(`${resp.status}`);
   return resp.json();
@@ -127,29 +116,43 @@ async function sendHeartbeat(): Promise<void> {
 }
 
 async function pollCommands(): Promise<void> {
-  if (!deviceToken) return;
+  if (!deviceToken || !running || polling || wsIsConnected()) return;
+  polling = true;
   try {
-    const cmd = await req('/device/commands/claim_next', { device_id: DEVICE_ID, device_token: deviceToken });
+    const response = await req('/device/commands/claim_next', { device_id: DEVICE_ID, device_token: deviceToken });
+    const cmd = response.command;
     if (!cmd || !cmd.command_id) return;
-    console.log('[device] claim:', cmd.command, cmd.command_id);
-    await req(`/device/commands/${cmd.command_id}/mark_running`, { device_id: DEVICE_ID, device_token: deviceToken });
-    const result = await runCommand(cmd.command, cmd.payload || {});
-    await req('/device/command_result', {
-      device_id: DEVICE_ID, device_token: deviceToken, command_id: cmd.command_id,
-      status: result.ok ? 'succeeded' : 'failed',
-      result: result.ok ? result.data : undefined,
-      error: result.ok ? undefined : result.message,
-    });
-  } catch {}
+    await enqueue(() => executeClaimed(cmd));
+  } catch {} finally { polling = false; }
 }
 
 // WebSocket command handler — same flow as pollCommands
 async function handleCommand(cmd: any): Promise<void> {
   if (!cmd || !cmd.command_id || !deviceToken) return;
-  console.log('[device:ws] executing:', cmd.command, cmd.command_id);
+  await enqueue(async () => {
+    if (!running || !/^[a-f0-9]{32}$/.test(cmd.command_id)) return;
+    const claimed = await req(`/device/commands/${cmd.command_id}/claim`, { device_id: DEVICE_ID, device_token: deviceToken });
+    await executeClaimed(claimed.command || claimed);
+  });
+}
+
+async function enqueue(work: () => Promise<void>): Promise<void> {
+  if (queued >= 16) return;
+  queued++;
+  const result = commandQueue.then(async () => { if (running) await work(); }).catch(() => {}).finally(() => { queued--; });
+  commandQueue = result;
+  await result;
+}
+
+async function executeClaimed(cmd: any): Promise<void> {
+  if (!running || !deviceToken || !/^[a-f0-9]{32}$/.test(cmd.command_id)) return;
   try {
-    await req(`/device/commands/${cmd.command_id}/mark_running`, { device_id: DEVICE_ID, device_token: deviceToken });
-    const result = await runCommand(cmd.command, cmd.payload || {});
+    const result = await runCommand(cmd.command, cmd.payload || {}, async () => {
+      if (!running) return false;
+      // Recheck cancellation/expiry after any local confirmation wait.
+      await req(`/device/commands/${cmd.command_id}/mark_running`, { device_id: DEVICE_ID, device_token: deviceToken });
+      return true;
+    });
     await req('/device/command_result', {
       device_id: DEVICE_ID, device_token: deviceToken, command_id: cmd.command_id,
       status: result.ok ? 'succeeded' : 'failed',
@@ -159,11 +162,11 @@ async function handleCommand(cmd: any): Promise<void> {
   } catch {}
 }
 
-async function runCommand(cmd: string, payload: Record<string, any>): Promise<{ ok: boolean; message: string; data?: any }> {
-  const toolName = TOOL_MAP[cmd] || cmd;
+async function runCommand(cmd: string, payload: Record<string, any>, beforeExecute: () => Promise<boolean>): Promise<{ ok: boolean; message: string; data?: any }> {
+  const toolName = TOOL_MAP[cmd];
+  if (!toolName) return { ok: false, message: '远程请求不允许使用此本机能力。' };
   try {
-    const mod = await import('./tool-bridge');
-    return await mod.execTool(toolName, payload);
+    return await execTool(toolName, payload, { beforeExecute });
   } catch (err: any) {
     return { ok: false, message: err.message || String(err) };
   }

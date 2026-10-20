@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional
 
 import structlog
 
+from shared_runtime.log_safety import install_http_url_redaction
+
 logger = structlog.get_logger(__name__)
 
 
@@ -18,6 +20,7 @@ class BasePlatformAdapter(ABC):
     """
 
     def __init__(self, platform_name: str, config: Dict[str, Any]) -> None:
+        install_http_url_redaction()
         self.platform_name = platform_name
         self.config = config
         self._logger = logger.bind(platform=platform_name)
@@ -40,8 +43,8 @@ class BasePlatformAdapter(ABC):
         self,
         user_id: str,
         content: str,
-    ) -> None:
-        """Broadcast a message to all sessions for this user on this platform."""
+    ) -> Optional[str]:
+        """Return a confirmed platform receipt, or None when delivery is unconfirmed."""
 
     async def health_check(self) -> bool:
         """Optional health check. Override if the platform supports it."""

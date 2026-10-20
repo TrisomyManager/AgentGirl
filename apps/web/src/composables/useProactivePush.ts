@@ -1,14 +1,16 @@
 import { onMounted, onUnmounted, ref } from 'vue';
+import { apiFetch as fetch } from './accessSession';
 
 const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim().replace(/\/$/, '') ||
   'http://127.0.0.1:8000';
 
-const PUSH_SINCE_KEY_PREFIX = 'companion_push_since_';
+const PUSH_SINCE_KEY_PREFIX = 'companion_push_since_v2_';
 const SEEN_REMINDERS_KEY_PREFIX = 'companion_seen_reminders_';
-const MAX_SEEN_REMINDERS = 50;
+const MAX_SEEN_REMINDERS = 2048;
 
 export interface ReminderFiredPayload {
+  event_id?: string;
   id: string;
   user_id: string;
   session_id: string | null;
@@ -23,6 +25,7 @@ export interface ProactiveEvent {
 }
 
 export interface ProactiveMessagePayload {
+  event_id?: string;
   id: string;
   user_id: string;
   message: string;
@@ -34,6 +37,11 @@ export interface ProactiveMessagePayload {
 export interface ProactivePushOptions {
   /** Called when a proactive_message event arrives via SSE or poll. */
   onProactiveMessage?: (payload: ProactiveMessagePayload) => void;
+}
+
+export function pushEventIdentity(kind: string, payload: Record<string, unknown>): string {
+  if (typeof payload.event_id === 'string') return payload.event_id;
+  return `${kind}:${payload.id || ''}:${payload.fire_at || ''}`;
 }
 
 /**
@@ -55,6 +63,7 @@ export function useProactivePush(userId: string, options?: ProactivePushOptions)
   let stop = false;
   let reconnectTimer: number | null = null;
   let pollTimer: number | null = null;
+  let polling = false;
 
   // ── Persistent state ─────────────────────────────────────────────
   const sinceStorageKey = `${PUSH_SINCE_KEY_PREFIX}${userId}`;
@@ -67,12 +76,16 @@ export function useProactivePush(userId: string, options?: ProactivePushOptions)
   try {
     const storedSince = localStorage.getItem(sinceStorageKey);
     if (storedSince !== null) {
-      sinceSeq = Number(storedSince);
-      hasPersistedSeq = true;
+      const parsed = Number(storedSince);
+      if (Number.isSafeInteger(parsed) && parsed >= 0) {
+        sinceSeq = parsed;
+        hasPersistedSeq = true;
+      }
     }
     const storedSeen = localStorage.getItem(seenStorageKey);
     if (storedSeen) {
-      seenReminderIds = new Set(JSON.parse(storedSeen));
+      const parsed = JSON.parse(storedSeen);
+      if (Array.isArray(parsed)) seenReminderIds = new Set(parsed.filter((id): id is string => typeof id === 'string'));
     }
   } catch { /* localStorage unavailable */ }
 
@@ -81,6 +94,7 @@ export function useProactivePush(userId: string, options?: ProactivePushOptions)
   }
 
   function _persistSeen() {
+    seenReminderIds = new Set(Array.from(seenReminderIds).slice(-MAX_SEEN_REMINDERS));
     try {
       const arr = Array.from(seenReminderIds).slice(-MAX_SEEN_REMINDERS);
       localStorage.setItem(seenStorageKey, JSON.stringify(arr));
@@ -89,11 +103,29 @@ export function useProactivePush(userId: string, options?: ProactivePushOptions)
 
   // ── Deduped reminder toast ───────────────────────────────────────
   function showReminderToast(payload: ReminderFiredPayload) {
-    const id = payload.id;
-    if (id && seenReminderIds.has(id)) return;
-    if (id) seenReminderIds.add(id);
-    _persistSeen();
     lastReminder.value = payload;
+  }
+
+  function deliver(kind: string, payload: any) {
+    if (stop || !payload || typeof payload !== 'object') return;
+    const id = pushEventIdentity(kind, payload);
+    if (seenReminderIds.has(id)) return;
+    if (kind === 'reminder_fired') showReminderToast(payload as ReminderFiredPayload);
+    if (kind === 'proactive_message') options?.onProactiveMessage?.(payload as ProactiveMessagePayload);
+    const desktop = (window as Window & { electronAPI?: {
+      showNotification?: (title: string, body: string) => void;
+      showBackgroundNotification?: (title: string, body: string) => void;
+    } }).electronAPI;
+    const notify = desktop?.showBackgroundNotification ||
+      ((document.visibilityState === 'hidden' || !document.hasFocus()) ? desktop?.showNotification : undefined);
+    if (notify) {
+      const body = kind === 'reminder_fired' ? payload.text : kind === 'proactive_message' ? payload.message : '';
+      if (body) notify(kind === 'reminder_fired' ? '小暖提醒你' : '小暖', body);
+    }
+    events.value.push({ kind, payload, receivedAt: Date.now() });
+    if (events.value.length > 64) events.value.splice(0, events.value.length - 64);
+    seenReminderIds.add(id);
+    _persistSeen();
   }
 
   // ── SSE stream ───────────────────────────────────────────────────
@@ -141,19 +173,7 @@ export function useProactivePush(userId: string, options?: ProactivePushOptions)
           } catch {
             parsed = { raw: dataLines.join('\n') };
           }
-          const proactive: ProactiveEvent = {
-            kind: eventName,
-            payload: parsed,
-            receivedAt: Date.now(),
-          };
-          events.value.push(proactive);
-          if (events.value.length > 64) events.value.splice(0, events.value.length - 64);
-          if (eventName === 'reminder_fired') {
-            showReminderToast(parsed as ReminderFiredPayload);
-          }
-          if (eventName === 'proactive_message') {
-            options?.onProactiveMessage?.(parsed as ProactiveMessagePayload);
-          }
+          deliver(eventName, parsed);
         }
       }
     } catch (err) {
@@ -165,21 +185,27 @@ export function useProactivePush(userId: string, options?: ProactivePushOptions)
 
   // ── Poll (SSE fallback) ──────────────────────────────────────────
   async function pollOnce() {
-    if (stop) return;
+    if (stop || polling) return;
+    polling = true;
     try {
+      let hasMore = false;
+      do {
       const resp = await fetch(
         `${API_BASE_URL}/actions/push/poll?since=${sinceSeq}&user_id=${encodeURIComponent(userId)}`,
       );
       if (!resp.ok) return;
       const body = (await resp.json()) as {
         latest_seq?: number;
+        durable?: boolean;
+        has_more?: boolean;
         events?: Array<{ kind: string; payload: unknown }>;
       };
 
       const latest = typeof body.latest_seq === 'number' ? body.latest_seq : sinceSeq;
 
-      // First poll after page load: sync seq without replaying history.
-      if (!hasPersistedSeq) {
+      if (stop) return;
+      // Legacy memory-only servers cannot replay across restarts.
+      if (!hasPersistedSeq && !body.durable) {
         sinceSeq = latest;
         _persistSince();
         hasPersistedSeq = true;
@@ -188,17 +214,18 @@ export function useProactivePush(userId: string, options?: ProactivePushOptions)
 
       for (const ev of body.events ?? []) {
         if (!ev.payload || typeof ev.payload !== 'object') continue;
-        if (ev.kind === 'reminder_fired') {
-          showReminderToast(ev.payload as ReminderFiredPayload);
-        } else if (ev.kind === 'proactive_message') {
-          options?.onProactiveMessage?.(ev.payload as ProactiveMessagePayload);
-        }
+        deliver(ev.kind, ev.payload);
       }
 
       sinceSeq = latest;
+      hasPersistedSeq = true;
       _persistSince();
+      hasMore = body.has_more === true;
+      } while (hasMore && !stop);
     } catch {
       /* ignore — SSE may still work */
+    } finally {
+      polling = false;
     }
   }
 

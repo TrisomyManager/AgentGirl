@@ -19,8 +19,7 @@ from collections.abc import AsyncIterator
 import httpx
 import structlog
 
-from shared_runtime.config import get_settings
-from shared_runtime.llm_client import get_runtime_llm_config
+from shared_runtime.llm_client import get_effective_chat_config
 
 logger = structlog.get_logger("voice_layer.providers.realtime._llm_stream")
 
@@ -78,14 +77,10 @@ async def stream_llm(
     the generator yields a fallback apology message so the frontend
     doesn't stay stuck in "thinking" indefinitely.
     """
-    settings = get_settings()
-    rt = get_runtime_llm_config()
-
-    api_key = rt.get("openai_api_key") or settings.openai_api_key
-    base_url = (
-        rt.get("openai_base_url") or settings.openai_base_url or "https://api.openai.com/v1"
-    ).rstrip("/")
-    model = rt.get("default_model") or settings.default_llm_model or "qwen-turbo"
+    config = get_effective_chat_config()
+    api_key = config["api_key"]
+    base_url = config["base_url"].rstrip("/")
+    model = config["model"]
 
     if not api_key:
         yield "（语音模型已就绪，但还没有配置 LLM 接口。请在设置中填入大模型 API Key。）"
@@ -100,6 +95,8 @@ async def stream_llm(
         "max_tokens": max_tokens,
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    if "volces.com" in base_url:
+        payload["thinking"] = {"type": "disabled"}
     url = f"{base_url}/chat/completions"
 
     logger.debug("realtime_llm.request", model=model, base_url=base_url[:60])

@@ -2,7 +2,7 @@
   <div class="message-wrapper" :class="message.role">
     <div v-if="message.role === 'assistant'" class="msg-avatar">
       <img
-        src="https://placehold.co/36x36/e94560/FFF?text=暖"
+        :src="`${baseUrl}xiaonuan-avatar.svg`"
         alt="小暖"
       />
     </div>
@@ -43,6 +43,10 @@
         v-else-if="message.role === 'user'"
         class="message-bubble user"
       >
+        <div v-if="message.imageUrls?.length" class="message-images">
+          <img v-for="(url, index) in message.imageUrls" :key="index" :src="url" :alt="`发送的图片 ${index + 1}`" />
+        </div>
+        <p v-else-if="message.imageCount" class="image-receipt">{{ message.imageCount }} 张图片（预览仅保留在当前会话中）</p>
         <div class="message-text">
           <span v-html="renderedUserText"></span>
         </div>
@@ -70,29 +74,31 @@
           <template v-if="message.voiceStatus === 'pending'">
             <span class="voice-pending" aria-live="polite">语音合成中…</span>
           </template>
-          <template v-else-if="message.voiceStatus === 'failed' || message.voiceSynthesisError">
+          <template v-else-if="message.voiceStatus === 'failed' || (message.voiceSynthesisError && !message.voiceUrl && !message.voiceSegments?.length)">
             <span class="synthesis-err-title">语音合成失败</span>
             <span v-if="shortSynthErr" class="synthesis-err-detail">{{ shortSynthErr }}</span>
           </template>
-          <template v-else-if="message.voiceUrl">
+          <template v-else-if="message.voiceUrl || message.voiceSegments?.length">
             <button
               type="button"
               class="assistant-voice-btn"
-              :disabled="message.voiceStatus === 'playing'"
               @click="playAssistantVoice"
             >
               <span class="assistant-voice-icon" aria-hidden="true">🔊</span>
-              {{ message.voiceStatus === 'playing' ? '播放中…' : '播放语音' }}
+              {{ message.voiceStatus === 'playing' ? '停止播放' : '播放语音' }}
             </button>
             <span v-if="assistantTtsSec" class="tts-dur-label">{{ assistantTtsSec }}″</span>
             <span v-if="message.ttsErrorMessage" class="tts-err">{{ ttsErrorShort }}</span>
+            <span v-if="message.voiceSynthesisError" class="tts-err">部分语音未生成</span>
           </template>
         </div>
       </div>
 
       <div class="message-meta" :class="message.role">
         <span v-if="message.role === 'assistant'" class="sender-name">小暖</span>
+        <span v-if="expression" class="expression-tag" :title="expression.label" :aria-label="expression.label">{{ expression.emoji }}</span>
         <span class="timestamp">{{ formattedTime }}</span>
+        <span v-if="message.role === 'user' && message.quietlyAcknowledged" class="quiet-receipt" aria-label="小暖已收到这条消息，正在安静陪伴">已收到</span>
         <span v-if="message.actionText" class="action-tag">{{ message.actionText }}</span>
       </div>
     </div>
@@ -111,12 +117,25 @@ import { computed, onUnmounted, ref, watch } from 'vue';
 import type { AssistantVoicePlaybackEvent, ChatMessage } from '../composables/useChat';
 import type { useVoice } from '../composables/useVoice';
 import type { ToolExecutionState } from '../composables/useToolStatus';
+const baseUrl = import.meta.env.BASE_URL;
 
 const props = defineProps<{
   message: ChatMessage;
   voice: ReturnType<typeof useVoice>;
   toolExecution?: ToolExecutionState | null;
 }>();
+
+const expression = computed(() => {
+  if (props.message.role !== 'assistant' || props.message.isTyping || !props.message.expressionEmoji || /\p{Extended_Pictographic}/u.test(props.message.content)) return null;
+  const expressions: Record<string, { emoji: string; label: string }> = {
+    happy: { emoji: '😊', label: '开心' },
+    excited: { emoji: '✨', label: '兴奋' },
+    affectionate: { emoji: '🌷', label: '温柔' },
+    surprised: { emoji: '😮', label: '惊讶' },
+  };
+  const mood = expressions[props.message.emotion || ''];
+  return { emoji: props.message.expressionEmoji, label: mood?.label || '表情' };
+});
 
 const emit = defineEmits<{
   assistantVoicePlayback: [AssistantVoicePlaybackEvent];
@@ -165,6 +184,7 @@ const assistantVoiceVisible = computed(() => {
   return (
     props.message.voiceStatus === 'pending' ||
     !!props.message.voiceUrl ||
+    !!props.message.voiceSegments?.length ||
     props.message.voiceStatus === 'failed' ||
     !!props.message.voiceSynthesisError
   );
@@ -295,11 +315,20 @@ function toggleUserVoicePlay() {
 }
 
 async function playAssistantVoice() {
+  if (props.message.voiceStatus === 'playing') {
+    props.voice.stopAudio();
+    emit('assistantVoicePlayback', { id: props.message.id, phase: 'stop' });
+    return;
+  }
   const u = props.message.voiceUrl;
-  if (!u || props.message.voiceStatus === 'playing') return;
+  const segments = props.message.voiceSegments || [];
+  if (!u && !segments.length) return;
   emit('assistantVoicePlayback', { id: props.message.id, phase: 'start' });
   try {
-    await props.voice.playAudio(u, { force: true });
+    if (segments.length) await props.voice.playAudioSequence(segments.map(segment => segment.audio_url), {
+      force: true, avatarTimelines: segments.map(segment => segment.avatar_timeline),
+    });
+    else await props.voice.playAudio(u!, { force: true, avatarTimeline: props.message.avatarTimeline });
     emit('assistantVoicePlayback', { id: props.message.id, phase: 'end' });
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);
@@ -323,6 +352,9 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.message-images { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.message-images img { width: 160px; max-width: 100%; max-height: 200px; object-fit: contain; border-radius: 10px; }
+.image-receipt { font-size: 12px; opacity: .8; margin: 0 0 6px; }
 .message-wrapper {
   display: flex;
   gap: 10px;

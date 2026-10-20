@@ -24,15 +24,15 @@ react.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import structlog
 from sqlalchemy import Column, DateTime, Integer, String, Text, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import and_
 
 from action_executor.push_bus import PushEvent, get_proactive_push_bus
@@ -59,7 +59,7 @@ class ReminderORM(Base):
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
     fired_at = Column(DateTime(timezone=True), nullable=True)
     cancelled_at = Column(DateTime(timezone=True), nullable=True)
@@ -72,16 +72,16 @@ class Reminder:
 
     id: str
     user_id: str
-    session_id: Optional[str]
+    session_id: str | None
     text: str
     fire_at: datetime
     created_at: datetime
-    fired_at: Optional[datetime] = None
-    cancelled_at: Optional[datetime] = None
-    repeat_interval_seconds: Optional[int] = None
+    fired_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    repeat_interval_seconds: int | None = None
 
     @classmethod
-    def from_orm(cls, row: ReminderORM) -> "Reminder":
+    def from_orm(cls, row: ReminderORM) -> Reminder:
         return cls(
             id=row.id,
             user_id=row.user_id,
@@ -122,7 +122,7 @@ def _ensure_aware(dt: datetime) -> datetime:
     if dt is None:
         return dt
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
+        return dt.replace(tzinfo=UTC)
     return dt
 
 
@@ -154,7 +154,7 @@ _REPEAT_EVERY_PATTERNS = [
 ]
 
 
-def parse_relative_delay(text: str) -> Optional[timedelta]:
+def parse_relative_delay(text: str) -> timedelta | None:
     """Extract a relative delay like '3 分钟后' from free-form text.
 
     Returns ``None`` if no recognisable delay phrase is present.
@@ -174,7 +174,7 @@ def parse_relative_delay(text: str) -> Optional[timedelta]:
     return None
 
 
-def parse_repeat_interval(text: str) -> Optional[timedelta]:
+def parse_repeat_interval(text: str) -> timedelta | None:
     """Extract a fixed repeat cadence like '每 5 分钟' from free-form text."""
     if not text:
         return None
@@ -236,7 +236,7 @@ def extract_reminder_body(text: str) -> str:
         # preceded by whitespace / punctuation — this avoids gobbling
         # "提醒" inside an unrelated word.
         if idx == 0 or cleaned[idx - 1] in " \t，,:：。.；;":
-            cleaned = (cleaned[:idx] + cleaned[idx + len(prefix):]).strip(" ，,:：")
+            cleaned = (cleaned[:idx] + cleaned[idx + len(prefix) :]).strip(" ，,:：")
             break
 
     # If the user only supplied a delay (e.g. "5 分钟后" or
@@ -259,8 +259,8 @@ class RemindersStore:
         user_id: str,
         text: str,
         fire_at: datetime,
-        session_id: Optional[str] = None,
-        repeat_interval_seconds: Optional[int] = None,
+        session_id: str | None = None,
+        repeat_interval_seconds: int | None = None,
     ) -> Reminder:
         """Insert a fresh reminder and return its dataclass form."""
         row = ReminderORM(
@@ -282,7 +282,7 @@ class RemindersStore:
         user_id: str,
         include_fired: bool = False,
         include_cancelled: bool = False,
-    ) -> List[Reminder]:
+    ) -> list[Reminder]:
         """List reminders for a user, newest fire_at first."""
         async with AsyncSessionLocal() as session:
             stmt = select(ReminderORM).where(ReminderORM.user_id == user_id)
@@ -294,9 +294,9 @@ class RemindersStore:
             rows = (await session.execute(stmt)).scalars().all()
             return [Reminder.from_orm(r) for r in rows]
 
-    async def list_due(self, now: Optional[datetime] = None) -> List[Reminder]:
+    async def list_due(self, now: datetime | None = None) -> list[Reminder]:
         """List reminders whose ``fire_at <= now`` and have not fired yet."""
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         async with AsyncSessionLocal() as session:
             stmt = (
                 select(ReminderORM)
@@ -319,14 +319,54 @@ class RemindersStore:
                 .where(
                     ReminderORM.id == reminder_id,
                     ReminderORM.fired_at.is_(None),
+                    ReminderORM.cancelled_at.is_(None),
                 )
-                .values(fired_at=datetime.now(timezone.utc))
+                .values(fired_at=datetime.now(UTC))
             )
             result = await session.execute(stmt)
             await session.commit()
             return (result.rowcount or 0) > 0
 
-    async def cancel(self, reminder_id: str, user_id: Optional[str] = None) -> bool:
+    async def fire_into_outbox(self, reminder: Reminder, event_store) -> PushEvent | None:
+        """Claim one occurrence and save its push in the same database transaction."""
+        now = datetime.now(UTC)
+        interval = reminder.repeat_interval_seconds or 0
+        values: dict[str, Any] = {"fired_at": now}
+        if interval >= 60:
+            elapsed = max(0, (now - reminder.fire_at).total_seconds())
+            values = {"fire_at": reminder.fire_at + timedelta(seconds=(int(elapsed // interval) + 1) * interval)}
+        event = PushEvent(
+            kind="reminder_fired",
+            payload={
+                "id": reminder.id,
+                "user_id": reminder.user_id,
+                "session_id": reminder.session_id,
+                "text": reminder.text,
+                "fire_at": reminder.fire_at.isoformat(),
+                "repeating": interval >= 60,
+                "repeat_interval_seconds": interval if interval >= 60 else None,
+            },
+        )
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                update(ReminderORM)
+                .where(
+                    ReminderORM.id == reminder.id,
+                    ReminderORM.fire_at == reminder.fire_at,
+                    ReminderORM.fire_at <= now,
+                    ReminderORM.fired_at.is_(None),
+                    ReminderORM.cancelled_at.is_(None),
+                )
+                .values(**values)
+            )
+            if not result.rowcount:
+                await session.rollback()
+                return None
+            await event_store.enqueue(session, event)
+            await session.commit()
+        return event
+
+    async def cancel(self, reminder_id: str, user_id: str | None = None) -> bool:
         async with AsyncSessionLocal() as session:
             where_clauses = [
                 ReminderORM.id == reminder_id,
@@ -335,11 +375,7 @@ class RemindersStore:
             ]
             if user_id is not None:
                 where_clauses.append(ReminderORM.user_id == user_id)
-            stmt = (
-                update(ReminderORM)
-                .where(and_(*where_clauses))
-                .values(cancelled_at=datetime.now(timezone.utc))
-            )
+            stmt = update(ReminderORM).where(and_(*where_clauses)).values(cancelled_at=datetime.now(UTC))
             result = await session.execute(stmt)
             await session.commit()
             return (result.rowcount or 0) > 0
@@ -356,23 +392,19 @@ class RemindersStore:
                     ReminderORM.fired_at.is_(None),
                     ReminderORM.cancelled_at.is_(None),
                 )
-                .values(fire_at=datetime.now(timezone.utc) + timedelta(seconds=interval_seconds))
+                .values(fire_at=datetime.now(UTC) + timedelta(seconds=interval_seconds))
             )
             result = await session.execute(stmt)
             await session.commit()
             return (result.rowcount or 0) > 0
 
-    async def get(self, reminder_id: str) -> Optional[Reminder]:
+    async def get(self, reminder_id: str) -> Reminder | None:
         async with AsyncSessionLocal() as session:
-            row = (
-                await session.execute(
-                    select(ReminderORM).where(ReminderORM.id == reminder_id)
-                )
-            ).scalar_one_or_none()
+            row = (await session.execute(select(ReminderORM).where(ReminderORM.id == reminder_id))).scalar_one_or_none()
             return Reminder.from_orm(row) if row else None
 
 
-_store: Optional[RemindersStore] = None
+_store: RemindersStore | None = None
 
 
 def get_reminders_store() -> RemindersStore:
@@ -392,7 +424,7 @@ class ReminderScheduler:
 
     def __init__(self, poll_interval: float = 1.0) -> None:
         self.poll_interval = poll_interval
-        self._task: Optional[asyncio.Task[None]] = None
+        self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
         self._store = get_reminders_store()
         self._bus = get_proactive_push_bus()
@@ -409,7 +441,7 @@ class ReminderScheduler:
         if self._task:
             try:
                 await asyncio.wait_for(self._task, timeout=5)
-            except (asyncio.TimeoutError, Exception):
+            except (TimeoutError, Exception):
                 self._task.cancel()
         self._task = None
         logger.info("reminder_scheduler.stopped")
@@ -420,26 +452,40 @@ class ReminderScheduler:
                 await self._tick_once()
             except Exception as exc:
                 logger.warning("reminder_scheduler.tick_failed", error=str(exc))
-            try:
-                await asyncio.wait_for(
-                    self._stopping.wait(), timeout=self.poll_interval
-                )
-            except asyncio.TimeoutError:
-                pass
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stopping.wait(), timeout=self.poll_interval)
 
     async def _tick_once(self) -> int:
         due = await self._store.list_due()
         if not due:
             return 0
+        from shared_runtime.user_lifecycle import StaleUserOperation
+
         fired = 0
         for reminder in due:
+            try:
+                fired += await asyncio.create_task(self._fire_one(reminder))
+            except StaleUserOperation:
+                continue  # Erasure of one user must not stop the shared scheduler.
+        return fired
+
+    async def _fire_one(self, reminder):
+        from shared_runtime.user_lifecycle import user_operation
+
+        async with user_operation(reminder.user_id):
+            if self._bus.event_store is not None:
+                event = await self._store.fire_into_outbox(reminder, self._bus.event_store)
+                if event is None:
+                    return 0
+                await self._bus.publish(event)
+                return 1
             interval = reminder.repeat_interval_seconds or 0
             if interval >= 60:
                 ok = await self._store.bump_next_repeat(reminder.id, interval)
             else:
                 ok = await self._store.mark_fired(reminder.id)
             if not ok:
-                continue  # someone else fired it or race
+                return 0
             await self._bus.publish(
                 PushEvent(
                     kind="reminder_fired",
@@ -454,12 +500,11 @@ class ReminderScheduler:
                     },
                 )
             )
-            fired += 1
             logger.info("reminder_fired", id=reminder.id, user_id=reminder.user_id)
-        return fired
+            return 1
 
 
-_scheduler: Optional[ReminderScheduler] = None
+_scheduler: ReminderScheduler | None = None
 
 
 def get_reminder_scheduler() -> ReminderScheduler:

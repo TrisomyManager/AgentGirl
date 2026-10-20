@@ -13,10 +13,14 @@ returns ``TOOL_USE`` / ``ACTION_REQUEST``. We can layer scopes on later.
 from __future__ import annotations
 
 import inspect
+import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import structlog
+from jsonschema import Draft202012Validator, FormatChecker, ValidationError
+
+from action_executor.tool_schema import canonical_schema, tool_annotations
 
 logger = structlog.get_logger("action_executor.registry")
 
@@ -58,6 +62,12 @@ class ActionDefinition:
     api_key_env_var: Optional[str] = None
     category: str = "general"
     requires_user_id: bool = False
+    read_only: bool | None = None
+
+    def to_mcp(self) -> dict:
+        return {"name": self.name, "description": self.description,
+                "inputSchema": canonical_schema(self.name, self.params_schema),
+                "annotations": tool_annotations(self.name, read_only=self.read_only)}
 
     def to_meta(self) -> Dict[str, Any]:
         return {
@@ -88,6 +98,7 @@ class ActionRegistry:
         api_key_env_var: Optional[str] = None,
         category: str = "general",
         requires_user_id: bool = False,
+        read_only: bool | None = None,
     ) -> Callable[[HandlerFn], HandlerFn]:
         def _decorator(fn: HandlerFn) -> HandlerFn:
             if not inspect.iscoroutinefunction(fn):
@@ -106,6 +117,7 @@ class ActionRegistry:
                 api_key_env_var=api_key_env_var,
                 category=category,
                 requires_user_id=requires_user_id,
+                read_only=read_only,
             )
             logger.info("action.registered", name=name)
             return fn
@@ -117,6 +129,31 @@ class ActionRegistry:
 
     def list_actions(self) -> List[Dict[str, Any]]:
         return [d.to_meta() for d in self._actions.values()]
+
+    def mcp_tools(self) -> list[dict]:
+        return [definition.to_mcp() for definition in self._actions.values()]
+
+    def definition(self, name: str) -> ActionDefinition | None:
+        return self._actions.get(name)
+
+    async def dispatch_contextual(self, name: str, arguments: dict, *, user_id: str, session_id: str = "",
+                                  turn_id: str = "", raw_text: str = "", operation_id: str = "") -> ActionResult:
+        """Validate advertised inputs, then bind identity supplied by the trusted host."""
+        action = self._actions.get(name)
+        if action is None:
+            return ActionResult(ok=False, message="这个工具暂时不可用。", data={"error": "unknown_action"})
+        try:
+            if not isinstance(arguments, dict) or {"user_id", "session_id", "turn_id", "operation_id"} & arguments.keys():
+                raise ValueError("Host identity must not be supplied by a tool consumer")
+            json.dumps(arguments, allow_nan=False)
+            Draft202012Validator(action.to_mcp()["inputSchema"], format_checker=FormatChecker()).validate(arguments)
+        except (ValidationError, TypeError, ValueError):
+            return ActionResult(ok=False, message="工具参数不完整或格式不正确。", data={"error": "invalid_arguments"})
+        bound = {**arguments, "user_id": user_id, "session_id": session_id, "turn_id": turn_id,
+                 "operation_id": operation_id}
+        if "raw_text" not in bound:
+            bound["raw_text"] = raw_text
+        return await self.dispatch(name, bound)
 
     def find_by_keyword(self, text: str) -> Optional[str]:
         """Cheap keyword match for routing user messages without an LLM.
@@ -144,6 +181,9 @@ class ActionRegistry:
                 message=f"我还不会处理这种请求（未注册的动作：{name}）。",
                 data={"error": "unknown_action", "name": name},
             )
+        if action.requires_user_id and not str((params or {}).get("user_id") or "").strip():
+            return ActionResult(ok=False, message="无法确认当前用户，请重新打开聊天后再试。",
+                                data={"error": "missing_user_id"})
         try:
             result = await action.handler(params or {})
             if result is None:  # be lenient — handlers might forget to return
@@ -178,6 +218,7 @@ def register_action(
     api_key_env_var: Optional[str] = None,
     category: str = "general",
     requires_user_id: bool = False,
+    read_only: bool | None = None,
 ) -> Callable[[HandlerFn], HandlerFn]:
     """Decorator: register a handler on the process-wide registry."""
     return get_registry().register(
@@ -189,4 +230,5 @@ def register_action(
         api_key_env_var=api_key_env_var,
         category=category,
         requires_user_id=requires_user_id,
+        read_only=read_only,
     )

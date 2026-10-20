@@ -11,6 +11,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any, Protocol, runtime_checkable
 
+from .models import VoiceTranscriptionResult
+
 
 @runtime_checkable
 class LLMClient(Protocol):
@@ -49,16 +51,44 @@ class LLMClient(Protocol):
 class ASRProvider(Protocol):
     """语音识别 Provider 抽象."""
 
-    async def transcribe(self, audio_bytes: bytes, *, sample_rate: int = 16000, **kwargs: Any) -> str:
-        ...
+    async def transcribe(self, audio_bytes: bytes, *, sample_rate: int = 16000, **kwargs: Any) -> str: ...
+
+
+@runtime_checkable
+class SpeechRecognizer(Protocol):
+    """Owned ASR service: encoded uploads and explicit PCM have distinct inputs."""
+
+    async def transcribe(
+        self,
+        audio_data: bytes,
+        language: str = "zh-CN",
+        model: str | None = None,
+        *,
+        upload_filename: str | None = None,
+        upload_content_type: str | None = None,
+    ) -> VoiceTranscriptionResult: ...
+
+    async def transcribe_pcm(self, pcm_int16: bytes, sample_rate: int = 16000) -> str: ...
+
+    async def close(self) -> None: ...
+
+
+@runtime_checkable
+class MemoryReader(Protocol):
+    """Read-only memory port supplied by a host to its action module."""
+
+    async def recall(self, *, user_id: str, query: str, session_id: str | None = None) -> list[dict[str, Any]]: ...
+
+    async def list_recent(self, *, user_id: str, limit: int) -> list[dict[str, Any]]: ...
+
+    async def working(self, *, user_id: str, session_id: str) -> dict[str, Any] | None: ...
 
 
 @runtime_checkable
 class TTSProvider(Protocol):
     """文本转语音 Provider 抽象."""
 
-    async def synthesize(self, text: str, *, voice: str | None = None, **kwargs: Any) -> bytes:
-        ...
+    async def synthesize(self, text: str, *, voice: str | None = None, **kwargs: Any) -> bytes: ...
 
 
 @runtime_checkable
@@ -116,4 +146,4 @@ class RealtimeVoiceProvider(Protocol):
         ...
 
 
-__all__ = ["LLMClient", "ASRProvider", "TTSProvider", "RealtimeVoiceProvider"]
+__all__ = ["LLMClient", "ASRProvider", "SpeechRecognizer", "MemoryReader", "TTSProvider", "RealtimeVoiceProvider"]

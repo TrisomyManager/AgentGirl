@@ -114,9 +114,21 @@ def get_project_status() -> ProjectStatusData:
     """Return current project development status."""
     return ProjectStatusData(
         project_name="Companion AI（通用陪伴 AI 模块库 · 内部技术原型）",
-        version="0.2.0 · V2.4 配置稳定性巩固",
-        current_phase="Phase 3 · 人格连续性闭环 + LLM 配置稳定性巩固",
+        version="0.2.0 · V2.27 CI与容器验收",
+        current_phase="当前可执行计划已验收 · 平台账号与3D暂缓",
         summary=(
+            "2026-10-20：用户要求持续至全部计划完成。5.2 图片与 5.3/8.4 表情音频同步已真实验证，继续插件与生态。主动陪伴设置、用户独立评估、原子提醒与持久化补收已接通；"
+            "对话存档、批次摘要、可恢复遗忘、实体图谱融合检索和日回顾已落地；真实方舟摘要和压缩已验证。"
+            "连续情绪、SQL 持久化、独立反应分类、回复行为与离线关系复核已验证。Web 与 PC 均可构建。"
+            "自然发言已按用户配置，45 条路由回归经规则和真实模型组合验证。"
+            "分工委派、会话排队、官方 MCP 与持久多步任务已验证。"
+            "8.1/8.2 分段语音、有序播放、打断与有界自适应缓冲已通过真实语音验证。"
+            "本地插件目录发现、宿主授权和热重载已通过真实任务验证。"
+            "默认参考宿主的账号隔离、撤销活动流、导出/删除与待重试清理已通过真实验证。"
+            "普通/SSE/任务/TTS 发出前规则检查与原生无文字音频暂存、用户 SQL 记忆网络及原文依据已验证。"
+            "桌面内置工具的私有桥/能力与文件范围、逐次确认、原子命令状态和 Windows 原生通知已实际验证。"
+            "当前按路线图 38 项中验收 36 项计为 95%，整体计划尚未完成；实际容器/CI已验收；多平台真实账号与3D按用户要求暂缓。"
+            "以下为既有工程的历史能力说明："
             "内部技术原型 Demo，目标是让所有模块都可以独立拆开接入任意第三方数字生命项目。"
             "demo 形态完整：FastAPI 单体 + LangGraph 编排 + 实时语音 + 记忆双层 + 行动执行器 + Live2D 前端。"
             "V2.3 人格连续性闭环：每轮对话真实更新 emotion_state / relationship_metrics / user_profile / working_memory / long-term memory，下一轮对话真实受影响；"
@@ -125,9 +137,47 @@ def get_project_status() -> ProjectStatusData:
             "OpenAI/Anthropic 自动补 /v1 base URL、Vite dev server 放通 Cloudflare 隧道 Host、companion-ai 包及服务版本对齐 0.2.0、新增 .env.lite 忽略避免本地覆盖泄漏。"
             "check_arch 反向依赖=0 / 直连SDK=0 / 横向耦合=1（action_layer→action_executor 兼容 shim）/ hardcoded_persona=59（绝大多数集中在 voice_layer/tests/test_resolver.py 与 voice_layer/resolver.py 的预设别名，已记入 baseline）。"
         ),
-        last_updated="2026-05-07",
-        overall_progress=99,
+        last_updated="2026-10-20",
+        overall_progress=95,
         recent_highlights=[
+            "V2.27：36/38；远端Linux839/桌面工具16/Web86/双端审计构建/6导入契约/生产存储/非root容器全部通过，PR10保留审阅。",
+            "V2.26：三平台收发/绑定/持久回执/隐私联动与本地实际SDK通过；真实账号验收暂缓，3D待用户确认。",
+            "V2.25：35/38；图来源、单删/淡化/恢复、持续清理和服务器防重放通过实际数据库/方舟/安装包验证。",
+            "V2.24：仍34/38；实际Neo4j审阅迁移/隔离、整库清理补偿与重启恢复通过；继续单条记忆图来源解绑。",
+            "V2.23：34/38；真实生产SQL宿主/重启/隔离/导出删除、无损迁移和实际方舟向量/压缩/跨会话回忆通过。",
+            "V2.22：仍33/38；旧兼容包移出源码/wheel，记忆端口和每app ASR工厂通过真实隔离验证，6个导入契约通过。",
+            "V2.21：8.5 音频帧验收，33/38；真实 O2 新旧协议/打断恢复，浏览器合成麦克风经 VAD/帧协议/实际播放与挂断清理通过。",
+            "V2.20：6.4 管理面板验收，32/38；真实浏览器配置保存/Ark/TTS/陪伴刷新/内置扩展安装/成员权限/390px 与宿主授权后方舟工具调用通过。",
+            "V2.19：双端依赖审计零已知漏洞；实际 Windows 解包程序的自有来源/Python 桥/方舟聊天/本地 VAD 通过，仍 31/38。",
+            "V2.18：7.1/5.4 验收；实际隔离 Electron/Python/文件/SQL、确认期间取消、Windows show、提醒 SSE 与刷新去重通过。",
+            "V2.17：7.2/6.5 验收；真实预防讨论、6 段检查后 TTS、O2 连续性与浏览器图谱依据/筛选/删除后刷新/390px 通过。",
+            "V2.16：按用户的身份/资源控制、可撤销会话、导出/删除、旧工作写入屏障及持久清理 receipt；真实接口与浏览器通过。",
+            "V2.15：默认禁用的插件目录发现、用户/修改授权、摘要热重载、资源同任务清理与撤销；真实方舟任务接口通过。",
+            "V2.14：独立 avatar_runtime、音频播放时钟/RMS 口型与表情轻动作；实际停止、7 段刷新重播和 O2 时间轴通过。",
+            "V2.14：修复原生 O2 无句子文字时遗漏音频开始通知；默认 1.2.1.1 实测 497448 字节音频，连续性仍通过。",
+            "V2.13：有界图片上传、元数据清理与普通/SSE 生成；实际方舟识别、浏览器纯图片发送、刷新收据与窄屏通过。",
+            "V2.12：宿主注入语音人格/记忆/关系，原生完整回合持久化及反应提交；真实文字→通话→文字连续性验证通过。",
+            "V2.12：同会话语音写回排序、身份切换保护；清空后的旧 SQL 提取/向量写入失效；保留 SQLite 取消清理并扩展到查询和关闭。",
+            "V2.11：SSE 协商分段语音，有界预合成和按序播放/重听；分段失败保留文字，断流等待子任务清理。",
+            "V2.11：原生豆包打断后丢弃旧帧，前端拒绝迟到解码、拼接半采样并限制队列；真实打断及下一轮恢复通过。",
+            "V2.11 历史：20 组固定文本真实语音对比全部成功，首段事件中位 6.703s → 4.234s（36.8%）。",
+            "V2.10：四角色共享普通/SSE 委派；同用户同会话顺序执行，独立会话可并行；记忆工具回复在两条路径一致。",
+            "V2.10：官方 MCP stdio/HTTP 协议、JSON Schema 校验与宿主身份绑定；外部服务按明确用户配置，密钥配置保持忽略。",
+            "V2.10：任务步骤持久化、补充续办/停止、边界与去重；重启/未知结果不自动重放。真实方舟与浏览器两步任务通过。",
+            "V2.9：自然发言默认关闭，可按用户配置概率；安静处理仍保存对话/活动/关系，界面显示已收到，问题/任务/语音与确认上下文继续回应。",
+            "V2.9：45 条意图用例经本地规则与方舟组合管线验证；当前请求权重、少样本示例和有限超时防止历史词/否定句误触执行。",
+            "V2.9：自然语言取消提醒能匹配当前用户的实际待办；歧义会请求选择，明确所有才批量取消。",
+            "V2.8：连续 valence/arousal、确定性平复与 SQL 情绪持久化；按用户/轮次原子提交情绪和关系，重试不重复增长。",
+            "V2.8：独立模型在回复前分类，失败回退到规则；情绪影响生成参数，任务/严肃语境优先抑制 emoji。",
+            "V2.8：日关系复核补偿新版档案中的漏记事务，旧档案不重复计分；真实模型、重启和浏览器刷新验证通过。",
+            "V2.7：访问频率与时间共同决定记忆清晰度；淡化保留原文，明确检索或手动恢复可重新激活。",
+            "V2.7：用户隔离的实体关系索引、PageRank 扩散与向量排序融合；实体提取只保留用户陈述支持的事实。",
+            "V2.7：凌晨空闲时整理最近 7 天；每日指纹与数据库租约去重，偏好变化只基于用户原话，旧总结不能覆盖更新偏好。",
+            "V2.7：真实方舟压缩和日总结通过，跨会话可读取回顾；清空使旧后台写入失效。Lite 使用 WAL 支持并发读写。",
+            "2026-10-19：主动陪伴按用户保存开关、时区、免打扰、冷却与日上限；独立任务避免慢用户阻塞其他用户。",
+            "2026-10-19：提醒状态与推送 outbox 原子提交；离线分页补收、SSE/轮询去重、循环提醒按发生次数去重。",
+            "2026-10-19：Lite 对话历史与窗口外摘要持久化；模型摘要失败保留摘录；清空后历史和摘要一并删除。",
+            "2026-10-19：PC 类型检查与共享静态资源构建恢复；前端后台推送已接桌面通知桥；原生通知尚待打包实测。",
             "🆕 V2.4 LLM 配置稳定性：保存 /settings/llm 时若未填 api_key 则保留旧值（539b65c）；config 读写路径统一不再因 cwd 漂移（9093b4b）；OpenAI/Anthropic base_url 缺 /v1 时自动补齐。",
             "🆕 V2.4 错误可读性：DashScope 配额耗尽 / 4xx 错误体直接转写成中文提示，前端不再只看到 'HTTP 400'（80a58b0）。",
             "🆕 V2.4 演示链路：Vite dev server 放通 Cloudflare 隧道 Host（deabf2e），可直接通过 trycloudflare.com 隧道把本地 demo 暴露给评审；新增 .env.lite 忽略避免本地 Lite Mode 覆盖被误提交（52d3ed0）。",
@@ -157,26 +207,30 @@ def get_project_status() -> ProjectStatusData:
         ],
         next_focus=[
             FocusItem(
-                title="V2.5 · 物理删除 deprecated shim (shared/ + action_layer/)",
-                detail="P1-E + P2 后所有业务侧 import 已切到 shared_contracts / shared_runtime / action_executor.action2d；shared/{config,lite_mode,llm_client,database,voice_runtime_config,models,events}.py 与 action_layer/ 仅作 re-export shim 保留兼容；下一波次可彻底物理删除并从 baseline 移除横向耦合的最后 1 对。",
+                title="平台账号验收待用户配置",
+                detail="已验收36/38；实际CI与容器完成。平台功能已实现，真实账号和专用目标由用户暂缓提供；3D待讨论确认。",
             ),
             FocusItem(
-                title="V2.5 · 主动性模块在状态闭环后上线",
-                detail="action_executor 已有提醒/时间/天气/SSE push；下一波次可扩展为主动关怀（到点提醒、长期未互动问候、记忆触发纪念日/习惯关怀、根据用户状态判断是否打扰），但必须在状态闭环稳定后。",
+                title="记忆增强与数据连续性",
+                detail="批次摘要、跨会话回顾、遗忘/恢复、融合检索与日总结已验证；生产SQL实测已验收，多平台身份绑定/收发已实现，真实账号待配置；继续部署，3D待确认。",
             ),
             FocusItem(
-                title="V2.5 · voice_layer resolver 别名表瘦身",
-                detail="当前 hardcoded_persona=63，绝大多数集中在 voice_layer/resolver.py 及其 test_resolver.py 的「xiaonuan」预设别名表。下一步把示例别名移出 production code，仅保留可注入的 default registry，让 baseline 进一步收敛。",
+                title="语音、多模态与同步呈现",
+                detail="语音、图片和音频/表情同步均已验收；3D遵用户要求暂缓，技术方案讨论确认后再实施。",
+            ),
+            FocusItem(
+                title="模块边界与工程化",
+                detail="反向编排依赖已清零；旧兼容层与动作模块横向依赖已清理，记忆与ASR已宿主注入；继续生产存储、平台与形象服务。",
             ),
         ],
         risks=[
             FocusItem(
-                title="Lite Mode 情绪/关系状态仅存内存（重启丢失）",
-                detail="persona_engine EmotionEngine 默认走 in-memory（无 Redis 时），关系指标走 SQLite（但 schema 初始化依赖 shared.database），生产环境需确认 Redis + PG 可用。",
+                title="平台真实账号与3D暂缓",
+                detail="Lite与实时语音人格/关系已验证；生产SQL/Neo4j与图来源清理已验收；Docker/远端CI已验；平台真实账号和3D按用户要求暂缓。",
             ),
             FocusItem(
-                title="voice_layer 直连厂商 SDK 已封装到 providers/ 但需确认注入路径",
-                detail="voice_layer/providers/dashscope.py 封装了 DashScope SDK（ADR-006 已满足），但 ASRClient 仍通过字符串 provider 分发，尚未改为 Protocol 注入式；下一步可升为纯注入。",
+                title="TTS HTTP 注入与宿主范围",
+                detail="ASR 高层工厂按 app 注入并验证关闭；TTS HTTP 仍是参考宿主单例，尚未实现同样的多 app 隔离。",
             ),
             FocusItem(
                 title="文档与代码的旧商业化口径需持续巡检",
@@ -224,7 +278,7 @@ def get_project_status() -> ProjectStatusData:
                 title="波次 3 · 反向依赖清零",
                 owner="全模块",
                 status="done",
-                detail="check_arch --check 全绿：业务模块 → core_orchestrator 反向 import = 0；横向耦合对数 = 0。",
+                detail="V2.22：6个导入契约通过，反向/SDK/横向导入均为0；角色文本仍有基线差异，未宣称AST全绿。",
             ),
             MilestoneInfo(
                 title="波次 4 · PersonaRegistry 多角色化",
@@ -282,11 +336,36 @@ def get_project_status() -> ProjectStatusData:
             ),
         ],
         test_snapshot=TestSnapshot(
-            command="pytest -q --ignore=voice_layer/tests/test_voice.py --ignore=memory_system/tests/test_memory.py",
-            passed=141,
+            command=(
+                "pytest -q --ignore=voice_layer/tests/test_voice.py --ignore=memory_system/tests/test_memory.py "
+                "-W error::pytest.PytestUnhandledThreadExceptionWarning"
+            ),
+            passed=839,
             failed=0,
             skipped=0,
             notes=[
+                "V2.27：远端Linux839（67.24s）、桌面工具16、Web86、双端审计构建、实际PostgreSQL/Redis7/Neo4j和非root Docker均通过。",
+                "V2.26：836 passed（55.22s，严格线程/无法回收异常警告）、Web86/双构建/6导入契约；真实本地Discord SDK HTTP/WS与QQ监听通过。",
+                "V2.25：778 passed（42.86s）、Web85/双构建、6导入契约；实际图来源/单删/淡化/恢复/防重放与干净wheel SQL/Neo4j通过。",
+                "V2.24：773 passed（46.04s）、Web83/双端构建、6导入契约和干净wheel宿主/端口通过；实际图提取/迁移/整库清理通过，单条来源仍待补齐。",
+                "V2.23：765 passed（40.47s）、存储/人格/隐私133、6导入契约；真实SQL/方舟向量/压缩/重启回忆和迁移回滚通过。",
+                "V2.22：765 passed（43.05s），6个导入契约通过；Web无变动沿用81/双端构建，真实SQL/上传ASR/O2与干净wheel注入通过。",
+                "V2.21：758 passed（42.34s，线程警告视为错误），Web 81、双端构建通过；真实新旧 O2 与浏览器收音/播放通过，架构历史差异仍保留。",
+                "V2.20：750 passed（44.58s，线程警告视为错误），Web 75，双端构建通过；干净 wheel 独立宿主/目录安装调用通过。",
+                "V2.19：745 passed（63.84s，线程警告视为错误），桌面工具 16、Web 67、PC 代理与双端构建通过；双端审计零已知漏洞，实际 Windows 解包程序/聊天/本地 VAD 通过。",
+                "V2.18：742 passed（58.02s，线程警告视为错误），桌面工具 16，Web 67，双端构建通过；实际桌面执行与 Windows 通知/SSE 验证通过。",
+                "V2.17：729 passed（58.61s，线程警告视为错误），Web 66，Web/PC 构建通过；真实内容检查/语音与浏览器记忆图谱验证通过。",
+                "V2.15：后端 666 passed（55.04s，线程警告视为错误），插件/协议子集另 24 passed；Web 53 和 Web/PC 构建通过。",
+                "V2.14：656 passed（55.58 秒，线程警告视为错误），Web 53 passed、Web/PC builds passed，avatar 导入契约通过。",
+                "V2.13：完整后端 646 passed（52.76 秒，线程警告视为错误），新增 SQL 图片记录用例另行 6 passed；Web 46 passed，Web/PC builds passed。",
+                "V2.12：624 passed（52.22 秒，线程警告视为错误），Web 42 passed、Web/PC builds passed；真实文字→原生通话→文字连续性验证通过。",
+                "V2.11：603 passed（49.76 秒，线程警告视为错误），Web 42 passed、Web/PC builds passed；真实 TTS/ASR、20 组首音对比、O2 打断与下一轮恢复通过。",
+                "5.1、8.1/8.2 已验收；用户已恢复开发。8.4 音频/表情聚合、图片理解等继续保留。",
+                "V2.10：573 passed（47.41 秒，线程警告视为错误），Web 29 tests passed，Web/PC build passed；真实 MCP 双传输、方舟任务、补充续办及浏览器刷新/手机布局已验证。",
+                "V2.9：线程警告视为错误的完整后端回归 537 passed（43.91 秒），Web 25 tests passed，Web/PC build passed；自然发言、重启、桌面/移动设置和自然取消提醒已验证。",
+                "V2.8：完整后端回归 433 passed（52.50 秒），Web 19 tests passed，Web/PC build passed；真实方舟分类、回复、日复核与重启保留已验证。",
+                "V2.7：后端隔离数据库完整回归 407 passed；Web 19 tests passed，Web/PC build passed。真实模型压缩/日总结、跨会话回顾、记忆恢复与移动页面已验证。",
+                "架构反向/SDK/横向导入已清零，角色文本基线仍有差异；新增主动关怀及语音持久化反向编排依赖已改为宿主注入。以下为历史验证记录。",
                 "全量 **141 passed**（P1-E + P2 全部落地后基线零退步；忽略需要 ffmpeg/PostgreSQL 的 13 个集成用例）。",
                 "P2 双向 import 等价性：`from action_layer import Action2DGenerator/ActionRouter/LipSyncGenerator/ActionSequencer` 与 `from action_executor.action2d import ...` 指向同一对象；DeprecationWarning 不报错。",
                 "P1-E 双向 import 等价性：`from shared_runtime import LLMClient/Base/get_runtime_voice_config` 与 `from shared.{llm_client,database,voice_runtime_config} import ...` 指向同一对象。",
@@ -308,8 +387,8 @@ def get_project_status() -> ProjectStatusData:
             ModuleInfo(
                 id="shared",
                 name="Shared",
-                name_zh="共享基础库（兼容期）",
-                description="Cross-module utilities, models, config, LLM client — 已通过 shared_contracts/shared_runtime 二次包装，V2.1 起物理拆分",
+                name_zh="共享运行时",
+                description="配置、数据库与LLM运行时位于 shared_runtime；旧 shared 包已在V2.22移出源码与wheel",
                 status=ModuleStatus.COMPLETED,
                 progress=100,
                 tech_stack=TechStack(
@@ -325,7 +404,7 @@ def get_project_status() -> ProjectStatusData:
                     "语音运行时配置模块 (ASR/TTS provider 热切换)",
                     "统一数据模型 (TurnContext, UserProfile, EmotionState)",
                     "结构化日志 (structlog JSON输出)",
-                    "🆕 V2 兼容期：业务侧应优先 import shared_contracts / shared_runtime，shared 仍在但不再新增内容",
+                    "V2.22：仅保留 shared_contracts / shared_runtime 真实导入，旧 shared 已移出",
                 ],
                 dependencies=[],
                 blockers=[],
@@ -415,17 +494,19 @@ def get_project_status() -> ProjectStatusData:
                 id="persona_engine",
                 name="Persona Engine",
                 name_zh="角色引擎",
-                description="Emotion, relationship, tone generation — 通用模块（可拆），V2 已支持 PersonaRegistry 多角色 + role_id 注入",
-                status=ModuleStatus.COMPLETED,
-                progress=92,
+                description="Continuous emotion, durable relationship, independent reactions — 宿主可独立接入，支持多角色与受控状态更新",
+                status=ModuleStatus.IN_PROGRESS,
+                progress=80,
                 tech_stack=TechStack(
                     languages=["Python 3.11+"],
                     frameworks=["FastAPI"],
-                    databases=["Redis (情绪状态)", "PostgreSQL (关系指标)"],
+                    databases=["SQLite / PostgreSQL (情绪、关系、幂等事务与日复核)"],
                     apis=[],
                 ),
                 key_features=[
-                    "情绪状态机 (7种基础情绪 + 组合状态)",
+                    "连续二维情绪与确定性平复，离散标签兼容呈现",
+                    "独立反应分类、超时回退、生成参数与表达策略",
+                    "SQL 原子情绪/关系事务；日复核补偿且不重复计分",
                     "情绪衰减与时间影响 (昼夜节律)",
                     "关系追踪 (亲密度/信任度/依赖度/理解度)",
                     "语气生成器 (基于情绪+关系的中文Prompt)",
@@ -701,9 +782,10 @@ def get_project_status() -> ProjectStatusData:
             "基础层（兼容期）": ["shared"],
         },
         release_notes=ReleaseSection(
-            title="本轮交付 · V2.4 配置稳定性与外网演示链路加固（在 V2.3 人格连续性闭环之上）",
+            title="本轮交付 · V2.15 本地插件（持续开发）",
             pr_branch="master",
             summary=(
+                "V2.15 本地插件发现、宿主授权和热重载已完成真实任务验证；累计 26/38 项验收。继续全部剩余计划。以下保留早期交付记录。"
                 "V2.4 在 V2.3 人格连续性闭环基础上，围绕「让 demo 在外网/隧道下可稳定演示」收口："
                 "保存 LLM 设置时不再因 api_key 留空而清空原 key；config 读写路径统一不再随 cwd 漂移；"
                 "OpenAI/Anthropic 兼容端点自动补 /v1；DashScope/兼容 4xx 错误体直接转写成中文提示；"
@@ -711,6 +793,20 @@ def get_project_status() -> ProjectStatusData:
                 "companion-ai 包及服务版本对齐 0.2.0。"
             ),
             items=[
+                ReleaseNoteItem(
+                    category="feature",
+                    title="分段语音、有序播放与可靠打断",
+                    detail="SSE 协商语音分段，云端预合成按序输出；停止/重听及刷新保留，打断丢弃旧帧和迟到解码，播放队列有界。",
+                    impact="回复生成时即可开始播报；20 组固定文本首音中位减少 36.8%，原生实时打断与下一轮恢复通过。",
+                    refs=["core_orchestrator/streaming_voice.py", "voice_layer/streaming_pipeline.py"],
+                ),
+                ReleaseNoteItem(
+                    category="feature",
+                    title="分工、MCP 与持久任务",
+                    detail="Chat/Task/Memory/Device 共享普通/SSE 入口；任务可查看步骤、补充续办和停止，重启或未知结果不盲重放；官方 MCP 支持 stdio/HTTP。",
+                    impact="可以执行先查时间再设置提醒等多步请求，并查看实际执行记录。",
+                    refs=["core_orchestrator/specialists.py", "action_executor/task_agent.py", "action_executor/mcp_client.py"],
+                ),
                 ReleaseNoteItem(
                     category="fix",
                     title="LLM 设置保存防止 api_key 被清空",

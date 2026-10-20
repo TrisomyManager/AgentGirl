@@ -266,7 +266,7 @@ async def test_llm_enrich_cache_avoids_duplicate_calls(monkeypatch: pytest.Monke
     await wm.observe_turn(sid, "t2", "我觉得干不下去了", "先深呼吸", emotion="sad", intent="chat")
 
     monkeypatch.setattr("memory_system.working.get_settings", lambda: _S())
-    monkeypatch.setattr("shared.llm_client.LLMClient", lambda *a, **k: _FakeLLM())
+    monkeypatch.setattr("shared_runtime.llm_client.LLMClient", lambda *a, **k: _FakeLLM())
 
     wm._states.clear()  # noqa: SLF001
     wm._llm_cache.clear()  # noqa: SLF001

@@ -1,16 +1,36 @@
-"""Async memory sync for completed realtime voice turns (fire-and-forget)."""
+"""Owned, ordered background persistence for completed realtime voice turns."""
 
 from __future__ import annotations
 
 import asyncio
-import uuid
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import structlog
+from shared_runtime.user_lifecycle import user_operation
 
 logger = structlog.get_logger("voice_layer.realtime_memory_sync")
 
 # Stable channel tag for long-term / pipeline metadata (align with product wording).
 REALTIME_MEMORY_CHANNEL = "voice_call"
+_handler: Callable[..., Awaitable[Any]] | None = None
+_pending: set[asyncio.Task] = set()
+_owners: dict[asyncio.Task, tuple[str, str]] = {}
+
+
+def set_memory_sync_handler(handler: Callable[..., Awaitable[Any]] | None) -> None:
+    """Configure persistence in the host, leaving voice_layer independently usable."""
+    global _handler
+    _handler = handler
+
+
+async def drain_memory_sync(*, user_id: str | None = None, session_id: str | None = None) -> None:
+    tasks = [task for task in tuple(_pending)
+             if (user_id is None or _owners.get(task, (None, None))[0] == user_id)
+             and (session_id is None or _owners.get(task, (None, None))[1] == session_id)]
+    if tasks:
+        # A disconnected reader must not cancel an earlier completed turn's write.
+        await asyncio.wait(tasks)
 
 
 def schedule_realtime_turn_memory_sync(
@@ -20,45 +40,54 @@ def schedule_realtime_turn_memory_sync(
     user_message: str,
     assistant_message: str,
     memory_channel: str = REALTIME_MEMORY_CHANNEL,
+    turn_id: str | None = None,
+    conversation_context: Any = None,
+    content_filtered: bool = False,
 ) -> None:
     """Queue a background task; never raises to callers."""
     text_u = (user_message or "").strip()
     text_a = (assistant_message or "").strip()
-    if not text_u or not text_a:
+    handler = _handler
+    if not text_u or not text_a or handler is None:
         return
+    predecessors = [task for task in tuple(_pending) if _owners.get(task) == (user_id, session_id)]
 
     async def _run() -> None:
-        try:
-            from core_orchestrator.state_machine import (
-                build_minimal_memory_sync_state,
-                sync_completed_turn_to_memory,
-            )
-            from shared_contracts.models import Platform, TurnContext, UserProfile
+        async with user_operation(user_id):
+            await _write()
 
-            tc = TurnContext(
-                turn_id=str(uuid.uuid4()),
+    async def _write() -> None:
+        try:
+            if predecessors:
+                await asyncio.wait(predecessors)
+            extra = {}
+            if turn_id is not None:
+                extra["turn_id"] = turn_id
+            if conversation_context is not None:
+                extra["conversation_context"] = conversation_context
+            if content_filtered:
+                extra["content_filtered"] = True
+            await handler(
+                user_id=user_id,
                 session_id=session_id,
-                user=UserProfile(user_id=user_id.strip() or "anonymous", platform=Platform.APP),
                 user_message=text_u,
-                platform=Platform.APP,
-                has_voice=True,
-            )
-            state = build_minimal_memory_sync_state(
-                tc,
                 assistant_message=text_a,
-                emotion_state=None,
-                relationship_metrics=None,
-                intent=None,
-            )
-            await sync_completed_turn_to_memory(
-                turn_context=tc,
-                orchestration_state=state,
                 memory_channel=memory_channel,
+                **extra,
             )
         except Exception as exc:
             logger.warning("realtime_memory_sync_failed", error=str(exc))
 
     try:
-        asyncio.create_task(_run())
-    except Exception as exc:
-        logger.warning("realtime_memory_sync_schedule_failed", error=str(exc))
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_run())
+    _pending.add(task)
+    _owners[task] = (user_id, session_id)
+
+    def completed(done):
+        _pending.discard(done)
+        _owners.pop(done, None)
+
+    task.add_done_callback(completed)

@@ -1,263 +1,148 @@
-# AI 工程交接文档
-
-> 写给下一位接手本工程的 AI，或者下一轮对话里的自己。  
-> 更新日期：2026-05-05
-
----
-
-## 1. 先看结论
+# 当前工程交接
 
-当前真正活跃、应该优先推进的工程是 **[companion-ai](companion-ai/)**。  
-`hermes-agent/` 仍然是重要底座和参考实现，但本轮交接应默认以 `companion-ai` 的代码现状为准，而不是以根目录的历史规划为准。
-
-目前项目所处阶段可以概括为：
-
-- **Phase 1.5：实时语音 MVP 已打通**
-- **单体 FastAPI 入口已成为默认开发模式**
-- **前端调试能力已明显领先于后端收敛度**
-- **记忆系统、Prompt 组装和测试稳定性是下一阶段的主战场**
-
----
+更新时间：2026-10-20。
 
-## 2. 当前状态快照
+最新V2.27：6.3实际远端CI/容器已验收，累计36/38（95%）。当前可执行功能已完成；两项按用户明确要求保留：6.2真实平台账号验收暂缓（收发/绑定/SQL/本地协议及官方SDK已实现），8.6先不开发（其他功能完成后讨论并确认方案，不能自动开工）。草稿PR10：https://github.com/TrisomyManager/AgentGirl/pull/10；通过的远端运行：https://github.com/TrisomyManager/AgentGirl/actions/runs/39377276774。Linux后端839（67.24秒，严格线程/无法回收异常警告）、桌面工具16、Web86、双端测试/审计/构建、6导入契约、wheel、实际PostgreSQL/pgvector+Redis7+Neo4j迁移/图证据/清理/重启门禁及非root Docker登录/重启/持久/删除均通过。修复SQLAlchemy异步依赖、PC干净环境SDK类型解析、FFmpeg CI依赖及FastAPI0.150惰性路由所有权参数；旧广播不再假报成功。发布快照保留原master工作区、暂存和所有既有改动；.codex/config.toml中的密钥曾进入远端历史，快照移除但本机保留，已告知用户轮换，不自动重写历史。没有部署或发布镜像，没有真实平台消息，未安装/开发3D。详见apps/backend/docs/deployment.md及platform-conversations.md。
 
-### 已经比较成型的部分
+最新V2.26：35/38（92%），多平台实现已落地，真实账号验收按用户要求暂缓；用户明确3D先不开发，完成其他功能后讨论并确认技术方案，勿开始8.6。继续6.3实际容器/远端CI。平台有宿主私有配置、精确身份/目标绑定、独立会话、SQL收件/游标/回执、Telegram轮询、Discord Gateway、QQ签名loopback回调、分片/限流/未知结果不重放、撤销及隐私导出删除；群聊不读取私有记忆/工具。旧token不会启动新接收。删除保留最小绑定哈希撤销回执，重授权须审阅并更换绑定id；主API不增加公共鉴权豁免。官方Discord SDK本地真实HTTP/WS发现并修复READY任务残留。后端836（55.22秒，严格线程/无法回收异常警告）、Web86、双端构建和6导入契约通过；新wheel包含全部平台代码/依赖元数据。没有向真实平台账号发消息。GitHub连接器可访问本人公开仓库；本机无Docker/WSL，继续远端CI。详见apps/backend/docs/platform-conversations.md。保留所有既有改动与原生O2默认值，不新建子代理。
 
-- `companion-ai/main.py`
-  - 单体入口可挂载全部 router，适合作为本地开发默认入口。
-- `companion-ai/frontend_app/`
-  - 已有聊天界面、设置抽屉、记忆库、项目状态面板、实时语音通话面板。
-- `companion-ai/voice_layer/`
-  - 已打通浏览器端 VAD、AudioWorklet PCM 录音、WebSocket 双向流、边合成边播放、barge-in 打断。
-- `companion-ai/shared/`
-  - 已有统一 LLM 配置、运行时配置持久化、共享模型与日志基础设施。
-  - `LLMClient.generate_stream()` 已就位，OpenAI / Anthropic 双 provider 都支持 token 级流式。
-- `companion-ai/core_orchestrator/`
-  - LangGraph 状态机 + `POST /orchestrator/turn/stream` SSE 端点已打通，主聊天和实时语音的"流式语义"已经统一。
-- `companion-ai/core_orchestrator/project_status.py`
-  - 目前是“项目当前实现状态”的最准入口之一，前端状态页直接消费它。
-
-### 还没真正收口的部分
+最新V2.25：2.3已验收，35/38（92%），继续6.2/6.3/8.6。每条SQL记忆独立证据/事实，召回带来源到最终核对；旧迁移/无来源/其他账号/被删或淡化事实不恢复回复。恢复与精确线索再激活保留，修复召回恢复中的提前提交/重复计分。单删持久记录、来源删除标记、按用户锁及5秒轮转清理（批4用户/每用户32来源）通过；实际无需重启恢复和新进程恢复均通过。图服务器拒绝旧代次写入，重复旧清理保护新内容；完整清理保留仅含摘要账号键/代次的最小删除回执，不含正文。真实冲突值/账号/淡化/恢复/单删/迁移、方舟3条事实与干净wheel实际SQL/Neo4j通过。后端778（42.86s）、Web85/双构建、6导入契约通过；远端CI仍未运行。详见apps/backend/docs/neo4j-ownership.md。私有PG/Garnet/Neo暂留，元数据output/qa/production-context.json，凭据只在其临时目录。下一项平台：原Telegram仅发送且HTML、Discord仅webhook无可靠ID、QQ无接收；会话映射内存且跨渠道共享，应做宿主绑定及显式接收/回复开关。旧token不能自动启用新接收器，真实收发需专用测试目标授权，当前没有外部账号。goal保持active，保留所有既有改动。
 
-- `action_executor` 真实接入
-  - 已经有 5 个内置 handler 和提醒 SSE 推送，但天气 / 日历是 stub，等外部 key 配置；循环 / cron 风格调度尚未实现。
-- `action_layer` / `device_coordination`
-  - 2D 动作生成 + 设备协同仍是占位。
-- 调试台 / Prompt 可视化
-  - `state_machine.py` 装配出的最终 system prompt（含 working memory 注入的【当前对话状态】section）尚未在调试台呈现。
-- working memory 摘要质量
-  - dominant_topic / 用户摘要目前是 bag-of-words 启发式，未来可以替换为 LLM 摘要器。
+最新V2.24：仍34/38（89%），2.3继续开发，不提前验收。真实Neo4j5.26.32/Temurin21、共享节点审阅迁移、嵌套/账号隔离、1/2跳、导出/删除重试与新进程启动恢复通过。实际方舟提取/向量产生3条图事实，融合检索与整库清理通过。单条记忆删除后外部图事实仍残留，下一步补每条记忆的不可变来源、按SQL证据过滤的召回及持久解绑，保护其他记忆/账号。现graph_lifecycle含按事件循环/用户的锁、SQL代次和memory_graph_cleanup记录，启动最多重试4个，容量/公平性边界保留。后端773（46.04s，严格线程警告）、Web83/双端构建、6导入契约、干净wheel实际宿主/ASR/记忆/扩展通过。连接日志只保留协议/主机/端口，临时QA凭据已轮换并脱敏日志。详见apps/backend/docs/neo4j-ownership.md。私有PG/Garnet/Neo暂保留供后续联调，元数据output/qa/production-context.json，凭据只在其临时目录；8044/5197关闭。继续2.3来源解绑及6.2/6.3/8.6，goal保持active。
 
----
+最新V2.23：2.1生产SQL已验收，34/38（89%），持续其余四项。真实PostgreSQL17.11/pgvector0.8.7非超级用户，宿主两进程重启、原文/摘要、18次并发去重、JSON标签、失败回滚、用户隔离、图谱/导出删除与旧写入屏障通过。实际方舟1024维向量/三轮批次压缩/重启后新会话回忆通过；临时缓存为真实Garnet v2.2.3，不冒充Redis7。向量列改为保留值转换；历史迁移默认预览，--apply同事务转换，非法值回滚/旧维度拒绝；wheel支持模块命令。后端765（40.47s）、存储/人格/隐私133（4.52s）、6导入契约通过；前端无变动沿用81/双构建。CI新增PostgreSQL/Redis7门禁，远端未运行。详见apps/backend/docs/production-storage.md。继续Neo4j/旧图归属、多平台、实际Docker/CI和3D；临时PG/Garnet保留用于下一项图联调，元数据在忽略output/qa/production-context.json。
 
-## 3. 现在代码里“真实存在”的能力
+最新 V2.22：额外模块边界收敛已验收，仍 33/38（87%），继续全部剩余计划。后端 765 passed（43.05s，严格线程警告）、6 个导入契约通过；前端无变动，沿用 V2.21 的 Web81/双端构建。旧 shared/action_layer 已归档并移出源码/wheel，保留 action_layer 运行时能力键。记忆读取改为宿主注入并检查会话归属，旧 HTTP 回退保留；ASR 支持 app 独立工厂和按请求/连接关闭，重复取消等待清理。WAV 用实际帧算时长，未知编码返回0；原生 O2 仍为1.2.1.1，TTS HTTP 仍是宿主单例。实际隔离上传 ASR/SQL/O2 与干净 wheel 注入通过。AST 反向/SDK/横向导入为零，角色文本基线仍有差异。详见 apps/backend/docs/module-injection.md。继续生产 SQL、Neo4j/迁移、多平台、实际 Docker/CI 和3D。
 
-### companion-ai
+最新 V2.21：8.5 音频协议已验收，33/38（87%），继续全部剩余计划，goal 保持 active。后端 758（42.34s，严格线程警告）、Web 81、双端构建通过。实际 O2 新旧协议、打断后下一轮与浏览器文件合成麦克风的 VAD/25 上行帧/6 下行帧/6 次播放/挂断清理通过；没有读取真实麦克风。详见 backend/docs/audio-transport.md、packages/audio-transport/README.md。保留协商后开麦、旧 ready 回退、双向序号、段归属、取消后发送完成、致命错误清理与串行重拨。访问中间件必须选择公开子协议名，不回显凭据。离线 Protobuf 编码评估没有引入运行时依赖，不宣称端到端提速。干净 wheel 新协议/宿主/目录调用通过；架构扫描排除生成 build/dist，反向编排/SDK 为零，历史横向/角色文本差异仍未清零。QA 8044/5197 与浏览器已关闭。剩余五项：2.1 生产 SQL、2.3 Neo4j/迁移、6.2 多平台、6.3 Docker/CI、8.6 3D；额外兼容层物理清理和 ASR Protocol 注入也保留。
 
-- 运行模式
-  - 单体模式：`uvicorn main:app --reload --port 8000`
-  - Lite Mode：`COMPANION_LITE_MODE=true`，使用 SQLite + 内存替代，适合无 Docker 环境
-- 前端能力
-  - 文本聊天
-  - 语音输入
-  - 实时语音通话
-  - Live2D 展示
-  - LLM / Voice Provider 运行时切换
-  - 项目状态可视化
-- 运行时配置
-  - `companion_llm_config.json`
-  - `companion_voice_config.json`
-- 状态接口
-  - `/health`
-  - `/orchestrator/project_status`
-  - `/orchestrator/settings/llm`
-  - `/orchestrator/settings/voice`
+下一实现建议：先收敛额外架构项。当前 Python 实际旧入口还在 device_coordination/registry.py、memory_system/db.py 与 working.py、user_profile、persona_store 和 integration_minimal 示例；动作/共享测试仍在旧目录，物理删除前迁移到新包并更新打包/导入契约。action_executor/handlers.py 仍直接导入 memory_system 的 recall/list/working 三处，应改宿主注入端口（runtime_hooks 组装），不要把跨模块测试放回业务测试目录。ASRProvider 当前返回 str，而 ASRClient 上传接口返回 VoiceTranscriptionResult、PCM 接口返回 str；设计注入时需明确格式/元数据/生命周期，不应伪造识别置信度或压缩音频时长。外部平台现仅有 Telegram 发送和 Discord Webhook 旧骨架，QQ/真实收发/身份绑定尚未验收；账号真实测试与实现分开记录。当前本机无已知 Docker/Java/PostgreSQL 服务，生产实例可继续查找隔离便携运行时，不能把 Lite/模拟代替联调。
 
-### hermes-agent
+最新 V2.20：6.4 设置与管理已验收，32/38（84%），持续全部剩余计划，goal 保持 active。后端 750（44.58s，严格线程警告）、Web 75、双端构建通过。真实隔离浏览器验证分类/角色、模型保存/方舟连接、语音保存/TTS、陪伴刷新保留、内置扩展安装停用和普通账号/390px；宿主授权后真实方舟任务调用文本工具。干净来源 wheel 独立宿主/目录安装/授权调用通过。详见 apps/backend/docs/administration.md；保留安装默认关闭、固定打包目录/摘要、禁止覆盖/链接/预授权冲突、宿主单独授权、取消后磁盘 worker 完成。旧 build 缓存不作为分发来源，未递归删除。跨模块事项测试已移至 core_orchestrator/tests/test_user_state.py，统一 async 生命周期。继续 8.5 协议评估/升级、生产存储、多平台、部署与 3D；旧检查点为历史。
 
-- 仍然适合作为这些方向的参考和复用来源：
-  - gateway adapter
-  - tools 体系
-  - prompt_builder / context_compressor 的设计思路
-  - cron / 自动化调度
-- 但不要默认认为 hermes-agent 的 `.plans/` 就等于 companion-ai 当前优先级。
+最新 V2.19：仍 31/38（82%），继续全部剩余计划。后端严格回归 745（63.84s），桌面工具 16、Web 67、PC 实际打包代理与双端构建通过；双端 npm audit 为零。使用 Node 24，系统 Node 25 不支持当前 Vitest。真实 Windows win-unpacked 验证 app://companion 自有来源、资料目录、Python 桥、方舟聊天与匹配的本地 VAD WASM（合成麦克风），页面错误为零；签名安装器、Docker/远端 CI 和其他 OS 仍未验收。保留 PC 依赖去重、packages/web-runtime-assets 与 gh-pages/global-agent 覆盖；自定义 CORS 显式保留 app 来源，禁止通用 null。详情见 PC README 和 backend/docs/deployment.md。下一步继续管理面板与其他剩余项。
 
----
+当前继续点：7.1 与 5.4 已验收，31/38（82%），持续开发，goal 保持 active。设备私有桥、能力/根目录/确认与 CAS 已落地，见 apps/backend/docs/desktop-execution-boundaries.md。实际隔离 Electron/Python/SQL/文件读写/确认期间取消，以及 Windows 真实 show、提醒 SSE 和刷新去重通过。自动化选择本机对话框，不宣称人工视觉确认。后端 742（58.02s）、桌面工具 16、Web 67、双端构建通过。下一步治理旧 Vue/Vite/打包依赖的已知审计告警，再继续部署与剩余计划。Electron 已升级 44.9.0，ws 8.22.0，官方 binary 经 SHA256 核验后安装。6.3 尚缺 Docker/远端 workflow 实测，本机仍无 Docker。QA 8044/5197 与 Electron 全部关闭。
 
-## 4. 先读哪些文件
+最新 V2.17：普通/SSE/工具/任务/TTS 在发出前检查；任务补充合并后重查，主动拒绝不推送。原生无 caption 音频暂存上限 30 秒，尾文字最多等 2 秒；未知策略/自定义 BLOCK 需要完整输出，拒绝时单独合成替代。真实预防讨论、6 段 TTS、O2 519108 字节音频与连续性通过。规则边界见 apps/backend/docs/content-safety.md。记忆网络从用户 SQL 索引展示原文依据，默认不显示自动关键词；查看不激活淡化，切换/删除屏蔽旧响应。浏览器点选、筛选、清空后刷新及 390px 通过，见 memory-visualization.md。严格后端 729（58.61s）、Web 66，双端构建通过。QA 8044/5197 和 graph-qa 已关闭。下方为历史记录。
 
-如果要在最短时间内恢复上下文，建议按这个顺序：
-
-1. [companion-ai/main.py](D:/DeskTop/AgentGril/companion-ai/main.py)
-2. [companion-ai/core_orchestrator/project_status.py](D:/DeskTop/AgentGril/companion-ai/core_orchestrator/project_status.py)
-3. [companion-ai/core_orchestrator/api.py](D:/DeskTop/AgentGril/companion-ai/core_orchestrator/api.py)
-4. [companion-ai/core_orchestrator/state_machine.py](D:/DeskTop/AgentGril/companion-ai/core_orchestrator/state_machine.py)
-5. [companion-ai/frontend_app/src/App.vue](D:/DeskTop/AgentGril/companion-ai/frontend_app/src/App.vue)
-6. [companion-ai/frontend_app/src/components/ProjectStatusPanel.vue](D:/DeskTop/AgentGril/companion-ai/frontend_app/src/components/ProjectStatusPanel.vue)
-7. [companion-ai/voice_layer/realtime.py](D:/DeskTop/AgentGril/companion-ai/voice_layer/realtime.py)
-8. [companion-ai/shared/llm_client.py](D:/DeskTop/AgentGril/companion-ai/shared/llm_client.py)
-
----
-
-## 5. 本地验证建议
-
-### 最小验证路径
+最新 V2.16：默认单进程参考宿主的 7.3 已验收，27/38（71%），继续剩余全部工作。账号隔离/可撤销会话、导出/删除、用户工作代次与持久待重试清理、浏览器清理 receipt 核对已落地；真实聊天/TTS/原生通话鉴权/登出及浏览器切换/导出/删除/丢失响应后刷新通过。后端 689（65.63s，线程警告视为错误）、Web 63、Web/PC 构建通过。详见 apps/backend/docs/access-and-privacy.md。生产 SQL/Neo4j/Redis 与多 worker/独立模块部署仍保留，继续 CI/部署等计划。
 
-在 `companion-ai/` 目录执行：
+最新 V2.15：6.1 插件基础已验收，26/38（68%），继续全部剩余工作。宿主私有授权控制默认禁用的目录插件，同工作任务管理资源、摘要热更和撤销；实际方舟任务调用旧/新代码版本通过。后端 666 passed（55.04s）、插件/协议子集另 24 passed；Web 53、Web/PC 构建通过。详见 apps/backend/plugins/README.md；下方 V2.14 及更旧计数为历史。
 
-```powershell
-python -m pytest -q
-uvicorn main:app --reload --port 8000
-```
+最新 V2.14：5.2/5.3/8.4 已验收，25/38（66%），继续插件与生态及其余全部计划。独立 avatar_runtime / TS 实际音频时钟已落地，真实播放/停止/7 段刷新重播及原生 O2 时间轴验证通过，656 后端 / 53 Web 测试通过，Web/PC 构建及 avatar 导入契约通过。原生缺少句子文字时必须在首个音频前宣布格式/时间轴；默认模型仍为 1.2.1.1。下方 23/38 也是历史快照，以此段和执行表为准。
 
-前端单独验证：
+用户最新指令：**继续，直到计划全部完成**。5.2 图片理解已完成真实方舟与浏览器验证，累计 23/38 项（约 61%）。继续 5.3/8.4 表情与音频同步，全部其他未完成计划保留。图片边界见 apps/backend/docs/image-understanding.md。最新完整后端回归 646 passed，Web 46 passed，Web/PC 构建通过；新增 SQL 图片记录用例另行回归。下方较早轮次的暂停及旧完成数均为历史记录。
 
-```powershell
-cd frontend_app
-npm run build
-```
+## 项目与边界
 
-### 2026-05-05 的实际验证结果
+- 后端 apps/backend，Web apps/web，PC apps/pc-client，协议 packages/contracts，联调 integration。
+- 最终定位：宿主无关、可独立集成的陪伴 AI 模块库与小暖参考应用。现有 Electron 外壳可构建；HTTP PC 设备模拟器继续存在。
+- 不搜索或引入已删除的外部工程。默认火山方舟 + 豆包语音。密钥与运行时 JSON 保持忽略，不输出密钥。
+- 进入时已有大量火山引擎和 Live2D 未提交改动，均须保留；勿用 reset、clean 或批量覆盖还原。
 
-- `python -m pytest -q`
-  - **125 passed / 0 failed**（streaming 4 + working memory 9 + action_executor 15）
-- 修复要点
-  - `pyproject.toml` 现在显式声明 `numpy` 依赖，`voice_layer` 不再因
-    `ModuleNotFoundError: numpy` 在干净 venv 中整组 collect 失败。
-  - `shared/tests/test_prompt_engine.py` 的英文断言已与
-    `shared/prompt_engine.py` 的中文 prompt 对齐，2 个长期红测已转绿。
-  - `memory_system/tests/test_memory.py` 之前的 SQLite 向量绑定问题在
-    上一轮 `memory_system/db.py` / `vector_store.py` 调整后已恢复绿色。
-- 仍需注意：`voice_layer` 的真实音频集成（`ffmpeg`、`faster-whisper`、`piper-tts`
-  模型下载）在 CI / 干净机器上仍是潜在阻塞点；当前测试通过 monkeypatch
-  避开了这条硬依赖路径。
+## 当前已实现
 
----
+- 主动陪伴：持久化用户开关、四类规则、时区、免打扰、冷却和日上限；真实用户活动独立记录。每个用户有独立评估任务，关停会取消并等待。
+- 提醒和关怀消息：push_events 数据库 outbox，提醒状态与消息原子提交；重启后可分页补收；前端按事件/发生次数去重，避免循环提醒只响一次。
+- 关怀生成先产生候选，只有入库后才观察助手消息；不会把 AI 自己的问候当成用户活跃，也不把被取消的候选写进对话记忆。
+- Lite 记忆：conversation_turns、session_digests 持久化；滚动原文窗口之外保留摘要与姓名/偏好等结构事实；模型摘要异常有摘录回退；清空同时删除原文和摘要。
+- core_orchestrator/runtime_hooks.py 负责宿主适配。主动关怀和语音记忆写回均不再反向导入编排器。
+- Web 主动陪伴设置可保存；修复隐藏能力面板首次打开不加载的问题；后台消息接 Electron 通知桥。
+- PC 构建修复项目引用、Electron 类型与共享静态资源；依赖更新至 Electron 33 分支最新补丁。
+- pytest 临时数据库隔离；Lite 应用默认数据库固定到后端目录；persona Lite 启动不连接 Redis/PostgreSQL。
 
-## 6. 下一步推荐动作
+## 验证
 
-> 已收口：`companion-ai/.env` 路径固定为包根目录（`shared/config.py` 中 `_COMPANION_ROOT / ".env"`），避免 uvicorn cwd 导致 lite_mode 丢失；`GET /actions/push/poll` + 前端 2.5s 轮询作为 Cloudflare / nginx 缓冲场景下的兜底；SSE 首包 padding 提至 4KB；状态面板「Prompt 调试」可拉取 `GET /orchestrator/debug/system_prompt`；无 ffmpeg 时 3 个 voice_layer 用例自动 skip。
+- 后端基线 361 passed；加入可靠性与记忆连续性用例后回归 377 passed，仍忽略 voice_layer/tests/test_voice.py 和 memory_system/tests/test_memory.py。
+- 最新完整回归 379 passed（53.20 秒），动作模块 67 passed；注入适配、Lite 启动优化、关怀优先级与动态日上限均已包括在最终验证中。
+- Web 15 tests passed，Web 和 PC build passed；原生桌面通知尚未打包实测。
+- Playwright 隔离实例已验证设置保存并刷新保留；后端停止期间到期的提醒在重启后成功补收，刷新后不重复。截图位于 output/playwright/（忽略输出）。
+- 架构扫描还有历史横向依赖及角色硬编码，不能称全绿；已清除主动关怀/语音写回的反向编排依赖，尚需继续按最终模块边界收敛。
 
-仍建议优先：
+## 后续必做
 
-1. **远端 Cloudflared 路径上复测** `/actions/push` 与 `/actions/push/poll`（首字节 <2s、ReminderToast 弹出）。
-2. **working memory 摘要 LLM 化** —— 当前 dominant_topic 仍是 bag-of-words 启发式。
-3. **persona_engine 微服务模式接 SSE** —— 去掉 `state_machine.stream_assistant_response` 中针对该路径的"非流式 fallback"。
-4. **action_executor**：天气 / 日历真实 API、cron 风格调度。
+以 DEVELOPMENT_EXECUTION.md 的原计划编号继续。5.1、8.1/8.2 已验收；图片与同步呈现仍待完成。记忆生产 PostgreSQL/Neo4j 联调与旧节点所有权迁移、插件平台、完整数据控制和 avatar_runtime 继续保留。外部服务适配与真实联调分开记录，不能用占位符冒充完成。
 
----
+## 本轮临时进程
 
-## 7. 容易踩坑的点
+本轮 QA 后端端口 8019、Web 端口 5189、Playwright 会话 care-qa 均已关闭。QA 数据库保留在系统临时目录 companion-qa-20261019.db，与用户数据库隔离；截图保留供审阅。用户原有服务未改动。
 
-- `hermes-agent` 更偏 WSL2/Linux/macOS 工作流；在这台 Windows 机器上不要默认先从它启动。
-- `companion-ai` 才是当前本机最顺手的开发入口。
-- 根目录旧文档里很多内容是“长期目标”，不是“今天已经实现”。
-- 页面状态展示以 `core_orchestrator/project_status.py` 为准；如果代码实现变化了，优先同步这里，再同步文档。
-- 当前仓库是脏工作区：
-  - `.gitignore` 已有用户改动
-  - `companion-ai/.env.lite` 是未跟踪文件
-  - 不要误清理
 
----
+## 第二轮更新 · V2.7
 
-## 8. 一句话交接
+- 重要性规则、可恢复淡化、真实访问频率、本地实体关系 PageRank/向量融合、旧索引补建均已实现。
+- 旧对话默认每 3 轮批次摘要；SQL 在两种模式中都是原文主存。Redis 只保留临时用户上下文，旧 Redis 对话缓存不再作为恢复来源。
+- Dream 在用户当地凌晨 2–6 点且 30 分钟无互动时，追赶最近 7 天。指纹与短租约避免并发重复生成，取消释放租约，模型请求失败保留摘录。
+- 用户明确陈述决定偏好变化；历史日总结不能覆盖更新偏好。离线关系指标复核仍待在 C 中完成，不能将 2.5 整体标为完成。
+- 记忆库、原文存档、索引和日总结原子清空；版本锁/来源锁防止旧后台结果重新写回。前端请求代次阻止迟到的搜索结果覆盖清空状态。
+- SQLite 使用 WAL 与分批元数据维护；已验证读取期间仍能提交新记忆。
+- 最新完整回归 407 passed（49.19 秒），Web 19 tests passed，Web/PC build passed；新增模块 lint 通过；反向编排依赖 0，直连 SDK 0。
+- 真实方舟日总结与旧对话压缩已在隔离数据中成功。浏览器验证淡化恢复、日总结、跨会话读取、用户隔离、UTC 显示及清空后归零。桌面和 390px 移动布局截图在 output/playwright/，已忽略。
+- 本轮隔离 QA：端口 8020/5190，会话 memory-qa；现已关闭。数据库为系统临时目录 companion-memory-qa-20261019.db；其中仅有合成测试数据，user_001 的记忆库/回顾已由 UI 清空，另外的压缩验收用户保留在隔离数据库。用户原有服务未改动。
 
-这不是一个“从零开始搭骨架”的项目了，而是一个 **实时语音体验先跑出来、现在需要把记忆、提示词和工程稳定性补齐** 的项目。接手时请把注意力放在 `companion-ai`，并优先相信代码与状态接口，而不是旧规划文本。
 
----
+## 第三轮更新 · V2.8
 
-## 9. 本轮待续工作（2026-05-05 中段交接）
+- 2.5、3.1、3.2、3.3、8.3 已验收；累计 14/38 项（37%）。长期目标继续 active，不要标为全部完成或请求常规开发授权。
+- 新增 persona_engine/state_store.py、reaction.py、reaction_service.py、relationship_review.py，及 shared_runtime/response_behavior.py。情绪/关系完成事务按用户/turn_id 去重，里程碑也在同一用户锁下更新，避免覆盖并发聊天。
+- EmotionEngine 改为确定性连续坐标；负 valence 保留，过渡有界、按时间平复。离散标签仅兼容呈现。生成前独立分类，生成文字不能反向给自己打标；主流程不再保留旧的回复关键词推断器。
+- 独立分类默认 3 秒超时，可配置独立小模型。仅接收用户输入；缺字段、越界、非有限数、低置信度回退，取消不吞掉。默认火山配置未改变。
+- 普通/流式生成共用情绪参数；严肃场景抑制 emoji，任务保留足够预算。可空 expression_emoji 由服务端语境策略决定，前端避免重复表情；刷新会加载持久化情绪，迟到结果不覆盖新一轮状态。
+- Dream 通过宿主注入 relationship_observer，不产生模块横向依赖。新版原文带 persona_observation_version=1 与 reaction；复核用在线相同 turn 事件补记遗漏事务，旧档案不重复计分。补记不更改当前情绪/今日活跃时间。重试不重新总结。
+- Memory followup 和 graph_facts 的淡化绕过已修复；组件卸载后的异步 Live2D 加载会释放过期模型，避免访问旧画布。
+- 最终完整后端回归 433 passed（52.50 秒）；Web 19 tests passed，Web/PC build passed；新增模块 lint 通过。架构反向编排依赖 0，直连 SDK 0，历史横向依赖 2、硬编码 78 仍待清理。
+- 真实方舟分类返回 source=model；真实聊天产生 concerned/负 valence，重启后保留；模型日总结和复核重试后互动数仍为 1。浏览器验证开心回复、语音播报、刷新后保持开心；截图 output/playwright/emotion-positive-chat.png。
+- 隔离 QA：端口 8021/5191，会话 emotion-qa，数据库位于系统临时目录 companion-emotion-qa-20261019.db，只有合成数据。浏览器与上述 QA 服务现已关闭。用户原有服务未改动。
+- 后续继续：3.4 自然发言的按用户开关/概率/前端静默展示，然后 D 工具编排。生产 PostgreSQL/Neo4j、原生通知、完整数据控制、实时语音独立反应同步仍需完成。
 
-> 这一轮 token 用尽前正在做"动作执行器初始闭环"。已经 push 到 `cursor/repo-issue-fixes-29a4` 的代码处于"测试全绿，但远端 lite/CF 路径下端到端 demo 没完全走通"的状态。下一轮接手请按这里的清单收口。
 
-### 已完成（已合入分支）
+## 第四轮更新 · V2.9
 
-- `action_executor/` 新模块：
-  - `registry.py` —— `ActionRegistry` + `ActionResult` + `register_action` 装饰器。
-  - `handlers.py` —— 5 个内置 handler：`get_time` / `get_weather`(stub) / `set_reminder` / `list_reminders` / `cancel_reminder`。`set_reminder` 会解析 "3 分钟后"、"in 5 minutes" 等自然语言延迟。
-  - `reminders.py` —— `ReminderORM`（SQLAlchemy 表）+ `RemindersStore`（add / list / due / mark_fired / cancel）+ `ReminderScheduler`（默认 1s 轮询；用 `_tick_once` 在测试中可手动驱动）。
-  - `push_bus.py` —— 进程内 pub/sub `ProactivePushBus`，每个 subscriber 一条 `asyncio.Queue`。
-  - `api.py` —— `/actions/list` / `/actions/dispatch` / `/actions/reminders/{user_id}` (GET / POST) / `/actions/reminders/{id}` (DELETE) / `/actions/push` (SSE)。
-  - `main.py` —— 微服务模式 lifespan（启动 / 停止 scheduler），同时被 monolithic `companion-ai/main.py` 复用。
-- `core_orchestrator/state_machine.py`：
-  - 新增 `_try_action_executor(tc, intent)`：当 intent 是 `TOOL_USE` 时按关键字匹配 handler 并 dispatch。
-  - 在 `node_generate_response`（非流式）和 `stream_assistant_response`（流式）两条路径里都接入了这个分支：handler 命中后跳过 LLM，直接渲染 handler 返回的文本。流式分支用 `chunk_text_stream` 切片 SSE。
-- `core_orchestrator/intent_router.py` 的 `_TOOL_KEYWORDS` 加了「提醒我 / 帮我提醒 / 待办提醒 / 取消提醒 / remind me / set reminder」等。
-- `frontend_app/`：
-  - `useApi.ts` 新增 `listReminders` / `cancelReminder` / `listActions`。
-  - 新建 `composables/useProactivePush.ts`：用 `fetch + ReadableStream + TextDecoder` 解析 `/actions/push` SSE，自动断线重连，对外暴露 `lastReminder` ref。
-  - 新建 `components/ReminderToast.vue`：粉色 ⏰ 浮窗，3-4 行内显示提醒文字 + 点 `×` 关闭。
-  - `App.vue` 装载 `useProactivePush()` + `<ReminderToast :reminder="lastReminder" @dismiss="...">`。
-- `companion-ai/main.py`：把 `action_executor` 加进了 `_ENABLED_MODULES`，挂载 router，按反向顺序卸载 lifespan。
-- `pyproject.toml.tool.setuptools.packages.find` 也加上 `action_executor*`。
-- `core_orchestrator/project_status.py`：
-  - `action_executor` 模块卡片从 PLANNED 10% 升到 IN_PROGRESS 55%，加了 7 条 🆕 key_features。
-  - 顶层 `recent_highlights` / `next_focus` / `risks` / `test_snapshot` / `release_notes.items` 全部同步。
-  - `architecture_layers["能力层"]` 把 `action_executor` 和 `action_layer` 都列上。
-  - `overall_progress=92`、`test_snapshot.passed=125`。
-- `action_executor/tests/test_action_executor.py`：15 个用例，**全绿**。覆盖 registry / 内置 handler / reminders store / scheduler 与 push bus / NL 文本解析。
-- 文档：`AI_HANDOFF.md` / `PROJECT_PLAN.md` 同步基线 110 → 125 / 0。
-- `pytest -q` —— **125 passed, 0 failed**。
-- 本地直连后端的 curl 端到端实测：「8 秒后提醒我喝水」→ intent_router 路由到 `tool_use` → `_try_action_executor` 选中 `set_reminder` → 持久化到 `reminders` 表 → 后台 scheduler 触发 → `ProactivePushBus.publish` → `/actions/push` SSE 上看到 `event: reminder_fired`。流程完整。
-
-### 还没收口的两件事
-
-#### 9.1 `/actions/push` 在 Cloudflare 隧道下首字节延迟太长
-
-**症状**：直连本机 `127.0.0.1:8000/actions/push` 一切正常；同样的请求经 Cloudflare Quick Tunnel 转发后，**首字节迟迟不到**（在浏览器 DevTools 探针脚本中等了 15s 也收不到 `event: hello`）。直接结果：浏览器 `useProactivePush` 永远拿不到 `reminder_fired` 事件，前端 `ReminderToast` 不显示。
-
-**已经做了的修补**：在 `action_executor/api.py::push_stream` 里：
-- 头先发一个 ~2KB 的 SSE comment padding（`":" + " "*2048 + "\n"`），强制 cloudflared 立刻 flush 第一段。
-- 主循环用 `asyncio.wait_for` 包 subscriber 的 `__anext__()`，没事件时每 2s 发一帧 `event: ping\ndata: {}\n\n` 心跳，避免 CF / nginx 在长时间没数据时挤压缓冲。
-- 响应头已经有 `Cache-Control: no-cache, no-transform`、`Connection: keep-alive`、`X-Accel-Buffering: no`。
-
-**还没做完**：远端 VM 上重启 backend 之后，**没来得及做完整端到端实测**就让 token 用完了。lite-mode 验证（见 9.2）也撞到下面的问题，所以现在 push_stream 改完之后是**只在测试里被静态调用过，没在真实 cloudflared 路径上走通**。
-
-下一步建议：
-1. 用 lite-mode 重启 backend（见 9.2）。
-2. `curl -sN https://<cf-tunnel>/actions/push` 看首字节是否 < 2s 到达。
-3. 若到达 → 用浏览器探针脚本（在我的对话历史里有完整版本）订阅 `/actions/push` 同时通过 `/orchestrator/turn` 触发 `8 秒后提醒我喝水`，看 `event: reminder_fired` 是否到。
-4. 若仍不到 → 继续把 padding 加到 4KB / 把 ping 间隔降到 1s；再不行就考虑用 polling fallback (`GET /actions/push/poll?since=...`) 替换 SSE 那条路径。
-
-#### 9.2 lite-mode 兼容：`reminder_scheduler.tick_failed [Errno 111]`
-
-**症状**：在云端 VM 上 `pkill uvicorn` 后用 tmux 重启时，monolithic 模式 `lite_mode=False` 是默认，所以 `reminders.RemindersStore.list_due()` 试图连 PostgreSQL → Connection refused → scheduler 每秒 spam warning。
-
-**已经做了的修补**：当前的 `companion-ai/main.py` 已经在 lifespan 里调 `init_database_schema()`，shared engine 是按 `settings.lite_mode` 选 SQLite 或 Postgres 的，所以**只要启动时 export `COMPANION_LITE_MODE=true`，scheduler 就会走 SQLite，不会再有 Connection refused**。
-
-**还没做完**：我在最后两轮 restart 时手动 export 了 `COMPANION_LITE_MODE=true` 但 tmux send-keys 似乎没把 env 真正传进 uvicorn 进程，导致还是 lite_mode=False。下一轮接手务必一次性确认：
-
-```bash
-tmux -f /exec-daemon/tmux.portal.conf kill-session -t companion-backend 2>/dev/null
-tmux -f /exec-daemon/tmux.portal.conf new-session -d -s companion-backend -c /workspace/companion-ai -- bash -l
-tmux -f /exec-daemon/tmux.portal.conf send-keys -t companion-backend:0.0 \
-  "export COMPANION_LITE_MODE=true COMPANION_MONOLITHIC=true COMPANION_ENABLE_VOICE=false COMPANION_ENABLE_ACTION_2D=false COMPANION_ENABLE_DEVICE_COORDINATION=false COMPANION_ENABLE_MEMORY_PIPELINE=false" C-m
-tmux -f /exec-daemon/tmux.portal.conf send-keys -t companion-backend:0.0 \
-  "/workspace/companion-ai/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000 2>&1 | tee /tmp/backend.log" C-m
-sleep 6
-grep "lite_mode=" /tmp/backend.log    # 必须看到 lite_mode=True
-```
-
-**已补齐的文档/约定（本轮）**：`companion-ai/.env.example` 现已包含上述 Lite Mode 相关变量说明；把该文件复制为同目录下的 `.env`（仓库已 gitignore）即可让 pydantic-settings 在任意启动方式下 pick up，无需依赖 tmux 里 fragile 的 `export` 行。更省事的一键启动仍推荐 `python scripts/start_lite_server.py`（在 import `main` 之前强制 `COMPANION_LITE_MODE=true`）。
-
-### Cloud preview URL（可能已失效）
-
-- 前端：<https://condos-behind-weekend-synthesis.trycloudflare.com>
-- 后端：<https://ambient-rent-immigrants-face.trycloudflare.com>
-
-这两个 URL 是上一轮跑的 `cloudflared` quick tunnel，**会随 cloud agent VM 关机而消失**。下一轮接手如果要复用预览，建议：
-
-1. `/opt/tools/cloudflared` 已装好；`/opt/tools/node` 是 Node 20。
-2. 重启后用上面 9.2 的命令拉起后端，再 `tmux new-session -d -s cf-backend "cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8000 2>&1 | tee /tmp/cf-backend.log"`，从日志里抓 `https://*.trycloudflare.com` URL。
-3. 前端类似：`tmux new-session -d -s companion-frontend -c /workspace/companion-ai/frontend_app -- bash -l`，发 `export VITE_API_BASE_URL=<刚才的后端 URL>` + `npm run dev -- --host 127.0.0.1 --port 5173`，再起一条 cloudflared 转 5173。
-4. **Vite 5 的 `server.allowedHosts` 必须设**：本地我把 `vite.config.ts` 改成 `allowedHosts: true` 用于云端预览，但这个改动**没有提交**（避免污染本地路径）。下一轮接手如果要再次走 cloudflared，记得手动在 VM 上加上同样一行。
-
-### 仓库当前状态
-
-- 分支：`cursor/repo-issue-fixes-29a4`，已 push 到 `origin`。
-- PR：[#2](https://github.com/TrisomyManager/AgentGirl/pull/2)。
-- 累计 commit：见 `git log master..HEAD --oneline`。
-- 工作树有一些**未提交**的本地状态（详见 PR 描述底部「已知限制」）：
-  - `companion-ai/frontend_app/vite.config.ts` 的 `allowedHosts: true`（云端预览专用）。
-  - `companion-ai/frontend_app/package-lock.json`（npm install 副产品）。
-  - 远端 `companion_lite.db` 已经存了几条 fired/cancelled 测试 reminder（用户应当 ignore，下次本地启动会自己生成新的）。
+- 3.4 自然发言与 4.4 路由优化已验收，累计 16/38 项（42%）。长期目标继续 active，下一步为 4.1–4.3 分工编排、MCP 和受控多步任务；同会话并行输入的统一调度在 4.1 中处理。
+- 新增 persona_engine/conversation_preferences.py、reply_policy.py、前端 ConversationSettings.vue。默认逐条回复；开关/概率按用户保存，缺失上下文或设置不可读时也回复。语音/图片/任务/问题/待确认/低落上下文和连续安静受保护。
+- 普通与 SSE 回复均有 reply_suppressed/talk_value/reply_reason。安静轮次仍保存历史、活动和关系，跳过文字/语音/动作；前端只给原用户消息加“已收到”，无空白回复或语音错误。自动语音开关刷新后保留。
+- 新增 /persona/observe_turn，独立服务可记录安静轮次且按用户/turn_id 去重。SSE done 已补齐 expression_emoji 与 error。活动记录失败不再连带阻止人格事务。
+- 新增 core_orchestrator/routing_rules.py 与 tests/data/intent_cases.json，独立证据只来自当前输入。少样本模型有 3 秒超时、格式/有限数/低置信度校验；明确否定、设备和回忆请求有规则复核。pytest 禁止真实意图调用，合约测试需明确开启 mock。
+- tools/eval_intent_router.py --mode rules/model：45 条合成用例均通过；真实模型组合管线采用 32 条模型、13 条规则，含一次超时回退。此前真实模型将“我叫什么”误判 chat，现有明确自我事实查询规则防回归。不要把此用例集准确率描述成泛化准确率。
+- shared_runtime/reminder_language.py 供宿主和动作模块共用。“不用再提醒我喝水了”会取消当前用户唯一匹配提醒；歧义要求选择，明确所有才批量取消。取消入口要求 user_id，不会误入新建工具。
+- 浏览器实际验证：设置保存/刷新、关闭自动语音后保持、安静的“已收到”、下一条恢复回复、插入主动问候问题时不静默；390px 设置无溢出。真实 API 取消提醒后 pending=0。合成数据库 user_001 与 qa-route-user，不含真实用户数据。
+- 验证截图 output/playwright/natural-reply-settings.png、natural-reply-quiet.png、natural-reply-settings-mobile.png，已忽略。
+- Web 25 tests passed，Web/PC build passed。架构扫描反向编排 0、直连 SDK 0，历史横向依赖 2、硬编码 78；严格基线还未全绿。
+- 回归发现后台记忆提取任务未被宿主等待，测试事件循环关闭后仍有 SQLite 回调。新增 core_orchestrator/memory_tasks.py 托管任务，宿主关闭前等待/取消并完成异步清理；直接 SDK 测试也在事件循环关闭前清理。完整回归将线程警告视为错误，537 passed（43.91 秒），仅余三条既有弃用提示；Web 25 tests passed，Web/PC build passed，新文件 lint 与空白检查通过。
+
+## 第五轮更新 · V2.10
+
+- 4.1–4.3 已验收，累计 19/38（50%）。目标继续 active，直接推进语音/多模态波次，不请求重复授权。
+- 新增 `core_orchestrator/specialists.py`、`turn_coordinator.py`；Chat/Task/Memory/Device 共享普通/SSE 委派。同用户同会话串行，不同会话可并行。Memory 固定使用记忆工具，修复普通路径吞掉记忆结果的问题。
+- 新增 `action_executor/tool_schema.py`、`tool_catalog.py`、`mcp_client.py`、`task_agent.py`、`task_policy.py`、`task_store.py`，以及顶层 `mcp_actions_server.py`。MCP 使用官方 SDK（1.30），由 worker 同任务进入/退出传输域，支持 stdio/Streamable HTTP；配置来自 `COMPANION_MCP_CONFIG_FILE`，含密钥的 companion_mcp_config.json 忽略。
+- SQL 保存 task_runs/task_steps。默认 6 步/60 秒、规划 12 秒/调用 15 秒；按同轮唯一约束返回原记录，拒绝相同工具参数重做。未知结果不重放；只有 awaiting_input 可补充续办，已完成步骤保持。任务 API 与 TaskHistory UI 已接通，续办刷新待办，用户切换拒绝旧响应。
+- 本地 MCP 真实 stdio/HTTP、内置桥、参数校验/身份绑定、取消/超时/重启、任务接口隔离均通过。真实方舟两步任务成功；真实补充信息续办只新建提醒、不重做查时。浏览器刷新保留与 390px 布局通过。
+- 最终完整后端 573 passed（47.41 秒，线程警告视为错误）；Web 29 tests passed；Web/PC build passed。新模块 lint/空白检查通过；架构反向依赖 0、直连 SDK 0、历史横向依赖 2、硬编码 78 未清理。
+- 参考宿主为单进程：会话锁与启动时任务恢复不支持多个独立 worker 同库竞用。MCP 配置按明确用户开放，不代表已完成插件权限/设备沙箱。原计划生产数据库、原生通知、完整隐私、多模态/语音与 avatar_runtime 仍继续。
+- 本轮合成数据库：系统临时目录 companion-task-qa-20261019.db。QA 后端 8023、Web 5193、Playwright task-qa；结束时关闭这些临时进程，保留隔离数据库与 output/playwright 截图。用户原服务/数据未改。
+
+## 第六轮首步历史记录（由下方 V2.11 更新覆盖）
+
+- D 后继续 E：新增 `voice_layer/streaming_pipeline.py`，有界句子队列把 LLM 消费与 TTS 输出分开；本地/云端 realtime 会话接入。尚未完成 TTS 下一句并行预合成或 SSE voice_segment，不验收 8.1。
+- 流取消等待 token/tts 两个子任务退出，显式关闭嵌套迭代器；TTS 无音频/错误向上报告。session start 先取消旧轮；用户/session 变化清空旧历史，避免旧输出写到新上下文。
+- `local_tts.py` 原线程忽略 run_coroutine_threadsafe 的结果，实际队列无背压且会跨循环投递。现使用有界 queue.Queue、threading.Event、引擎锁、有限等待 join；取消后不再接触事件循环。原生当前批次可能继续计算，但输出丢弃。
+- `SentenceSegmenter` 修复有标点的超长 token 绕过最大长度；增加 pipeline / session / local worker 生命周期回归。语音模块+分段器 151 passed，线程警告视为错误。
+- 下一步：按设计实现两个有界合成工作单元和有序 PCM 下发，接 SSE voice_segment；处理前端异步解码在打断后复活、奇数字节 PCM、队列/播放时间轴、实时分类/情绪/口型同步。默认 volc_realtime/O2 保持，须实际服务音频联调后验收，不靠 mocks 标完成。
+- QA 8023/5193 与 Playwright task-qa 已关闭；无本轮遗留运行服务。MCP 配置原子校验最后追加的真实协议回归 14 passed；D 完整基线 573 passed，后续语音变更的最新完整结果见执行记录。
+- 最新完整后端 587 passed（44.06 秒，线程警告视为错误），语音+分段器 151 passed；Web 29 tests passed，Web/PC 构建通过。新模块与本次改动的两个 realtime provider lint 通过。目标保持 active，原计划仍验收 19/38。
+
+## 第六轮完成 · V2.11（暂停开发）
+
+- 8.1/8.2 已验收，21/38（55%）。按用户最新要求暂停，不启动下一项；完整计划尚未完成。
+- `core_orchestrator/streaming_voice.py` 注入合成回调，有界并发、按序交付；客户端以 `supports_segmented_voice=true` 协商 SSE 分段。事件为 voice_segment/voice_segment_error/voice_done；最终响应保存 voice_mode/voice_segments。失败只影响单段；老客户端保留全文语音。
+- cloud/local realtime 使用 `stream_pcm_speech`；本地并发 1、云端 2，PCM 队列与 4 KiB 帧有界，取消等子任务/迭代器退出。录音上限 60 秒，超限可恢复；reset 清除溢出状态。本地 Piper 用有界线程桥，TTS wrapper 的 aclosing 缺失导入已修复。
+- Web/PC 支持实时分段播放、停止/重听和刷新保留。实时播放代次丢弃迟到解码，压缩块按序，PCM 奇数字节衔接；结束事件等待真正播放结束。自适应启动缓冲 40–250ms、待播含新块最多 30s、待解码 16、单帧 2 MiB；挂断后的迟到麦克风授权会释放。
+- 原生豆包打断后屏蔽旧输出直到下一次 ASR 结束。实际 O2 验证确认后 2 秒残留音频 0 字节，下一轮重新收到语音。默认 volc_realtime/O2 保持。
+- SQLite 取消建连可能让 aiosqlite 工作线程回调已关闭循环；`shared_runtime/database/sqlite_lifecycle.py` 等建连/关闭/线程退出后再传播取消，测试覆盖真实连接和二次取消，禁止以忽略线程警告掩盖。
+- 最终后端 603 passed（49.76 秒，线程警告视为错误，3 条既有弃用提示），Web 42 passed，Web/PC builds passed。本轮新增模块与实时管线 lint 通过；tts.py 有 7 条既有样式告警，架构/全仓 lint 仍有历史欠项。
+- 真实 7 段聊天语音成功，首段先于末 token；前两段下载并经豆包 ASR 回识别通过。20 组相同 101 字/三句文本、交替顺序真实对比，40/40 成功，首音中位 6.703s → 4.234s（36.8%）；该固定样例不等于所有网络/文本收益，未宣称 50% 提升。
+- 浏览器自动播报、停止/重听、刷新保存和 390×844 布局已验。忽略目录 output/playwright/ 下保留 streaming-latency.json、streaming-voice-stopped.png、streaming-voice-mobile.png。隔离数据库在系统临时目录 companion-streaming-qa-20261019.db；后端 8024、Web 5194、浏览器 streaming-qa 已关闭。
+- 5.1 完整实时人格链路、5.2 图片理解、5.3/8.4 表情/口型同步、生产数据库、原生桌面通知及其他计划继续保留。恢复后先读 DEVELOPMENT_EXECUTION.md，再选择未验收项。
+- 本轮 QA 端口 8022/5192、Playwright natural-qa；均已关闭。系统临时目录 companion-natural-qa-20261019.db 保留合成数据，未改动用户原有服务。
+- 生产 PostgreSQL/Neo4j、旧图节点迁移、实时语音独立反应、原生通知、数据控制、插件与形象等全部未完成项目继续有效，不要将目标标为完成。

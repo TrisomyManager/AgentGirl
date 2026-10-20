@@ -1,15 +1,14 @@
-"""Redis-based short-term session cache for conversation context."""
+"""Durable session windows with Redis or local transient user context."""
 
 import json
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import redis.asyncio as redis
 import structlog
 
+from memory_system.session_store import PersistentSessionMemory
+from shared_contracts.models import EmotionTag
 from shared_runtime.config import get_settings
-from shared_runtime.lite_mode import InMemoryShortTermMemory
-from shared_contracts.models import EmotionTag, MemoryEntry
 
 logger = structlog.get_logger(__name__)
 
@@ -48,8 +47,9 @@ class ShortTermMemory:
     def __init__(self, max_entries: int = 100, default_ttl: int = 3600) -> None:
         self.max_entries = max_entries
         self.default_ttl = default_ttl
+        self.history = PersistentSessionMemory(max_entries=max_entries, default_ttl=default_ttl)
         if settings.lite_mode:
-            self._backend: Any = InMemoryShortTermMemory(max_entries=max_entries, default_ttl=default_ttl)
+            self._backend: Any = self.history
             self._redis = None  # type: ignore[assignment]
         else:
             self._backend = None
@@ -74,38 +74,14 @@ class ShortTermMemory:
         if settings.lite_mode:
             await self._backend.add_turn(session_id, turn_id, user_message, assistant_message, emotion, metadata)
             return
-        key = self._turn_key(session_id, turn_id)
-        data = {
-            "turn_id": turn_id,
-            "session_id": session_id,
-            "user_message": user_message,
-            "assistant_message": assistant_message,
-            "emotion": emotion.value if emotion else None,
-            "timestamp": datetime.utcnow().isoformat(),
-            "metadata": metadata or {},
-        }
-        pipe = self._redis.pipeline()
-        pipe.setex(key, self.default_ttl, json.dumps(data, ensure_ascii=False))
-        # Maintain ordered list of turn IDs per session
-        pipe.lpush(self._session_key(session_id), turn_id)
-        # Trim to max entries
-        pipe.ltrim(self._session_key(session_id), 0, self.max_entries - 1)
-        # Set TTL on session list too
-        pipe.expire(self._session_key(session_id), self.default_ttl)
-        await pipe.execute()
+        await self.history.add_turn(session_id, turn_id, user_message, assistant_message, emotion, metadata)
         logger.info("short_term.turn_added", session_id=session_id, turn_id=turn_id)
 
     async def get_session_turns(self, session_id: str) -> List[Dict[str, Any]]:
         """Retrieve all turns for a session in chronological order."""
         if settings.lite_mode:
             return await self._backend.get_session_turns(session_id)
-        turn_ids = await self._redis.lrange(self._session_key(session_id), 0, -1)
-        turns: List[Dict[str, Any]] = []
-        for turn_id in reversed(turn_ids):  # lpush means reverse order
-            data = await self._redis.get(self._turn_key(session_id, turn_id))
-            if data:
-                turns.append(json.loads(data))
-        return turns
+        return await self.history.get_session_turns(session_id)
 
     async def get_recent_context(
         self,
@@ -128,12 +104,14 @@ class ShortTermMemory:
         if settings.lite_mode:
             await self._backend.clear_session(session_id)
             return
-        turn_ids = await self._redis.lrange(self._session_key(session_id), 0, -1)
-        if turn_ids:
-            keys = [self._turn_key(session_id, tid) for tid in turn_ids]
-            keys.append(self._session_key(session_id))
-            await self._redis.delete(*keys)
+        await self.history.clear_session(session_id)
         logger.info("short_term.session_cleared", session_id=session_id)
+
+    async def load_digest(self, session_id: str) -> Dict[str, Any]:
+        return await self.history.load_digest(session_id)
+
+    async def save_digest(self, session_id: str, digest: Dict[str, Any]) -> None:
+        await self.history.save_digest(session_id, digest)
 
     async def set_user_context(self, user_id: str, context: Dict[str, Any], ttl: int = 300) -> None:
         """Store ephemeral user context (e.g., current intent, pending action)."""

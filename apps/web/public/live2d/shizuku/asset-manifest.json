@@ -1,0 +1,236 @@
+{
+  "source": "https://github.com/guansss/pixi-live2d-display/tree/31317b37d5e22955a44d5b11f37f421e94a11269/test/assets/shizuku",
+  "commit": "31317b37d5e22955a44d5b11f37f421e94a11269",
+  "files": [
+    {
+      "path": "expressions/f01.exp.json",
+      "bytes": 71,
+      "sha256": "2ad7b7c52d8cd1775e0252dde662b7a23903b93be6cab5c652a893ae65b01a89"
+    },
+    {
+      "path": "expressions/f02.exp.json",
+      "bytes": 895,
+      "sha256": "15402fd2ec5058f408dee8e7707b92530c2448fd1221a63e906b376e7e69e42d"
+    },
+    {
+      "path": "expressions/f03.exp.json",
+      "bytes": 533,
+      "sha256": "d060d1d61fd031b511157e63f51defb384909c54a71d6c9f12335a5a19cb9eaa"
+    },
+    {
+      "path": "expressions/f04.exp.json",
+      "bytes": 653,
+      "sha256": "d51cfe70251a5a74bc09a9389b184b5b93911d49938a038146fe365cc791ad35"
+    },
+    {
+      "path": "motions/flickHead_00.mtn",
+      "bytes": 8350,
+      "sha256": "4eb22d60bce13ac3bb79cb9e88a82170a9a31abab7fa231a15a2bfaa31f51263"
+    },
+    {
+      "path": "motions/flickHead_01.mtn",
+      "bytes": 5295,
+      "sha256": "00d45b3c451705ee5187d185fa2289eeea7ba17fe4f8418157ee07bc63619aa3"
+    },
+    {
+      "path": "motions/flickHead_02.mtn",
+      "bytes": 6749,
+      "sha256": "dd4b65c91f269238dde9c925e4363d9a48fac0b2d5ea87869a325cb92e320c43"
+    },
+    {
+      "path": "motions/idle_00.mtn",
+      "bytes": 13654,
+      "sha256": "18f93d1c4516217f64ed49d0f47cd57bccc8e8e0003de0ccd55afc477812c139"
+    },
+    {
+      "path": "motions/idle_01.mtn",
+      "bytes": 13619,
+      "sha256": "86a42dc5e0b8e6405ab9705f167335373a5cd8ccf518029ef1619f5787e6df64"
+    },
+    {
+      "path": "motions/idle_02.mtn",
+      "bytes": 16656,
+      "sha256": "d957990d9a0339fa9916cb4cd5f20489d66a8415a9f666029d6f6daf28660d65"
+    },
+    {
+      "path": "motions/pinchIn_00.mtn",
+      "bytes": 13165,
+      "sha256": "c1aa9f5cd4028fd4cd6e48a653b92027ceb34872dce8ff825b6068b019ff5ad3"
+    },
+    {
+      "path": "motions/pinchIn_01.mtn",
+      "bytes": 12505,
+      "sha256": "a6fe1851831ba1cb59305e7dac8bb2af0e0f1a9a8b44161498f85305b477f43e"
+    },
+    {
+      "path": "motions/pinchIn_02.mtn",
+      "bytes": 22642,
+      "sha256": "53b7c30da88751f0c71311fad7853fce928f376965e98d38c2a20b5dd1948d48"
+    },
+    {
+      "path": "motions/pinchOut_00.mtn",
+      "bytes": 26779,
+      "sha256": "eb7264802ae1771adf437955845ba19478982dfb872d074fb11332a1ae2ac0c9"
+    },
+    {
+      "path": "motions/pinchOut_01.mtn",
+      "bytes": 21950,
+      "sha256": "1b972145a79b88edee93785417cb175d10f59b9bc18e81584228aff469302add"
+    },
+    {
+      "path": "motions/pinchOut_02.mtn",
+      "bytes": 19118,
+      "sha256": "2959d24408fecc89e16bd63cd801deb800eedbd1168b7c877ddfd9fbe61bd8c1"
+    },
+    {
+      "path": "motions/shake_00.mtn",
+      "bytes": 18367,
+      "sha256": "48f880854138eb686acaa62c037904f9e98ce604002ae9d42f87f2b25e694521"
+    },
+    {
+      "path": "motions/shake_01.mtn",
+      "bytes": 14549,
+      "sha256": "d56ca10f82ec84201253f7fdbd4dadafec503aad0a0fa32c519918a4eea96333"
+    },
+    {
+      "path": "motions/shake_02.mtn",
+      "bytes": 15517,
+      "sha256": "c2dbde4233f8ac844741d4de898edcc7fe0e0af03b56a5ad3ad110dc70b8f177"
+    },
+    {
+      "path": "motions/tapBody_00.mtn",
+      "bytes": 11288,
+      "sha256": "d22ef1d7bf6846a73a1189ca390ccf3fc0ca5e7ae0406928b93dce06f50e3d2c"
+    },
+    {
+      "path": "motions/tapBody_01.mtn",
+      "bytes": 13643,
+      "sha256": "d2a245397b7e439d740ea207e95f7e82a35964dbcb1c129c93f47df63df65316"
+    },
+    {
+      "path": "motions/tapBody_02.mtn",
+      "bytes": 7652,
+      "sha256": "bcc843c49d0bfd65c5e06fc367c7f01f83096e3e5e748b55df6aa669674be42a"
+    },
+    {
+      "path": "shizuku.1024/texture_00.png",
+      "bytes": 557947,
+      "sha256": "cb52df3b6446e4a97050cbf0e9e37806465ea19c6088e61313710cb8d9b0e30b"
+    },
+    {
+      "path": "shizuku.1024/texture_01.png",
+      "bytes": 1007486,
+      "sha256": "77520e0ab5142684d26056f5e1db3c2818a6029fdae3ba80ef3edf2a26f01feb"
+    },
+    {
+      "path": "shizuku.1024/texture_02.png",
+      "bytes": 1208257,
+      "sha256": "bcb74693673aff40bb2cfd291b9af3354c8c527532f16e75c7610b101eec07ff"
+    },
+    {
+      "path": "shizuku.1024/texture_03.png",
+      "bytes": 512035,
+      "sha256": "cf5fec0e0313de969adbaa90aa34a727f554629c54ec35ca19a9cb7bc6db7c4d"
+    },
+    {
+      "path": "shizuku.1024/texture_04.png",
+      "bytes": 1009881,
+      "sha256": "1de262a22378c0e7b6ae40b72908cff47921b323d54cf33695ace219a28412d8"
+    },
+    {
+      "path": "shizuku.1024/texture_05.png",
+      "bytes": 543838,
+      "sha256": "5ff56ae4328935b8d27136d827ee6a4f7fd4ca80761ab845a1e5c61c5a3ffa39"
+    },
+    {
+      "path": "shizuku.moc",
+      "bytes": 691643,
+      "sha256": "56addfb6698bff6e2bc10eb0b2a54f72f6c955858a07574deaf6d4d3a6de8782"
+    },
+    {
+      "path": "shizuku.physics.json",
+      "bytes": 3002,
+      "sha256": "ad2ff633945d54adc32e9e563319fed0a77ae689f09a5ee187c3241920aee63a"
+    },
+    {
+      "path": "shizuku.pose.json",
+      "bytes": 277,
+      "sha256": "07b05afa0f990797553e7970f6d0b73653a04e7f5b7e274c27beb0ef906c2275"
+    },
+    {
+      "path": "sounds/flickHead_00.mp3",
+      "bytes": 49079,
+      "sha256": "bab92d2eca27f21ff0aeb77214190b5ea1e3b024af31c833ff5b0f4a3e3205ca"
+    },
+    {
+      "path": "sounds/flickHead_01.mp3",
+      "bytes": 38613,
+      "sha256": "e80a3c10c8769f44647eab7a2e3d7e4eb2963d1f92cc9afdf1607d5b41d99fd3"
+    },
+    {
+      "path": "sounds/flickHead_02.mp3",
+      "bytes": 42792,
+      "sha256": "5ae29ca332cd1b3c6c9fa1f933d6567e4e1afe72123efdc546b182ab8af1ff9e"
+    },
+    {
+      "path": "sounds/pinchIn_00.mp3",
+      "bytes": 57421,
+      "sha256": "2651a11d14bc6e88d83960e421ceea6ff1fbd69d304678681efe738f1367ef23"
+    },
+    {
+      "path": "sounds/pinchIn_01.mp3",
+      "bytes": 49062,
+      "sha256": "b811bb0d2058b2285c37fa57c4e0bb3c8052dddc24f09707c2c76e8476df6d52"
+    },
+    {
+      "path": "sounds/pinchIn_02.mp3",
+      "bytes": 81663,
+      "sha256": "8634a9adaea437c8503c6f9fb9fd51d068eddfac65528689e15cf6cfa3a1bc52"
+    },
+    {
+      "path": "sounds/pinchOut_00.mp3",
+      "bytes": 126384,
+      "sha256": "9a6fe62ba1c100b9be9c6c872ffcde62c0deedf01c522e7bd87618a8c23f7fe0"
+    },
+    {
+      "path": "sounds/pinchOut_01.mp3",
+      "bytes": 96291,
+      "sha256": "e27d77fc7c3ce1f30f2675e53f0a6eecc6fdfe39905d8a011da7387494a567dd"
+    },
+    {
+      "path": "sounds/pinchOut_02.mp3",
+      "bytes": 73721,
+      "sha256": "f869a1eb84fda7d36f952632f233e029848358ade648e2010580fbb964b04019"
+    },
+    {
+      "path": "sounds/shake_00.mp3",
+      "bytes": 61183,
+      "sha256": "90a6d9f4a08f7244fcc5f363dd7e2738fd90ff217258ad7591d0479a5d60ca87"
+    },
+    {
+      "path": "sounds/shake_01.mp3",
+      "bytes": 53241,
+      "sha256": "bbfdb95215b97d1d882181d15ddffed1241ea13a1c4e9e9d38b2a60cd803d995"
+    },
+    {
+      "path": "sounds/shake_02.mp3",
+      "bytes": 52823,
+      "sha256": "84a00b5c86f48774eb0e3b1a9acb552558a457e339ac395c17e73dc4fd9f6871"
+    },
+    {
+      "path": "sounds/tapBody_00.mp3",
+      "bytes": 51570,
+      "sha256": "4ca3cfe661df07aa94226f8e4e6797cd1ca78f38cb18605ddce7b7d91cbaa1f4"
+    },
+    {
+      "path": "sounds/tapBody_01.mp3",
+      "bytes": 60765,
+      "sha256": "0996fc3c6e003170e179bf2d15f748877a893ee1d9bfe936718525b9c5176be8"
+    },
+    {
+      "path": "sounds/tapBody_02.mp3",
+      "bytes": 36122,
+      "sha256": "64da31eabcd68d78ddebd580e8debcd1f9478e27e86e496bd2674bc7b254c69c"
+    }
+  ]
+}

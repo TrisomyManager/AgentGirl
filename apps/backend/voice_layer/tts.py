@@ -9,6 +9,7 @@ need raw int16 PCM bytes without writing to disk.
 
 import base64
 import time
+from contextlib import aclosing
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -18,7 +19,7 @@ import structlog
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from shared_contracts.models import EmotionTag, VoiceSynthesisRequest
-from shared_runtime.voice_runtime_config import get_runtime_voice_config
+from shared_runtime.voice_runtime_config import get_effective_voice_config as get_runtime_voice_config
 from voice_layer.audio_utils import get_audio_duration, save_temp_audio
 from voice_layer.resolver import UnknownProviderError, resolve_voice
 from voice_layer.voice_errors import VoiceConfigurationError
@@ -165,7 +166,11 @@ class TTSClient:
                 latency_ms=int((time.perf_counter() - t0) * 1000),
             )
             return result
-        if self.provider == "xiaomi_mimo":
+        if self.provider == "volcengine":
+            audio_data = b"".join([chunk async for chunk in self._synthesize_volcengine_stream(
+                request.text, voice_id, speed=speed,
+            )])
+        elif self.provider == "xiaomi_mimo":
             audio_data = await self._synthesize_xiaomi_mimo(request.text, voice_id, speed, params["style"])
         elif self.provider in ("openai", "siliconflow"):
             audio_data = await self._synthesize_openai(request.text, voice_id, speed, params["style"])
@@ -221,20 +226,37 @@ class TTSClient:
           if pydub/ffmpeg is unavailable.
         """
         self._require_tts_config()
-        if self.provider == "xiaomi_mimo":
-            async for chunk in self._synthesize_xiaomi_mimo_pcm_stream(text, sample_rate):
-                yield chunk
+        if self.provider == "volcengine":
+            voice_id = self.raw_voice_override or resolve_voice(
+                self.provider, self.default_voice_profile_id, strict=True,
+            )
+            source = self._synthesize_volcengine_stream(text, voice_id, fmt="pcm", sample_rate=sample_rate)
+        elif self.provider == "xiaomi_mimo":
+            source = self._synthesize_xiaomi_mimo_pcm_stream(text, sample_rate)
         elif self.provider in ("openai", "siliconflow"):
-            async for chunk in self._synthesize_openai_pcm_stream(text, sample_rate):
-                yield chunk
+            source = self._synthesize_openai_pcm_stream(text, sample_rate)
         elif self.provider == "dashscope":
-            async for chunk in self._synthesize_dashscope_pcm_stream(text, sample_rate):
-                yield chunk
+            source = self._synthesize_dashscope_pcm_stream(text, sample_rate)
         elif self.provider == "fish_audio":
-            async for chunk in self._synthesize_fish_audio_pcm_stream(text, sample_rate):
-                yield chunk
+            source = self._synthesize_fish_audio_pcm_stream(text, sample_rate)
         else:
             raise ValueError(f"Unsupported TTS provider for PCM stream: {self.provider}")
+        async with aclosing(source):
+            async for chunk in source:
+                yield chunk
+
+    async def _synthesize_volcengine_stream(
+        self, text: str, voice_id: str, *, fmt: str = "mp3", sample_rate: int = 24000, speed: float = 1.0,
+    ):
+        from voice_layer.providers.volcengine import synthesize_stream
+
+        source = synthesize_stream(
+            await self._get_client(), text, api_key=self.api_key, base_url=self.base_url,
+            resource_id=self.tts_model, speaker=voice_id, fmt=fmt, sample_rate=sample_rate, speed=speed,
+        )
+        async with aclosing(source):
+            async for chunk in source:
+                yield chunk
 
     async def _synthesize_openai_pcm_stream(self, text: str, sample_rate: int):
         logger = structlog.get_logger("voice_layer.tts.pcm_stream")

@@ -22,6 +22,10 @@ class DeviceCommandStore(ABC):
         """Merge patch into command; return updated dict or None if missing."""
 
     @abstractmethod
+    async def transition(self, command_id: str, expected: set[str], patch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Atomically apply only when the stored status is in expected."""
+
+    @abstractmethod
     async def list_for_user(self, user_id: str, *, limit: int = 50) -> List[Dict[str, Any]]:
         """Recent commands for a user (newest first)."""
 
@@ -32,6 +36,9 @@ class DeviceCommandStore(ABC):
     @abstractmethod
     async def find_next_delivered(self, device_id: str) -> Optional[Dict[str, Any]]:
         """Oldest delivered, non-expired command for device (claim_next)."""
+
+    async def delete_user(self, user_id: str) -> None:
+        raise NotImplementedError("Device command store does not support user erasure")
 
 
 class DeviceAuditStore(ABC):
@@ -50,3 +57,6 @@ class DeviceAuditStore(ABC):
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
         """Filter audit entries (newest first)."""
+
+    async def delete_user(self, user_id: str) -> None:
+        raise NotImplementedError("Device audit store does not support user erasure")

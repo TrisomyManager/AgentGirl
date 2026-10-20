@@ -6,8 +6,7 @@ Provides:
   - FastAPI dependency ``get_db_session()``
   - Lite-mode SQLite fallback
 
-Originally lived in ``shared/database/``; that path is now a deprecated
-shim re-exporting from this module.
+Originally lived in ``shared/database/``; the legacy package has been removed.
 
 Usage in modules::
 
@@ -23,9 +22,12 @@ Usage in modules::
 
 from __future__ import annotations
 
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from pathlib import Path
+from typing import Any
 
 import structlog
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -34,6 +36,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import declarative_base
 
 from shared_runtime.config import get_settings
+from shared_runtime.log_safety import connection_target
 
 logger = structlog.get_logger("shared_runtime.database")
 
@@ -44,8 +47,9 @@ settings = get_settings()
 # ---------------------------------------------------------------------------
 
 if settings.lite_mode:
-    _DATABASE_URL = "sqlite+aiosqlite:///./companion_lite.db"
-    _ENGINE_KWARGS: dict[str, Any] = {"echo": False}
+    _database_file = Path(__file__).resolve().parents[2] / "companion_lite.db"
+    _DATABASE_URL = settings.lite_database_url or f"sqlite+aiosqlite:///{_database_file.as_posix()}"
+    _ENGINE_KWARGS: dict[str, Any] = {"echo": False, "connect_args": {"timeout": 30}}
 else:
     _DATABASE_URL = settings.postgres_url.replace("postgresql://", "postgresql+asyncpg://")
     _ENGINE_KWARGS = {
@@ -57,9 +61,48 @@ else:
 
 engine = create_async_engine(_DATABASE_URL, **_ENGINE_KWARGS)
 
+if settings.lite_mode:
+
+    @event.listens_for(engine.sync_engine, "do_connect")
+    def _sqlite_connection_lifecycle(_dialect, _record, _args, kwargs):
+        from shared_runtime.database.sqlite_lifecycle import open_sqlite_connection
+
+        kwargs["async_creator_fn"] = open_sqlite_connection
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _configure_sqlite_connection(connection, _record):
+        cursor = connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+        finally:
+            cursor.close()
+
+
+class UserOwnedSession(AsyncSession):
+    """Detached work inherits the user generation and cannot restore erased rows."""
+
+    async def execute(self, *args, **kwargs):
+        from shared_runtime.user_lifecycle import assert_user_context
+
+        assert_user_context()
+        return await super().execute(*args, **kwargs)
+
+    async def flush(self, *args, **kwargs):
+        from shared_runtime.user_lifecycle import assert_user_context
+
+        assert_user_context()
+        return await super().flush(*args, **kwargs)
+
+    async def commit(self):
+        from shared_runtime.user_lifecycle import assert_user_context
+
+        assert_user_context()
+        return await super().commit()
+
+
 AsyncSessionLocal = async_sessionmaker(
     engine,
-    class_=AsyncSession,
+    class_=UserOwnedSession,
     expire_on_commit=False,
     autoflush=False,
 )
@@ -104,17 +147,18 @@ async def init_database_schema() -> None:
 
     async with engine.begin() as conn:
         if not settings.lite_mode:
-            try:
-                await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-            except Exception as exc:
-                logger.warning("pgvector_extension_failed", error=str(exc))
+            # A missing extension is a failed prerequisite. Swallowing the error
+            # leaves PostgreSQL's transaction aborted and hides the actual cause.
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
 
         await conn.run_sync(Base.metadata.create_all)
 
     async with engine.begin() as migration_conn:
         await _ensure_reminder_repeat_column(migration_conn)
 
-    logger.info("database_schema.initialized", lite_mode=settings.lite_mode, url=str(engine.url).replace("://", "://***@"))
+    logger.info(
+        "database_schema.initialized", lite_mode=settings.lite_mode, target=connection_target(str(engine.url))
+    )
 
 
 async def _ensure_reminder_repeat_column(connection: Any) -> None:
@@ -133,9 +177,7 @@ async def _ensure_reminder_repeat_column(connection: Any) -> None:
         has_col = await connection.run_sync(_has_column)
         if has_col:
             return
-        await connection.execute(
-            text("ALTER TABLE reminders ADD COLUMN repeat_interval_seconds INTEGER")
-        )
+        await connection.execute(text("ALTER TABLE reminders ADD COLUMN repeat_interval_seconds INTEGER"))
     except Exception as exc:
         logger.warning("reminders_repeat_column_migrate_failed", error=str(exc))
 
@@ -143,4 +185,8 @@ async def _ensure_reminder_repeat_column(connection: Any) -> None:
 async def close_database() -> None:
     """Dispose engine and close all connections."""
     await engine.dispose()
+    if settings.lite_mode:
+        from shared_runtime.database.sqlite_lifecycle import drain_sqlite_connections
+
+        await drain_sqlite_connections()
     logger.info("database_engine.disposed")

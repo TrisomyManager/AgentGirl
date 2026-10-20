@@ -20,6 +20,7 @@ import httpx
 import structlog
 
 from .config import get_settings
+from .image_input import IMAGE_FAILED, image_content
 
 logger = structlog.get_logger("shared_runtime.llm_client")
 
@@ -131,6 +132,20 @@ def get_runtime_llm_config() -> Dict[str, Any]:
     return dict(_runtime_llm_config)
 
 
+def get_effective_chat_config() -> dict[str, Any]:
+    """Resolve OpenAI-compatible connection settings consistently for internal consumers.
+
+    The protocol name describes the wire format; Ark uses this format too.
+    Resolving creates no HTTP client and performs no network request.
+    """
+    client = LLMClient()
+    return {
+        "api_key": client.openai_api_key,
+        "base_url": client.openai_base_url,
+        "model": client.default_model,
+    }
+
+
 def save_llm_config_to_disk() -> None:
     """Persist runtime LLM config to disk so it survives restarts."""
     try:
@@ -184,14 +199,30 @@ class LLMClient:
     ) -> None:
         settings = get_settings()
         rt = _runtime_llm_config  # runtime overrides win over env/settings
-
-        self.openai_api_key = openai_api_key or rt.get("openai_api_key") or settings.openai_api_key
+        runtime_provider = rt.get("provider")
+        env_key = settings.ark_api_key or settings.openai_api_key
+        if runtime_provider == "volcengine":
+            env_key = settings.ark_api_key
+        elif runtime_provider in {"openai", "openai_compatible"}:
+            env_key = settings.openai_api_key
+        elif runtime_provider == "anthropic":
+            env_key = None
+        default_base = settings.ark_base_url
+        if runtime_provider == "openai" or (
+            not runtime_provider and settings.openai_api_key and not settings.ark_api_key
+        ):
+            default_base = _OPENAI_DEFAULT_BASE
+        env_base = settings.openai_base_url
+        if runtime_provider == "volcengine" or (not runtime_provider and settings.ark_api_key):
+            env_base = settings.ark_base_url
+        self.openai_api_key = openai_api_key or rt.get("openai_api_key") or env_key
         self.openai_base_url = _normalize_openai_chat_base(
-            (openai_base_url or rt.get("openai_base_url") or settings.openai_base_url or _OPENAI_DEFAULT_BASE).rstrip(
+            (openai_base_url or rt.get("openai_base_url") or env_base or default_base).rstrip(
                 "/"
             )
         )
-        self.anthropic_api_key = anthropic_api_key or rt.get("anthropic_api_key") or settings.anthropic_api_key
+        anthropic_env_key = settings.anthropic_api_key if runtime_provider in {None, "", "anthropic"} else None
+        self.anthropic_api_key = anthropic_api_key or rt.get("anthropic_api_key") or anthropic_env_key
         self.anthropic_base_url = _normalize_anthropic_messages_base(
             (
                 anthropic_base_url
@@ -223,7 +254,7 @@ class LLMClient:
         if self.anthropic_api_key:
             return "anthropic"
         raise RuntimeError(
-            "No LLM API key configured. Set COMPANION_OPENAI_API_KEY or COMPANION_ANTHROPIC_API_KEY."
+            "未配置模型密钥。请填写 COMPANION_ARK_API_KEY，或在设置页填写火山方舟 API Key。"
         )
 
     def _rule_based_sentiment(self, user_message: str) -> str:
@@ -241,27 +272,29 @@ class LLMClient:
         model: Optional[str] = None,
         temperature: Optional[float] = 0.7,
         max_tokens: Optional[int] = 1024,
+        *,
+        image_urls: list[str] | None = None,
     ) -> Dict[str, Any]:
         """Generate a chat completion. Returns assistant_message, tokens_used, model."""
         provider = self._detect_provider()
         chosen_model = model or self.default_model
 
-        if provider == "openai":
-            return await self._generate_openai(
+        content = image_content(user_message, image_urls or [], provider)
+        generate = self._generate_openai if provider == "openai" else self._generate_anthropic
+        try:
+            return await generate(
                 system_prompt=system_prompt,
-                user_message=user_message,
+                user_message=content,
                 model=chosen_model,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
 
-        return await self._generate_anthropic(
-            system_prompt=system_prompt,
-            user_message=user_message,
-            model=chosen_model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        except Exception:
+            if image_urls:
+                # Some providers echo the request body in errors. Never expose image bytes.
+                raise RuntimeError(IMAGE_FAILED) from None
+            raise
 
     async def generate_stream(
         self,
@@ -270,15 +303,18 @@ class LLMClient:
         model: Optional[str] = None,
         temperature: Optional[float] = 0.7,
         max_tokens: Optional[int] = 1024,
+        *,
+        image_urls: list[str] | None = None,
     ) -> AsyncIterator[str]:
         """Stream a chat completion as incremental text chunks."""
         provider = self._detect_provider()
         chosen_model = model or self.default_model
+        content = image_content(user_message, image_urls or [], provider)
 
         if provider == "openai":
             iterator = self._generate_openai_stream(
                 system_prompt=system_prompt,
-                user_message=user_message,
+                user_message=content,
                 model=chosen_model,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -286,20 +322,27 @@ class LLMClient:
         else:
             iterator = self._generate_anthropic_stream(
                 system_prompt=system_prompt,
-                user_message=user_message,
+                user_message=content,
                 model=chosen_model,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
 
-        async for token in iterator:
-            if token:
-                yield token
+        try:
+            async for token in iterator:
+                if token:
+                    yield token
+        except Exception:
+            if image_urls:
+                raise RuntimeError(IMAGE_FAILED) from None
+            raise
+        finally:
+            await iterator.aclose()
 
     async def _generate_openai(
         self,
         system_prompt: str,
-        user_message: str,
+        user_message: str | list[dict[str, Any]],
         model: str,
         temperature: Optional[float],
         max_tokens: Optional[int],
@@ -316,6 +359,9 @@ class LLMClient:
             payload["temperature"] = temperature
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+
+        if "volces.com" in self.openai_base_url:
+            payload["thinking"] = {"type": "disabled"}
 
         headers = {
             "Authorization": f"Bearer {self.openai_api_key}",
@@ -346,7 +392,7 @@ class LLMClient:
     async def _generate_anthropic(
         self,
         system_prompt: str,
-        user_message: str,
+        user_message: str | list[dict[str, Any]],
         model: str,
         temperature: Optional[float],
         max_tokens: Optional[int],
@@ -391,7 +437,7 @@ class LLMClient:
     async def _generate_openai_stream(
         self,
         system_prompt: str,
-        user_message: str,
+        user_message: str | list[dict[str, Any]],
         model: str,
         temperature: Optional[float],
         max_tokens: Optional[int],
@@ -409,6 +455,9 @@ class LLMClient:
             payload["temperature"] = temperature
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+
+        if "volces.com" in self.openai_base_url:
+            payload["thinking"] = {"type": "disabled"}
 
         headers = {
             "Authorization": f"Bearer {self.openai_api_key}",
@@ -456,7 +505,7 @@ class LLMClient:
     async def _generate_anthropic_stream(
         self,
         system_prompt: str,
-        user_message: str,
+        user_message: str | list[dict[str, Any]],
         model: str,
         temperature: Optional[float],
         max_tokens: Optional[int],

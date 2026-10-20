@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "enabled": false,
+  "qq_callback_port": 8007,
+  "accounts": [
+    { "id": "telegram_test", "platform": "telegram", "enabled": false, "receive": false, "reply": false },
+    { "id": "discord_test", "platform": "discord", "enabled": false, "receive": false, "reply": false, "message_content": false },
+    { "id": "qq_test", "platform": "qq", "enabled": false, "receive": false, "reply": false }
+  ],
+  "bindings": [
+    {
+      "id": "telegram_private_test_v1",
+      "account_id": "telegram_test",
+      "user_id": "YOUR_INTERNAL_USER_ID",
+      "actor_id": "YOUR_TELEGRAM_ACTOR_ID",
+      "conversation_id": "YOUR_TELEGRAM_CHAT_ID",
+      "audience": "private",
+      "enabled": false
+    }
+  ]
+}

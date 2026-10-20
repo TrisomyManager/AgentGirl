@@ -8,7 +8,7 @@ closeness to the user.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import List, Optional
 
 import structlog
@@ -96,7 +96,7 @@ class ToneGenerator:
             lines.append("她对你的感情越来越深，有时候会不自觉地想起你。")
 
         lines.append(
-            f"今日互动次数：{relationship.total_interactions}。"
+            f"累计互动次数：{relationship.total_interactions}。"
             f"{name} 期待下一次和你聊天。"
         )
         return "\n".join(lines)
@@ -229,4 +229,5 @@ class ToneGenerator:
         return mapping.get(tag_value, tag_value)
 
     def _days_since(self, dt: datetime) -> int:
-        return max(1, (datetime.utcnow() - dt).days)
+        observed = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+        return max(1, (datetime.now(UTC) - observed).days)

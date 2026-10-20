@@ -7,6 +7,7 @@ import contextlib
 import os
 import re
 from typing import Annotated, Any, AsyncIterator, Dict, List, Optional, TypedDict
+from urllib.parse import quote
 
 import httpx
 import structlog
@@ -24,7 +25,9 @@ from core_orchestrator.http_client import (
 )
 from core_orchestrator.intent_router import Intent, get_intent_router
 from safety_guard import default_guard, safe_fallback_reply
+from safety_guard.streaming import checked_text_stream
 from shared_runtime.config import get_settings
+from shared_runtime.image_input import IMAGE_PROMPT, IMAGE_UNAVAILABLE, ImageInputError, normalize_images
 from shared_contracts.models import (
     ActionSequence,
     EmotionState,
@@ -78,6 +81,9 @@ _DEBUG_SYSTEM_PROMPT_SNAPSHOT: Dict[str, Any] = {}
 def record_debug_system_prompt(session_id: str, user_id: str, system_prompt: str) -> None:
     """Store the most recent full system prompt for engineering inspection."""
     from datetime import datetime, timezone
+    from shared_runtime.user_lifecycle import assert_user_context
+
+    assert_user_context()
 
     global _DEBUG_SYSTEM_PROMPT_SNAPSHOT
     _DEBUG_SYSTEM_PROMPT_SNAPSHOT = {
@@ -87,6 +93,20 @@ def record_debug_system_prompt(session_id: str, user_id: str, system_prompt: str
         "prompt_length": len(system_prompt),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def clear_debug_user_data(user_id):
+    if _DEBUG_SYSTEM_PROMPT_SNAPSHOT.get("user_id") == user_id:
+        _DEBUG_SYSTEM_PROMPT_SNAPSHOT.clear()
+
+
+@contextlib.asynccontextmanager
+async def _checked_tokens(source, state):
+    def mark_blocked():
+        state["safety_output_blocked"] = True
+
+    async with contextlib.aclosing(checked_text_stream(source, guard=default_guard, on_block=mark_blocked)) as approved:
+        yield approved
 
 
 def get_debug_system_prompt_snapshot() -> Dict[str, Any]:
@@ -106,6 +126,8 @@ _PREFERENCE_PATTERN = re.compile(r"我(?:很|最)?喜欢([^，。！？!?]{1,30}
 
 
 class OrchestratorState(TypedDict):
+    safety_input_blocked: Optional[bool]
+    safety_output_blocked: Optional[bool]
     """LangGraph state shared across all nodes."""
 
     messages: Annotated[List[BaseMessage], add_messages]
@@ -118,15 +140,24 @@ class OrchestratorState(TypedDict):
     persona_profile: Optional[PersonaProfile]
     emotion_state: Optional[EmotionState]
     relationship_metrics: Optional[RelationshipMetrics]
+    reaction_signal: Optional[Any]
+    reply_suppressed: Optional[bool]
+    talk_value: Optional[float]
+    reply_reason: Optional[str]
     assistant_message: Optional[str]
     voice_url: Optional[str]
     voice_duration_ms: Optional[int]
     voice_error: Optional[str]
+    voice_streamed: Optional[bool]
+    voice_mode: Optional[str]
+    voice_segments: Optional[List[Dict[str, Any]]]
     action_sequence: Optional[ActionSequence]
     device_command_sent: Optional[bool]
     error: Optional[str]
     skip_voice: Optional[bool]
     skip_action: Optional[bool]
+    specialist: Optional[str]
+    task: Optional[Dict[str, Any]]
 
 
 def build_initial_state(turn_context: TurnContext) -> OrchestratorState:
@@ -427,6 +458,21 @@ async def _try_action_executor(tc: TurnContext, intent: str) -> Optional[Dict[st
 
     registry = get_registry()
     name = registry.find_by_keyword(tc.user_message)
+    if intent == Intent.MEMORY_QUERY.value:
+        name = "query_memory"
+        if any(word in tc.user_message for word in ("刚刚", "刚才", "上一句", "上句话", "刚聊", "刚说")):
+            # Recent dialogue is already present in the host prompt. The memory
+            # tool's compact summary omits raw recent turns; returning that summary
+            # here would hide a just-completed voice turn before long-term extraction.
+            return None
+    from shared_runtime.reminder_language import cancellation_target
+
+    if cancellation_target(tc.user_message) is not None:
+        name = "cancel_reminder"
+    from core_orchestrator.routing_rules import can_execute_device_request, is_declined_operation
+
+    if is_declined_operation(tc.user_message) or (name in _DEVICE_ACTION_NAMES and not can_execute_device_request(tc.user_message)):
+        return None
     if not name:
         return None
 
@@ -435,6 +481,8 @@ async def _try_action_executor(tc: TurnContext, intent: str) -> Optional[Dict[st
         "session_id": tc.session_id,
         "raw_text": tc.user_message,
     }
+    if name == "query_memory":
+        params["query"] = tc.user_message
     result = await registry.dispatch(name, params)
     return {
         "name": name,
@@ -456,6 +504,10 @@ async def _try_device_actions_by_keyword(tc: TurnContext) -> Optional[Dict[str, 
 
     registry = get_registry()
     name = registry.find_by_keyword(tc.user_message)
+    from core_orchestrator.routing_rules import can_execute_device_request
+
+    if not can_execute_device_request(tc.user_message):
+        return None
     if name not in _DEVICE_ACTION_NAMES:
         return None
 
@@ -472,6 +524,25 @@ async def _try_device_actions_by_keyword(tc: TurnContext) -> Optional[Dict[str, 
         "data": result.data,
         "proactive_push": result.proactive_push,
     }
+
+
+def _specialists():
+    from action_executor.task_agent import task_agent
+    from core_orchestrator.specialists import ChatAgent, DeviceAgent, MemoryAgent, SubAgentOrchestrator
+
+    return SubAgentOrchestrator(
+        chat=ChatAgent(_generate_response_monolithic, _stream_response_monolithic),
+        memory=MemoryAgent(_try_action_executor), device=DeviceAgent(_try_device_actions_by_keyword),
+        task_tool=_try_action_executor, tasks=task_agent,
+    )
+
+
+def _apply_delegation(state, role, result):
+    state["specialist"] = role
+    if result and result.get("data", {}).get("task"):
+        state["task"] = result["data"]["task"]
+        if any(step["tool_name"] in _DEVICE_ACTION_NAMES for step in state["task"]["steps"]):
+            state["device_command_sent"] = True
 
 
 async def _record_tool_interaction_to_memory(
@@ -624,31 +695,43 @@ async def _record_tool_interaction_to_memory(
             )
 
 
-async def _generate_response_monolithic(tc: TurnContext, system_prompt: str, persona_name: str = DEFAULT_PERSONA_NAME) -> str:
+async def _generate_response_monolithic(tc: TurnContext, system_prompt: str, persona_name: str = DEFAULT_PERSONA_NAME,
+                                       emotion: Optional[EmotionState] = None, response_intent: str = "chat") -> str:
     """Call LLM directly (monolithic mode) without HTTP roundtrip to persona_engine."""
     from shared_runtime.llm_client import LLMClient
+    from shared_runtime.response_behavior import response_behavior
 
     llm = LLMClient()
+    behavior = response_behavior(emotion, user_message=tc.user_message, intent=response_intent)
+    system_prompt += "\n\n【本轮回应方式】" + behavior.instruction
+    if tc.image_urls:
+        system_prompt += IMAGE_PROMPT
     if llm.has_configured_provider():
         try:
             result = await llm.generate(
                 system_prompt=system_prompt,
                 user_message=tc.user_message,
-                temperature=0.7,
-                max_tokens=1024,
+                temperature=behavior.temperature,
+                max_tokens=behavior.max_tokens,
+                **({"image_urls": tc.image_urls} if tc.image_urls else {}),
             )
             return result["assistant_message"]
         except Exception as exc:
-            logger.warning("monolithic_llm_failed", error=str(exc))
-            return f"⚠️ LLM 调用失败：{exc}\n\n{_monolithic_llm_error_hint(exc)}"
+            logger.warning("monolithic_llm_failed", reason=type(exc).__name__)
+            return f"模型服务暂时不可用。{_monolithic_llm_error_hint(exc)}"
+        finally:
+            await llm.close()
 
-    return _rule_based_reply(tc.user_message, persona_name)
+    await llm.close()
+    return IMAGE_UNAVAILABLE if tc.has_image else _rule_based_reply(tc.user_message, persona_name)
 
 
 async def _stream_response_monolithic(
     tc: TurnContext,
     system_prompt: str,
     persona_name: str = DEFAULT_PERSONA_NAME,
+    emotion: Optional[EmotionState] = None,
+    response_intent: str = "chat",
 ) -> AsyncIterator[str]:
     """Streaming variant of ``_generate_response_monolithic``.
 
@@ -658,24 +741,33 @@ async def _stream_response_monolithic(
     user-facing error message chunk and stops.
     """
     from shared_runtime.llm_client import LLMClient, chunk_text_stream
+    from shared_runtime.response_behavior import response_behavior
 
     llm = LLMClient()
+    behavior = response_behavior(emotion, user_message=tc.user_message, intent=response_intent)
+    system_prompt += "\n\n【本轮回应方式】" + behavior.instruction
+    if tc.image_urls:
+        system_prompt += IMAGE_PROMPT
     if llm.has_configured_provider():
         try:
             async for token in llm.generate_stream(
                 system_prompt=system_prompt,
                 user_message=tc.user_message,
-                temperature=0.7,
-                max_tokens=1024,
+                temperature=behavior.temperature,
+                max_tokens=behavior.max_tokens,
+                **({"image_urls": tc.image_urls} if tc.image_urls else {}),
             ):
                 yield token
             return
         except Exception as exc:
-            logger.warning("monolithic_llm_stream_failed", error=str(exc))
-            yield f"⚠️ LLM 调用失败：{exc}\n\n{_monolithic_llm_error_hint(exc)}"
+            logger.warning("monolithic_llm_stream_failed", reason=type(exc).__name__)
+            yield f"模型服务暂时不可用。{_monolithic_llm_error_hint(exc)}"
             return
+        finally:
+            await llm.close()
 
-    fallback_text = _rule_based_reply(tc.user_message, persona_name)
+    await llm.close()
+    fallback_text = IMAGE_UNAVAILABLE if tc.has_image else _rule_based_reply(tc.user_message, persona_name)
     async for chunk in chunk_text_stream(fallback_text):
         yield chunk
 
@@ -727,197 +819,74 @@ async def build_prompt_preview(
     return system_prompt
 
 
-_NEGATIVE_TOKENS = (
-    "难过",
-    "伤心",
-    "烦",
-    "好累",
-    "生气",
-    "焦虑",
-    "害怕",
-    "崩溃",
-    "讨厌",
-    "失眠",
-    "孤独",
-    "压力",
-    "郁闷",
-    "委屈",
-    "想哭",
-    "受不了",
-    "没意思",
-    "好烦",
-    "烦死了",
-    "低落",
-    "沮丧",
-    "失望",
-)
-_USER_DISTRESS = ("好累", "想哭", "受不了", "绝望", "撑不住", "好难", "扛不住", "心里堵")
-_POSITIVE_TOKENS = (
-    "开心",
-    "高兴",
-    "喜欢",
-    "爱",
-    "谢谢",
-    "太好了",
-    "不错",
-    "棒",
-    "期待",
-    "哈哈",
-    "幸福",
-    "耶",
-    "超爱",
-    "舒服",
-    "满足",
-    "惊喜",
-    "感动",
-)
-_USER_SURPRISED = ("居然", "真的假的", "天哪", "没想到", "这么神奇", "哇塞")
-_USER_ANGRY = ("气死", "气炸了", "讨厌", "混蛋", "烦死了", "恨", "凭什么")
-
-_ASSISTANT_WARM = ("抱抱", "陪着你", "一直在", "心疼", "摸摸头", "乖", "有我在", "不孤单")
-_ASSISTANT_HAPPY = ("哈哈", "太好啦", "真开心", "替你高兴", "棒极了", "真棒", "庆祝", "耶")
-_ASSISTANT_CONCERN = ("别担心", "没事的", "会好的", "慢慢来", "我在听", "不怪你", "别太累")
-_ASSISTANT_SURPRISED = ("真的吗", "居然", "没想到", "哇", "这么厉害", "原来如此")
-_ASSISTANT_APOLOGY = ("对不起", "抱歉", "是我不好", "让你久等")
-
-
-def _emotion_from_user_message(msg: str) -> Optional[EmotionState]:
-    """How the companion should feel when empathizing with the user's text."""
-    if not msg or not msg.strip():
-        return None
-    low = msg.lower()
-    if any(tok in msg for tok in _USER_DISTRESS):
-        return EmotionState(
-            primary=EmotionTag.CONCERNED,
-            intensity=0.68,
-            valence=-0.12,
-            arousal=0.48,
-            trigger="user_distress",
-        )
-    if any(tok in msg for tok in _USER_ANGRY):
-        return EmotionState(
-            primary=EmotionTag.CONCERNED,
-            intensity=0.62,
-            valence=-0.18,
-            arousal=0.52,
-            trigger="user_angry",
-        )
-    if any(tok in msg for tok in _NEGATIVE_TOKENS):
-        return EmotionState(
-            primary=EmotionTag.SAD,
-            intensity=0.58,
-            valence=-0.38,
-            arousal=0.42,
-            trigger="user_negative",
-        )
-    if any(tok in msg for tok in _POSITIVE_TOKENS):
-        return EmotionState(
-            primary=EmotionTag.HAPPY,
-            intensity=0.72,
-            valence=0.58,
-            arousal=0.52,
-            trigger="user_positive",
-        )
-    if any(tok in msg for tok in _USER_SURPRISED):
-        return EmotionState(
-            primary=EmotionTag.SURPRISED,
-            intensity=0.55,
-            valence=0.18,
-            arousal=0.62,
-            trigger="user_surprise",
-        )
-    if any(w in low for w in ("sad", "depressed", "anxious", "tired of", "hate ", "angry")):
-        return EmotionState(
-            primary=EmotionTag.CONCERNED,
-            intensity=0.6,
-            valence=-0.22,
-            arousal=0.48,
-            trigger="user_en_negative",
-        )
-    if any(w in low for w in ("happy", "love you", "great", "thanks", "excited")):
-        return EmotionState(
-            primary=EmotionTag.HAPPY,
-            intensity=0.65,
-            valence=0.55,
-            arousal=0.5,
-            trigger="user_en_positive",
-        )
-    return None
-
-
-def _emotion_from_assistant_reply(reply: str) -> Optional[EmotionState]:
-    """Infer companion mood from her own reply (warmth / surprise / concern)."""
-    if not reply or len(reply.strip()) < 2:
-        return None
-    if any(tok in reply for tok in _ASSISTANT_APOLOGY):
-        return EmotionState(
-            primary=EmotionTag.SAD,
-            intensity=0.48,
-            valence=-0.12,
-            arousal=0.36,
-            trigger="reply_apology",
-        )
-    if any(tok in reply for tok in _ASSISTANT_SURPRISED):
-        return EmotionState(
-            primary=EmotionTag.SURPRISED,
-            intensity=0.52,
-            valence=0.12,
-            arousal=0.58,
-            trigger="reply_surprise",
-        )
-    if any(tok in reply for tok in _ASSISTANT_WARM):
-        return EmotionState(
-            primary=EmotionTag.AFFECTIONATE,
-            intensity=0.62,
-            valence=0.48,
-            arousal=0.42,
-            trigger="reply_warm",
-        )
-    if any(tok in reply for tok in _ASSISTANT_CONCERN):
-        return EmotionState(
-            primary=EmotionTag.CONCERNED,
-            intensity=0.58,
-            valence=0.05,
-            arousal=0.4,
-            trigger="reply_concern",
-        )
-    if any(tok in reply for tok in _ASSISTANT_HAPPY):
-        return EmotionState(
-            primary=EmotionTag.HAPPY,
-            intensity=0.64,
-            valence=0.52,
-            arousal=0.54,
-            trigger="reply_happy",
-        )
-    return None
-
-
 def _derive_emotion(
     user_message: str,
     assistant_message: str,
     current: Optional[EmotionState],
 ) -> EmotionState:
-    """Update companion emotion from user empathy, then from assistant reply tone, then baseline.
+    """Compatibility fallback; assistant wording never labels its own emotion."""
+    if current and (current.trigger or "").startswith("reaction:"):
+        return current
+    from persona_engine.emotion_engine import EmotionEngine
+    from persona_engine.reaction import rule_reaction
+    from persona_engine.relationship_tracker import RelationshipTracker
+    from persona_engine.reaction_service import ReactionService
 
-    Order: user sentiment wins for empathy; otherwise use cues from the model's reply so the
-    UI moves off a permanent ``calm`` when the character uses warm or lively language.
-    """
-    user_hit = _emotion_from_user_message(user_message)
-    if user_hit is not None:
-        return user_hit
-    asst_hit = _emotion_from_assistant_reply(assistant_message)
-    if asst_hit is not None:
-        return asst_hit
-    um = user_message or ""
-    if "？" in um or "?" in um:
-        return EmotionState(
-            primary=EmotionTag.CALM,
-            intensity=0.52,
-            valence=0.28,
-            arousal=0.46,
-            trigger="user_question",
-        )
-    return current or EmotionState(primary=EmotionTag.CALM, intensity=0.4, valence=0.3, arousal=0.3)
+    service = ReactionService(EmotionEngine(), RelationshipTracker())
+    return service.predict(current, RelationshipMetrics(user_id="preview"), rule_reaction(user_message))
+
+
+async def prepare_reaction_state(state):
+    """Classify before generation, preview without persisting an unfinished turn."""
+    if state.get("reaction_signal") is not None or state.get("assistant_message") or state.get("error"):
+        return state
+    from persona_engine.runtime import get_reaction_service
+
+    tc = state["turn_context"]
+    service = get_reaction_service()
+    reaction = await service.classifier.classify(tc.user_message)
+    state["reaction_signal"] = reaction
+    persona = state.get("persona_profile")
+    state["emotion_state"] = service.predict(
+        state.get("emotion_state"), state.get("relationship_metrics") or RelationshipMetrics(user_id=tc.user.user_id),
+        reaction, baseline=persona.emotional_baseline if persona else None,
+    )
+    return state
+
+
+async def prepare_reply_decision(state):
+    from persona_engine.conversation_preferences import ConversationPreferences, conversation_preferences_store
+    from persona_engine.reply_policy import decide_reply
+
+    tc = state["turn_context"]
+    if state.get("assistant_message") or state.get("error") or state.get("reply_reason"):
+        return state
+    try:
+        if _is_monolithic():
+            preferences = await conversation_preferences_store.get(tc.user.user_id)
+        else:
+            response = await persona_client.get(f"/persona/conversation_preferences/{quote(tc.user.user_id, safe='')}")
+            preferences = ConversationPreferences(**response.json())
+    except Exception as exc:
+        logger.warning("conversation.preferences_unavailable", reason=type(exc).__name__)
+        preferences = ConversationPreferences()
+    memory = state.get("memory_result")
+    working = memory.working_memory if memory else None
+    reaction = state.get("reaction_signal")
+    decision = decide_reply(
+        preferences, user_id=tc.user.user_id, turn_id=tc.turn_id, user_message=tc.user_message,
+        intent=state.get("intent") or "chat", reaction_intent=reaction.intent if reaction else "chat",
+        has_voice=tc.has_voice, request_voice_reply=tc.request_voice_reply, has_image=tc.has_image,
+        recent_turns=working.recent_turns if working else (),
+    )
+    state["reply_suppressed"] = not decision.should_reply
+    state["talk_value"] = decision.talk_value
+    state["reply_reason"] = decision.reason
+    if not decision.should_reply:
+        state["assistant_message"] = ""
+        state["skip_voice"] = True
+        state["skip_action"] = True
+    return state
 
 
 async def node_receive(state: OrchestratorState) -> OrchestratorState:
@@ -935,6 +904,19 @@ async def node_receive(state: OrchestratorState) -> OrchestratorState:
         request_voice_reply=tc.request_voice_reply,
     )
 
+    if tc.has_image or tc.image_urls:
+        try:
+            if not tc.image_urls:
+                raise ImageInputError("未收到图片，请重新选择图片。")
+            tc.image_urls = await asyncio.to_thread(normalize_images, tc.image_urls)
+            tc.has_image = True
+            if not tc.user_message.strip():
+                tc.user_message = "请看看这些图片。"
+        except ImageInputError as exc:
+            state["error"] = str(exc)
+            state["skip_voice"] = state["skip_action"] = True
+            return state
+
     if tc.has_voice and tc.user_message.strip() == "":
         try:
             resp = await voice_client.post(
@@ -951,16 +933,17 @@ async def node_receive(state: OrchestratorState) -> OrchestratorState:
                 SystemMessage(content=build_base_system_prompt()),
                 HumanMessage(content=tc.user_message),
             ]
-            log.info("voice_transcribed", text=tc.user_message, confidence=transcription.confidence)
+            log.info("voice_transcribed", text_len=len(tc.user_message), confidence=transcription.confidence)
         except Exception as exc:
-            log.error("voice_transcription_failed", error=str(exc))
-            state["error"] = f"Voice transcription failed: {exc}"
+            log.warning("voice_transcription_failed", reason=type(exc).__name__)
+            state["error"] = "语音识别暂时不可用，请稍后重试。"
 
     # Safety: input pre-check (BLOCK 时直接短路, 绕过 LLM)
     if not state.get("error") and tc.user_message:
         verdict = default_guard.check_input(tc.user_message)
         if verdict.blocked:
-            fallback = safe_fallback_reply(verdict.reason)
+            state["safety_input_blocked"] = True
+            fallback = safe_fallback_reply(verdict)
             state["assistant_message"] = fallback
             state["messages"] = state["messages"] + [AIMessage(content=fallback)]
             state["skip_voice"] = False
@@ -985,6 +968,11 @@ async def node_receive(state: OrchestratorState) -> OrchestratorState:
 async def node_classify_intent(state: OrchestratorState) -> OrchestratorState:
     tc = state["turn_context"]
     if tc is None or state.get("error") or state.get("assistant_message"):
+        return state
+
+    if tc.has_image:
+        state.update(intent=Intent.CHAT.value, intent_confidence=1.0,
+                     intent_reasoning="image discussion does not execute tools", intent_entities={})
         return state
 
     log = logger.bind(turn_id=tc.turn_id)
@@ -1081,6 +1069,10 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
     if tc is None or state.get("error") or state.get("assistant_message"):
         return state
 
+    state = await prepare_reaction_state(state)
+    state = await prepare_reply_decision(state)
+    if state.get("reply_suppressed"):
+        return state
     log = logger.bind(turn_id=tc.turn_id)
     intent = state.get("intent") or Intent.CHAT.value
     settings = get_settings()
@@ -1107,11 +1099,9 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
         if not isinstance(msg, SystemMessage):
             messages.append(msg)
 
-    action_handled: Optional[Dict[str, Any]] = None
-    if intent in (Intent.TOOL_USE.value, Intent.DEVICE_COMMAND.value, Intent.MEMORY_QUERY.value):
-        action_handled = await _try_action_executor(tc, intent)
-    if action_handled is None:
-        action_handled = await _try_device_actions_by_keyword(tc)
+    specialists = _specialists()
+    role, action_handled = await specialists.delegate(tc, intent)
+    _apply_delegation(state, role, action_handled)
 
     is_device_action = bool(
         action_handled and action_handled.get("name") in _DEVICE_ACTION_NAMES
@@ -1135,8 +1125,8 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
         )
         return state
 
-    if intent == Intent.TOOL_USE.value and action_handled is not None:
-        if action_handled.get("ok"):
+    if action_handled is not None:
+        if action_handled.get("ok") or action_handled.get("deterministic"):
             assistant_msg = action_handled.get("message") or "好的。"
             state["assistant_message"] = assistant_msg
             state["messages"] = messages + [AIMessage(content=assistant_msg)]
@@ -1160,7 +1150,10 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
     # Monolithic mode: call LLM/fallback directly, skip HTTP to persona_engine
     if _is_monolithic():
         persona_name = (state.get("persona_profile") or _default_persona()).name
-        assistant_msg = await _generate_response_monolithic(tc, system_prompt, persona_name)
+        assistant_msg = await specialists.chat.generate(
+            tc, system_prompt, persona_name, emotion=emotion,
+            response_intent=state["reaction_signal"].intent if state.get("reaction_signal") else intent,
+        )
         state["assistant_message"] = assistant_msg
         state["messages"] = messages + [AIMessage(content=assistant_msg)]
         state["emotion_state"] = _derive_emotion(
@@ -1177,9 +1170,12 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
                 "user_id": tc.user.user_id,
                 "session_id": tc.session_id,
                 "user_message": tc.user_message,
+                "image_urls": tc.image_urls,
                 "system_prompt": system_prompt,
                 "emotion": emotion.model_dump(mode="json") if emotion else None,
                 "relationship": relationship.model_dump(mode="json") if relationship else None,
+                "turn_id": tc.turn_id,
+                "reaction": state["reaction_signal"].model_dump(mode="json") if state.get("reaction_signal") else None,
             },
         )
         data = resp.json()
@@ -1190,7 +1186,7 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
             emotion_from_persona_api = True
     except Exception as exc:
         log.warning("persona_generate_failed", error=str(exc))
-        assistant_msg = "我在呢，你继续说，我会认真听。"
+        assistant_msg = IMAGE_UNAVAILABLE if tc.has_image else "我在呢，你继续说，我会认真听。"
 
     state["assistant_message"] = assistant_msg
     state["messages"] = messages + [AIMessage(content=assistant_msg)]
@@ -1203,6 +1199,8 @@ async def node_generate_response(state: OrchestratorState) -> OrchestratorState:
 
 
 async def node_synthesize_voice(state: OrchestratorState) -> OrchestratorState:
+    if state.get("voice_streamed"):
+        return state
     tc = state["turn_context"]
     if tc is None or state.get("error"):
         return state
@@ -1348,7 +1346,7 @@ async def node_generate_action(state: OrchestratorState) -> OrchestratorState:
     return state
 
 
-async def node_send_response(state: OrchestratorState) -> OrchestratorState:
+async def node_check_output(state: OrchestratorState) -> OrchestratorState:
     tc = state["turn_context"]
     if tc is None or state.get("error"):
         return state
@@ -1358,16 +1356,26 @@ async def node_send_response(state: OrchestratorState) -> OrchestratorState:
     if assistant_msg:
         verdict = default_guard.check_output(assistant_msg)
         if verdict.blocked:
+            state["safety_output_blocked"] = True
             log = logger.bind(turn_id=tc.turn_id)
             log.warning(
                 "output_blocked_by_safety_guard",
                 matched=verdict.matched_terms,
                 reason=verdict.reason,
             )
-            fallback = safe_fallback_reply(verdict.reason)
+            fallback = safe_fallback_reply(verdict)
             state["assistant_message"] = fallback
             new_msgs = [m for m in state["messages"] if not isinstance(m, AIMessage)]
             state["messages"] = new_msgs + [AIMessage(content=fallback)]
+
+    return state
+
+
+async def node_send_response(state: OrchestratorState) -> OrchestratorState:
+    state = await node_check_output(state)
+    tc = state["turn_context"]
+    if tc is None or state.get("error"):
+        return state
 
     # In monolithic mode the frontend reads the response directly from the
     # orchestrator HTTP response — no gateway push needed.
@@ -1389,8 +1397,8 @@ async def node_send_response(state: OrchestratorState) -> OrchestratorState:
         )
         log.info("response_sent", message_id=resp.json().get("message_id"))
     except Exception as exc:
-        log.error("response_send_failed", error=str(exc))
-        state["error"] = f"Failed to send response: {exc}"
+        log.warning("response_send_failed", reason=type(exc).__name__)
+        state["error"] = "回复投递暂时失败，请稍后重试。"
 
     return state
 
@@ -1424,6 +1432,10 @@ async def sync_completed_turn_to_memory(
         from memory_system.working import get_working_memory
 
         wm = get_working_memory()
+        from persona_engine.reaction import rule_reaction
+
+        reaction = state.get("reaction_signal") or rule_reaction(tc.user_message)
+        state["reaction_signal"] = reaction
         await wm.observe_turn(
             session_id=tc.session_id,
             turn_id=tc.turn_id,
@@ -1431,60 +1443,46 @@ async def sync_completed_turn_to_memory(
             assistant_message=assistant_msg,
             emotion=emotion.primary.value if emotion else None,
             intent=state.get("intent"),
+            user_id=tc.user.user_id,
+            metadata={"persona_observation_version": 1, "reaction": reaction.model_dump(mode="json"),
+                      "reply_suppressed": bool(state.get("reply_suppressed")), "has_image": tc.has_image},
         )
     except Exception as exc:
         log.warning("working_memory.observe_failed", error=str(exc))
 
     # --- Personality state persistence (emotion + relationship) ---------
     # Write current emotion back so the next turn starts from where we left off
-    if _is_monolithic():
+    if _is_monolithic() or state.get("reply_suppressed"):
         try:
-            from persona_engine.runtime import get_emotion_engine
+            from action_executor.proactive_preferences import care_preferences_store
 
-            engine = get_emotion_engine()
-            # Determine sentiment for relationship tracking
-            emotion_valence = emotion.valence if emotion else 0
-            if emotion_valence > 0.2:
-                sentiment = "positive"
-            elif emotion_valence < -0.15:
-                sentiment = "negative"
+            await care_preferences_store.touch(tc.user.user_id, tc.session_id)
+        except Exception as exc:
+            log.warning("care_activity_write_failed", reason=type(exc).__name__)
+        try:
+            from persona_engine.runtime import get_reaction_service
+
+            persona = state.get("persona_profile")
+            if _is_monolithic():
+                committed_emotion, committed_relationship = await get_reaction_service().commit(
+                    tc.user.user_id, tc.turn_id, tc.user_message, state.get("reaction_signal"),
+                    baseline=persona.emotional_baseline if persona else None,
+                )
             else:
-                sentiment = "neutral"
-
-            # Detect disclosure / shared experience from message content
-            has_disclosure = bool(_NAME_PATTERN.search(tc.user_message)) or any(
-                tok in tc.user_message for tok in ("其实", "说实话", "秘密", "只告诉你", "我有个")
-            )
-            shared_experience = any(
-                tok in tc.user_message for tok in ("一起", "我们也", "我们都", "还记得那次")
-            )
-
-            # Persist emotion
-            await engine.transition_from_user_message(
-                tc.user.user_id,
-                sentiment=sentiment,
-                relationship=relationship or RelationshipMetrics(user_id=tc.user.user_id),
-                message_content=tc.user_message,
-            )
-            log.info("emotion_state_persisted", sentiment=sentiment)
-
-            # Persist relationship
-            from persona_engine.runtime import get_relationship_tracker
-
-            tracker = get_relationship_tracker()
-            await tracker.record_interaction(
-                tc.user.user_id,
-                sentiment=sentiment,
-                has_disclosure=has_disclosure,
-                is_routine=False,
-                shared_experience=shared_experience,
-            )
-            log.info("relationship_persisted", sentiment=sentiment)
+                observed = await persona_client.post("/persona/observe_turn", json_payload={
+                    "user_id": tc.user.user_id, "turn_id": tc.turn_id, "user_message": tc.user_message,
+                    "reaction": state["reaction_signal"].model_dump(mode="json"),
+                })
+                committed_emotion = EmotionState(**observed.json()["emotion"])
+                committed_relationship = RelationshipMetrics(**observed.json()["relationship"])
+            state["emotion_state"] = committed_emotion
+            state["relationship_metrics"] = committed_relationship
+            log.info("personality_state_persisted")
         except Exception as exc:
             log.warning("personality_state_persist_failed", error=str(exc))
 
     # --- User profile updates (discovered facts) ------------------------
-    if _is_monolithic():
+    if _is_monolithic() and not (state.get("safety_input_blocked") or state.get("safety_output_blocked")):
         try:
             from user_profile import get_default_store
 
@@ -1492,7 +1490,8 @@ async def sync_completed_turn_to_memory(
 
             if match := _NAME_PATTERN.search(tc.user_message):
                 discovered_name = match.group(1)
-                await profile_store.merge_preferences(tc.user.user_id, nickname=discovered_name)
+                await profile_store.merge_preferences(tc.user.user_id, nickname=discovered_name,
+                                                      nickname_observed_at=tc.timestamp.isoformat())
                 log.info("user_profile_name_discovered", name=discovered_name)
 
             if match := _PREFERENCE_PATTERN.search(tc.user_message):
@@ -1500,13 +1499,15 @@ async def sync_completed_turn_to_memory(
                 await profile_store.merge_preferences(
                     tc.user.user_id,
                     latest_like=discovered_pref,
+                    latest_like_observed_at=tc.timestamp.isoformat(),
                 )
                 log.info("user_profile_preference_discovered", preference=discovered_pref)
         except Exception as exc:
             log.warning("user_profile_update_failed", error=str(exc))
 
     # --- Long-term memory pipeline ---------------------------------------
-    if not get_settings().enable_memory_pipeline:
+    if tc.has_image or state.get("safety_input_blocked") or state.get("safety_output_blocked") or not get_settings().enable_memory_pipeline:
+        # Preserve text history, but do not extract personal facts from model image guesses.
         log.info("memory_synced")
         return
 
@@ -1519,9 +1520,11 @@ async def sync_completed_turn_to_memory(
 
     # Rich extraction pipeline — runs in-process in monolithic mode (no Celery)
     if _is_monolithic():
-        import asyncio as _asyncio
+        from core_orchestrator.memory_tasks import submit_memory_task
+        from memory_system.lifecycle import capture_memory_epoch
 
         pipe_meta: Dict[str, Any] = {"intent": state.get("intent")}
+        source_epoch = await capture_memory_epoch(tc.user.user_id)
         if memory_channel:
             pipe_meta["source_channel"] = memory_channel
 
@@ -1538,20 +1541,21 @@ async def sync_completed_turn_to_memory(
                         "assistant_message": assistant_msg,
                         "emotion": pipe_emotion.primary.value if pipe_emotion else None,
                         "metadata": pipe_meta,
+                        "source_epoch": source_epoch,
                     }
                 )
             except Exception as exc:
                 log.warning("pipeline_async_failed", error=str(exc))
 
-        # Fire-and-forget: don't block the user response on pipeline cost.
-        _asyncio.create_task(_bg_pipeline())
+        # Do not delay replies, but retain ownership through shutdown/cleanup.
+        submit_memory_task(_bg_pipeline(), user_id=tc.user.user_id)
 
     log.info("memory_synced")
 
 
 async def node_sync_memory(state: OrchestratorState) -> OrchestratorState:
     tc = state["turn_context"]
-    if tc is None:
+    if tc is None or state.get("error"):
         return state
 
     await sync_completed_turn_to_memory(
@@ -1563,7 +1567,7 @@ async def node_sync_memory(state: OrchestratorState) -> OrchestratorState:
 
 
 def _should_continue(state: OrchestratorState) -> str:
-    if state.get("error"):
+    if state.get("error") or state.get("reply_suppressed"):
         return "end"
     return "continue"
 
@@ -1576,6 +1580,7 @@ def build_graph() -> StateGraph:
     graph.add_node("classify_intent", node_classify_intent)
     graph.add_node("recall_memory", node_recall_memory)
     graph.add_node("generate_response", node_generate_response)
+    graph.add_node("check_output", node_check_output)
     graph.add_node("synthesize_voice", node_synthesize_voice)
     graph.add_node("generate_action", node_generate_action)
     graph.add_node("send_response", node_send_response)
@@ -1585,7 +1590,8 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges("receive", _should_continue, {"continue": "classify_intent", "end": "sync_memory"})
     graph.add_conditional_edges("classify_intent", _should_continue, {"continue": "recall_memory", "end": "sync_memory"})
     graph.add_conditional_edges("recall_memory", _should_continue, {"continue": "generate_response", "end": "sync_memory"})
-    graph.add_conditional_edges("generate_response", _should_continue, {"continue": "synthesize_voice", "end": "sync_memory"})
+    graph.add_conditional_edges("generate_response", _should_continue, {"continue": "check_output", "end": "sync_memory"})
+    graph.add_conditional_edges("check_output", _should_continue, {"continue": "synthesize_voice", "end": "sync_memory"})
     graph.add_conditional_edges("synthesize_voice", _should_continue, {"continue": "generate_action", "end": "sync_memory"})
     graph.add_conditional_edges("generate_action", _should_continue, {"continue": "send_response", "end": "sync_memory"})
     graph.add_conditional_edges("send_response", _should_continue, {"continue": "sync_memory", "end": "sync_memory"})
@@ -1611,6 +1617,34 @@ def get_compiled_graph() -> Any:
 
 
 async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, Any]]:
+    settings = get_settings()
+    segmented = bool(settings.enable_voice and settings.enable_streaming_tts and tc.supports_segmented_voice
+                     and (tc.request_voice_reply or tc.has_voice))
+    source = _stream_assistant_response(tc, segmented_voice=segmented)
+    if not segmented:
+        async with contextlib.aclosing(source):
+            async for event in source:
+                yield event
+        return
+    from core_orchestrator.streaming_voice import stream_voice_events
+
+    async def synthesize(text, context):
+        req = VoiceSynthesisRequest(text=text, voice_id=context.get("voice_id", "default"),
+                                    emotion=context.get("emotion", EmotionTag.NEUTRAL), language=tc.user.language)
+        response = await voice_client.post("/voice/synthesize", json_payload=req.model_dump(mode="json"))
+        return response.json()
+
+    stream = stream_voice_events(
+        source, synthesize, turn_id=tc.turn_id, concurrency=settings.streaming_tts_max_concurrency,
+        min_chars=settings.streaming_tts_min_sentence_chars, max_chars=settings.streaming_tts_max_sentence_chars,
+        timeout_seconds=settings.streaming_tts_segment_timeout_seconds,
+    )
+    async with contextlib.aclosing(stream):
+        async for event in stream:
+            yield event
+
+
+async def _stream_assistant_response(tc: TurnContext, *, segmented_voice=False) -> AsyncIterator[Dict[str, Any]]:
     """Run the full conversation pipeline but stream the LLM step.
 
     Event shapes:
@@ -1627,6 +1661,7 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
     """
     settings = get_settings()
     state: OrchestratorState = build_initial_state(tc)
+    state["voice_streamed"] = segmented_voice
 
     # Pre-generate nodes (receive → classify_intent → recall_memory)
     state = await node_receive(state)
@@ -1647,6 +1682,8 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
         yield {"event": "done", "_state": state}
         return
 
+    state = await prepare_reaction_state(state)
+    state = await prepare_reply_decision(state)
     memory_result = state.get("memory_result")
     memory_count = (
         len(memory_result.entries) if memory_result and hasattr(memory_result, "entries") else 0
@@ -1658,7 +1695,32 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
         "intent_confidence": state.get("intent_confidence"),
         "emotion": pre_emotion.model_dump(mode="json") if pre_emotion else None,
         "memory_entries_count": memory_count,
+        "reply_suppressed": bool(state.get("reply_suppressed")),
+        **({"_voice_context": {
+            "voice_id": resolve_profile_id(
+                raw_voice_preference=state["persona_profile"].voice_preference if state.get("persona_profile") else None,
+                persona_id=state["persona_profile"].persona_id if state.get("persona_profile") else None,
+            ),
+            "emotion": pre_emotion.primary.value if pre_emotion else EmotionTag.NEUTRAL.value,
+            "emotion_state": pre_emotion.model_dump(mode="json") if pre_emotion else None,
+        }} if segmented_voice else {}),
     }
+
+    if state.get("reply_suppressed"):
+        state = await node_sync_memory(state)
+        yield {"event": "done", "_state": state}
+        return
+
+    if state.get("assistant_message"):
+        # An input rejection must not reach routing, tools or the model in SSE.
+        from shared_runtime.llm_client import chunk_text_stream
+        state = await node_check_output(state)
+        async for chunk in chunk_text_stream(state["assistant_message"]):
+            yield {"event": "token", "text": chunk}
+        state = await node_synthesize_voice(state)
+        state = await node_sync_memory(state)
+        yield {"event": "done", "_state": state}
+        return
 
     # Generate (streaming)
     persona = state.get("persona_profile") or _default_persona()
@@ -1684,11 +1746,20 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
     # Evaluate tool execution before branching so we can handle both
     # success (stream deterministic reply) and failure (inject error
     # context into LLM prompt) without duplicating LLM streaming code.
-    action_handled: Optional[Dict[str, Any]] = None
-    if intent in (Intent.TOOL_USE.value, Intent.DEVICE_COMMAND.value, Intent.MEMORY_QUERY.value):
-        action_handled = await _try_action_executor(tc, intent)
-    if action_handled is None:
-        action_handled = await _try_device_actions_by_keyword(tc)
+    from core_orchestrator.specialists import delegate_events
+
+    specialists = _specialists()
+    action_handled = None
+    async for event in delegate_events(specialists, tc, intent):
+        if "_delegation" in event:
+            role, action_handled = event["_delegation"]
+            _apply_delegation(state, role, action_handled)
+        else:
+            if isinstance(event.get("message"), str):
+                verdict = default_guard.check_output(event["message"])
+                if verdict.blocked:
+                    event = {**event, "message": safe_fallback_reply(verdict)}
+            yield event
 
     is_device_stream = bool(
         action_handled and action_handled.get("name") in _DEVICE_ACTION_NAMES
@@ -1702,9 +1773,10 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
         )
         state["device_command_sent"] = True
         accumulated_dev: List[str] = []
-        async for chunk in chunk_text_stream(assistant_msg):
-            accumulated_dev.append(chunk)
-            yield {"event": "token", "text": chunk}
+        async with _checked_tokens(chunk_text_stream(assistant_msg), state) as chunks:
+            async for chunk in chunks:
+                accumulated_dev.append(chunk)
+                yield {"event": "token", "text": chunk}
         full_dev = "".join(accumulated_dev) or assistant_msg
         state["assistant_message"] = full_dev
         state["messages"] = list(state["messages"]) + [AIMessage(content=full_dev)]
@@ -1714,7 +1786,7 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
         if action_handled.get("ok"):
             await _record_tool_interaction_to_memory(tc, action_handled)
         logger.info("stream.device_action_handled", name=action_handled.get("name"))
-    elif action_handled is not None and action_handled.get("ok"):
+    elif action_handled is not None and (action_handled.get("ok") or action_handled.get("deterministic")):
         # Tool success — stream the deterministic reply through
         # chunk_text_stream so the UI gets the same token-by-token feel
         # as an LLM reply. Record the interaction to memory first.
@@ -1723,9 +1795,10 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
 
         assistant_msg = action_handled.get("message") or "好的。"
         accumulated: List[str] = []
-        async for chunk in chunk_text_stream(assistant_msg):
-            accumulated.append(chunk)
-            yield {"event": "token", "text": chunk}
+        async with _checked_tokens(chunk_text_stream(assistant_msg), state) as chunks:
+            async for chunk in chunks:
+                accumulated.append(chunk)
+                yield {"event": "token", "text": chunk}
         full = "".join(accumulated) or assistant_msg
         state["assistant_message"] = full
         state["messages"] = list(state["messages"]) + [AIMessage(content=full)]
@@ -1746,19 +1819,24 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
         try:
             if _is_monolithic():
                 persona_name = persona.name if persona else DEFAULT_PERSONA_NAME
-                async for token in _stream_response_monolithic(tc, system_prompt, persona_name):
-                    accumulated.append(token)
-                    yield {"event": "token", "text": token}
+                async with _checked_tokens(specialists.chat.stream(
+                    tc, system_prompt, persona_name, emotion=emotion,
+                    response_intent=state["reaction_signal"].intent if state.get("reaction_signal") else intent,
+                ), state) as tokens:
+                    async for token in tokens:
+                        accumulated.append(token)
+                        yield {"event": "token", "text": token}
             else:
                 # Microservice mode: try persona_engine streaming first, fall
                 # back to non-streaming HTTP if persona_engine doesn't expose
                 # a streaming endpoint.
                 try:
-                    async for token in _stream_via_persona_engine(
+                    async with _checked_tokens(_stream_via_persona_engine(
                         tc, system_prompt, emotion, relationship
-                    ):
-                        accumulated.append(token)
-                        yield {"event": "token", "text": token}
+                    ), state) as tokens:
+                        async for token in tokens:
+                            accumulated.append(token)
+                            yield {"event": "token", "text": token}
                 except Exception as exc:
                     logger.warning("stream.persona_stream_unavailable", error=str(exc))
                     try:
@@ -1768,29 +1846,33 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
                                 "user_id": tc.user.user_id,
                                 "session_id": tc.session_id,
                                 "user_message": tc.user_message,
+                                "image_urls": tc.image_urls,
                                 "system_prompt": system_prompt,
                                 "emotion": emotion.model_dump(mode="json") if emotion else None,
                                 "relationship": relationship.model_dump(mode="json") if relationship else None,
+                                "turn_id": tc.turn_id,
+                                "reaction": state["reaction_signal"].model_dump(mode="json") if state.get("reaction_signal") else None,
                             },
                         )
                         data = resp.json()
                         assistant_msg = data.get("assistant_message", "...")
                         from shared_runtime.llm_client import chunk_text_stream
 
-                        async for chunk in chunk_text_stream(assistant_msg):
-                            accumulated.append(chunk)
-                            yield {"event": "token", "text": chunk}
+                        async with _checked_tokens(chunk_text_stream(assistant_msg), state) as chunks:
+                            async for chunk in chunks:
+                                accumulated.append(chunk)
+                                yield {"event": "token", "text": chunk}
                         new_emotion_raw = data.get("new_emotion")
                         if isinstance(new_emotion_raw, dict):
                             state["emotion_state"] = _safe_emotion(new_emotion_raw)
                             emotion_from_persona_api = True
                     except Exception as inner_exc:
                         logger.warning("stream.persona_generate_failed", error=str(inner_exc))
-                        accumulated.append("我在呢，你继续说，我会认真听。")
+                        accumulated.append(IMAGE_UNAVAILABLE if tc.has_image else "我在呢，你继续说，我会认真听。")
                         yield {"event": "token", "text": accumulated[-1]}
         except Exception as exc:
-            logger.exception("stream.generate_failed", error=str(exc))
-            err_msg = f"⚠️ LLM 调用失败：{exc}"
+            logger.warning("stream.generate_failed", reason=type(exc).__name__)
+            err_msg = "模型服务暂时不可用，请稍后再试。"
             accumulated.append(err_msg)
             yield {"event": "token", "text": err_msg}
 
@@ -1810,6 +1892,7 @@ async def stream_assistant_response(tc: TurnContext) -> AsyncIterator[Dict[str, 
     # Post-generate nodes (voice / action / send / memory sync) — same as
     # the non-streaming graph. Failures here only add to state["error"] and
     # never block the already-streamed assistant message.
+    state = await node_check_output(state)
     state = await node_synthesize_voice(state)
     state = await node_generate_action(state)
     state = await node_send_response(state)

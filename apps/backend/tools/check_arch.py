@@ -30,13 +30,13 @@ BUSINESS_MODULES = [
     "persona_engine",
     "memory_system",
     "voice_layer",
-    "action_layer",
     "action_executor",
     "device_coordination",
     "gateway_adapter",
+    "avatar_runtime",
 ]
 
-ALL_MODULES = BUSINESS_MODULES + ["core_orchestrator", "shared", "shared_contracts", "shared_runtime"]
+ALL_MODULES = BUSINESS_MODULES + ["core_orchestrator", "shared_contracts", "shared_runtime"]
 
 NON_ORCHESTRATOR_MODULES = [m for m in ALL_MODULES if m != "core_orchestrator"]
 
@@ -44,7 +44,10 @@ DIRECT_LLM_SDKS = {"openai", "anthropic", "litellm", "dashscope"}
 
 HARDCODED_PERSONA_KEYWORDS = ["小暖", "小汐", "huannuan", "xiaonuan", "xiaoxi"]
 
-EXCLUDE_DIRS = {".venv", "node_modules", "__pycache__", ".git", "frontend_app", "frontend_web", "frontend_sdk", "docs", "tools"}
+EXCLUDE_DIRS = {
+    ".venv", "node_modules", "__pycache__", ".git", "build", "dist", ".pytest_cache",
+    "frontend_app", "frontend_web", "frontend_sdk", "docs", "tools",
+}
 
 
 def iter_py_files() -> list[Path]:

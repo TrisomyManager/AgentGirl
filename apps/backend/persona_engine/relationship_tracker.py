@@ -12,13 +12,15 @@ Decay applies if no interaction for an extended period.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from datetime import datetime
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 
+from persona_engine.emotion_engine import utc
+from persona_engine.state_store import PersonaStateStore
 from shared_contracts.models import RelationshipMetrics
 
 logger = structlog.get_logger("persona_engine.relationship_tracker")
@@ -53,11 +55,15 @@ class RelationshipTracker:
     """Manages per-user relationship metrics backed by PostgreSQL + Redis cache,
     with SQLite fallback for lite mode."""
 
-    def __init__(self, redis_client=None, db_pool=None, sqlite_session_factory=None):
+    def __init__(self, redis_client=None, db_pool=None, sqlite_session_factory=None, *, state_store=None):
         self._redis = redis_client
         self._db = db_pool  # asyncpg pool (PostgreSQL)
-        self._sqlite_session_factory: Optional[Callable[[], AsyncSession]] = sqlite_session_factory
+        self._sqlite_session_factory: Callable[[], AsyncSession] | None = sqlite_session_factory
         self._sqlite_schema_initialized = False
+        self.state_store = state_store or (
+            PersonaStateStore(sqlite_session_factory) if sqlite_session_factory else None
+        )
+        self._memory_store = {}
 
     # ------------------------------------------------------------------
     # Read
@@ -65,6 +71,10 @@ class RelationshipTracker:
 
     async def get_metrics(self, user_id: str) -> RelationshipMetrics:
         """Return current metrics, preferring Redis cache."""
+        if self.state_store:
+            return self._apply_decay(await self.state_store.get_relationship(user_id))
+        if self._redis is None and self._db is None and user_id in self._memory_store:
+            return self._apply_decay(self._memory_store[user_id])
         cached = await self._from_redis(user_id)
         if cached:
             # Apply decay if stale
@@ -73,9 +83,7 @@ class RelationshipTracker:
 
         # PostgreSQL (asyncpg)
         if self._db:
-            row = await self._db.fetchrow(
-                "SELECT * FROM relationship_metrics WHERE user_id = $1", user_id
-            )
+            row = await self._db.fetchrow("SELECT * FROM relationship_metrics WHERE user_id = $1", user_id)
             if row:
                 metrics = RelationshipMetrics(
                     user_id=row["user_id"],
@@ -87,9 +95,8 @@ class RelationshipTracker:
                     first_seen=row["first_seen"],
                     last_seen=row["last_seen"],
                 )
-                metrics = self._apply_decay(metrics)
                 await self._to_redis(user_id, metrics)
-                return metrics
+                return self._apply_decay(metrics)
 
         # SQLite (SQLAlchemy async session)
         if self._sqlite_session_factory:
@@ -137,36 +144,36 @@ class RelationshipTracker:
         has_disclosure: bool = False,
         is_routine: bool = False,
         shared_experience: bool = False,
+        hostile: bool = False,
+        event_id: str | None = None,
     ) -> RelationshipMetrics:
         """Update metrics after a single interaction."""
+        if self.state_store:
+            _, metrics = await self.state_store.update(
+                user_id,
+                lambda emotion, relationship: (
+                    emotion,
+                    apply_interaction(
+                        self._apply_decay(relationship),
+                        sentiment=sentiment,
+                        has_disclosure=has_disclosure,
+                        is_routine=is_routine,
+                        shared_experience=shared_experience,
+                        hostile=hostile,
+                    ),
+                ),
+                event_id=f"interaction:{event_id}" if event_id else None,
+            )
+            return metrics
         metrics = await self.get_metrics(user_id)
-        metrics.total_interactions += 1
-        metrics.last_seen = datetime.utcnow()
-
-        if has_disclosure:
-            metrics.intimacy = _clamp(metrics.intimacy + _INTIMACY_PER_DISCLOSURE)
-            logger.debug("relationship.intimacy_up", user_id=user_id, reason="disclosure")
-
-        if shared_experience:
-            metrics.intimacy = _clamp(metrics.intimacy + _INTIMACY_PER_SHARED_EXPERIENCE)
-            logger.debug("relationship.intimacy_up", user_id=user_id, reason="shared_experience")
-
-        if sentiment == "positive":
-            metrics.trust = _clamp(metrics.trust + _TRUST_PER_POSITIVE_INTERACTION)
-            metrics.affection = _clamp(metrics.affection + _AFFECTION_PER_WARMTH_SIGNAL)
-        elif sentiment == "negative":
-            # Negative interactions hurt trust slightly, but can deepen intimacy
-            # if handled with care (vulnerability)
-            metrics.trust = _clamp(metrics.trust - _TRUST_PER_POSITIVE_INTERACTION * 0.5)
-
-        if is_routine:
-            metrics.familiarity = _clamp(metrics.familiarity + _FAMILIARITY_PER_ROUTINE)
-
-        # Soft cap: as metrics approach 1.0, gains diminish
-        metrics.intimacy = _soft_cap(metrics.intimacy)
-        metrics.trust = _soft_cap(metrics.trust)
-        metrics.familiarity = _soft_cap(metrics.familiarity)
-        metrics.affection = _soft_cap(metrics.affection)
+        metrics = apply_interaction(
+            metrics,
+            sentiment=sentiment,
+            has_disclosure=has_disclosure,
+            is_routine=is_routine,
+            shared_experience=shared_experience,
+            hostile=hostile,
+        )
 
         await self._to_redis(user_id, metrics)
         await self._persist(metrics)
@@ -185,23 +192,22 @@ class RelationshipTracker:
         self,
         user_id: str,
         milestone_type: str,  # e.g. "first_voice_call", "shared_secret", "anniversary"
+        *,
+        event_id: str | None = None,
     ) -> RelationshipMetrics:
         """Apply a larger step change for relationship milestones."""
+        if self.state_store:
+            _, metrics = await self.state_store.update(
+                user_id,
+                lambda emotion, relationship: (
+                    emotion,
+                    apply_milestone(self._apply_decay(relationship), milestone_type),
+                ),
+                event_id=f"milestone:{event_id}" if event_id else None,
+            )
+            return metrics
         metrics = await self.get_metrics(user_id)
-        metrics.last_seen = datetime.utcnow()
-
-        if milestone_type in ("first_voice_call", "first_video_call"):
-            metrics.intimacy = _clamp(metrics.intimacy + 0.10)
-            metrics.trust = _clamp(metrics.trust + 0.05)
-        elif milestone_type == "shared_secret":
-            metrics.intimacy = _clamp(metrics.intimacy + 0.15)
-            metrics.trust = _clamp(metrics.trust + 0.10)
-        elif milestone_type == "anniversary":
-            metrics.affection = _clamp(metrics.affection + 0.10)
-            metrics.familiarity = _clamp(metrics.familiarity + 0.10)
-        else:
-            metrics.intimacy = _clamp(metrics.intimacy + 0.05)
-            metrics.affection = _clamp(metrics.affection + 0.05)
+        metrics = apply_milestone(metrics, milestone_type)
 
         await self._to_redis(user_id, metrics)
         await self._persist(metrics)
@@ -214,8 +220,9 @@ class RelationshipTracker:
 
     def _apply_decay(self, metrics: RelationshipMetrics) -> RelationshipMetrics:
         """Apply inactivity decay based on time since last_seen."""
-        now = datetime.utcnow()
-        days_inactive = (now - metrics.last_seen).total_seconds() / 86_400.0
+        metrics = metrics.model_copy(deep=True)
+        now = utc(datetime.utcnow())
+        days_inactive = (now - utc(metrics.last_seen)).total_seconds() / 86_400.0
         if days_inactive <= 0:
             return metrics
 
@@ -233,7 +240,7 @@ class RelationshipTracker:
     # Persistence helpers
     # ------------------------------------------------------------------
 
-    async def _from_redis(self, user_id: str) -> Optional[RelationshipMetrics]:
+    async def _from_redis(self, user_id: str) -> RelationshipMetrics | None:
         if self._redis is None:
             return None
         key = f"persona:relationship:{user_id}"
@@ -256,6 +263,11 @@ class RelationshipTracker:
 
     async def _persist(self, metrics: RelationshipMetrics) -> None:
         """Upsert into PostgreSQL (asyncpg) or SQLite (SQLAlchemy)."""
+        if self.state_store:
+            await self.state_store.update(metrics.user_id, lambda emotion, _relationship: (emotion, metrics))
+            return
+        if self._db is None:
+            self._memory_store[metrics.user_id] = metrics.model_copy(deep=True)
         # PostgreSQL path (asyncpg pool)
         if self._db:
             await self._db.execute(
@@ -346,8 +358,51 @@ class RelationshipTracker:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
+
+
+def apply_interaction(
+    metrics,
+    *,
+    sentiment="neutral",
+    has_disclosure=False,
+    is_routine=False,
+    shared_experience=False,
+    hostile=False,
+    now=None,
+):
+    """Bounded gains shrink near one; ordinary sadness never reduces trust."""
+    metrics = metrics.model_copy(deep=True)
+    metrics.total_interactions += 1
+    metrics.last_seen = max(utc(metrics.last_seen), utc(now or datetime.utcnow()))
+    gains = {
+        "intimacy": (0.03 if has_disclosure else 0) + (0.02 if shared_experience else 0),
+        "trust": 0.015 if sentiment == "positive" and not hostile else 0,
+        "familiarity": 0.002 + (0.02 if is_routine else 0),
+        "affection": 0.01 if sentiment == "positive" and not hostile else 0,
+    }
+    for key, gain in gains.items():
+        current = getattr(metrics, key)
+        setattr(metrics, key, _clamp(current + (1 - current) * gain))
+    if hostile:
+        metrics.trust = _clamp(metrics.trust - 0.0075)
+    return metrics
+
+
+def apply_milestone(metrics, milestone_type):
+    metrics = metrics.model_copy(deep=True)
+    metrics.last_seen = utc(datetime.utcnow())
+    gains = {
+        "first_voice_call": {"intimacy": 0.1, "trust": 0.05},
+        "first_video_call": {"intimacy": 0.1, "trust": 0.05},
+        "shared_secret": {"intimacy": 0.15, "trust": 0.1},
+        "anniversary": {"affection": 0.1, "familiarity": 0.1},
+    }.get(milestone_type, {"intimacy": 0.05, "affection": 0.05})
+    for key, gain in gains.items():
+        setattr(metrics, key, _clamp(getattr(metrics, key) + gain))
+    return metrics
 
 
 def _soft_cap(value: float, steepness: float = 5.0) -> float:

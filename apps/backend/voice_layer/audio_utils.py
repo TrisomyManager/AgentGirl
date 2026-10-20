@@ -142,6 +142,16 @@ async def save_temp_audio(audio_data: bytes, fmt: str = "mp3") -> str:
     filename = f"{uuid.uuid4().hex}.{fmt}"
     filepath = temp_dir / filename
     filepath.write_bytes(audio_data)
+    from shared_runtime.access import current_principal
+    from voice_layer.media_access import register_voice_asset
+
+    principal = current_principal.get()
+    if principal and principal.user_id:
+        try:
+            await register_voice_asset(f"/static/voice/{filename}", principal.user_id)
+        except BaseException:
+            filepath.unlink(missing_ok=True)
+            raise
     return str(filepath)
 
 

@@ -31,7 +31,7 @@ class Action2DGenerator:
 
     def __init__(self) -> None:
         settings = get_settings()
-        self.provider = settings.action_provider  # tongyi | custom
+        self.provider = settings.action_provider  # local placeholder | custom frame service
         self.api_key = settings.action_api_key
         self.base_url = settings.action_base_url
         self.reference_image_url = settings.avatar_2d_reference_url
@@ -80,7 +80,7 @@ class Action2DGenerator:
         )
 
         # Try external API if configured
-        if self.api_key and self.base_url:
+        if self.provider != "local" and self.api_key and self.base_url:
             try:
                 result = await self._call_external_api(ref_url, description, emotion, duration_ms)
                 logger.info("generator_2d.external_ok", frame_count=len(result["frame_urls"]))
@@ -110,7 +110,7 @@ class Action2DGenerator:
         emotion: EmotionTag,
         duration_ms: int,
     ) -> dict[str, Any]:
-        """Call external 2D generation API (e.g. Tongyi Wanxiang).
+        """Call a custom frame-generation service.
 
         This is a placeholder implementation. Replace with actual API schema.
         """
@@ -120,7 +120,6 @@ class Action2DGenerator:
             "Content-Type": "application/json",
         }
         payload = {
-            "model": "wan2.2-animate-move",
             "reference_image_url": reference_image_url,
             "prompt": description,
             "emotion": emotion.value,

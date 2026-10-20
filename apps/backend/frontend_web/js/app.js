@@ -8,22 +8,22 @@
 // ============================================================
 const CONFIG_SCHEMA = {
   // API Keys
-  openai_api_key:       { type: 'password', label: 'OpenAI API Key', group: 'llm', required: true },
-  openai_base_url:      { type: 'text', label: 'OpenAI Base URL', group: 'llm', required: false, placeholder: 'https://api.openai.com/v1' },
+  ark_api_key:       { type: 'password', label: '火山方舟 API Key', group: 'llm', required: true },
+  ark_base_url:      { type: 'text', label: '火山方舟 Base URL', group: 'llm', required: false, placeholder: 'https://ark.cn-beijing.volces.com/api/v3' },
   anthropic_api_key:    { type: 'password', label: 'Anthropic API Key', group: 'llm', required: true },
   anthropic_base_url:   { type: 'text', label: 'Anthropic Base URL', group: 'llm', required: false, placeholder: 'https://api.anthropic.com/v1' },
   tts_api_key:          { type: 'password', label: 'TTS API Key', group: 'voice', required: false },
-  tts_base_url:         { type: 'text', label: 'TTS Base URL', group: 'voice', required: false, placeholder: 'https://api.fish.audio/v1' },
-  whisper_api_key:      { type: 'password', label: 'Whisper API Key', group: 'voice', required: false },
-  whisper_base_url:     { type: 'text', label: 'Whisper Base URL', group: 'voice', required: false, placeholder: 'https://api.openai.com/v1' },
+  tts_base_url:         { type: 'text', label: 'TTS Base URL', group: 'voice', required: false, placeholder: 'https://openspeech.bytedance.com' },
+  whisper_api_key:      { type: 'password', label: '豆包语音 ASR API Key', group: 'voice', required: false },
+  whisper_base_url:     { type: 'text', label: 'ASR Base URL', group: 'voice', required: false, placeholder: 'https://openspeech.bytedance.com' },
   action_api_key:       { type: 'password', label: '2D 动作生成 API Key', group: 'action', required: false },
-  action_base_url:      { type: 'text', label: '2D 动作 Base URL', group: 'action', required: false, placeholder: 'https://dashscope.aliyuncs.com/api/v1' },
+  action_base_url:      { type: 'text', label: '2D 动作 Base URL', group: 'action', required: false, placeholder: '自定义逐帧服务地址（尚为占位）' },
 
   // Model Selection
-  default_llm_model:    { type: 'select', label: '默认对话模型', options: ['gpt-4o', 'gpt-4o-mini', 'claude-3-5-sonnet', 'claude-3-opus'], default: 'gpt-4o' },
-  reasoning_llm_model:  { type: 'select', label: '推理模型', options: ['o3-mini', 'o1', 'claude-3-opus', 'gpt-4o'], default: 'o3-mini' },
-  tts_provider:         { type: 'select', label: 'TTS 提供商', options: ['fish_audio', 'chattts', 'openai'], default: 'fish_audio' },
-  default_voice_id:     { type: 'text', label: '语音 ID', default: 'zh-CN-XiaoxiaoNeural' },
+  default_llm_model:    { type: 'select', label: '默认对话模型', options: ['doubao-seed-2-0-mini-260428', 'doubao-seed-2-0-pro-260215'], default: 'doubao-seed-2-0-mini-260428' },
+  reasoning_llm_model:  { type: 'select', label: '推理模型', options: ['doubao-seed-2-0-pro-260215'], default: 'doubao-seed-2-0-pro-260215' },
+  tts_provider:         { type: 'select', label: 'TTS 提供商', options: ['volcengine'], default: 'volcengine' },
+  default_voice_id:     { type: 'text', label: '语音 ID', default: 'zh_female_xiaohe_uranus_bigtts' },
 
   // Feature Flags
   lite_mode:                    { type: 'toggle', label: 'Lite Mode', desc: '本地开发模式（无需 Docker / Redis / PostgreSQL / Neo4j）' },
@@ -46,8 +46,8 @@ const STORAGE_KEY = 'companion_ai_config';
 
 // Default config values
 const DEFAULT_CONFIG = {
-  openai_api_key: '',
-  openai_base_url: '',
+  ark_api_key: '',
+  ark_base_url: 'https://ark.cn-beijing.volces.com/api/v3',
   anthropic_api_key: '',
   anthropic_base_url: '',
   tts_api_key: '',
@@ -56,10 +56,10 @@ const DEFAULT_CONFIG = {
   whisper_base_url: '',
   action_api_key: '',
   action_base_url: '',
-  default_llm_model: 'gpt-4o',
-  reasoning_llm_model: 'o3-mini',
-  tts_provider: 'fish_audio',
-  default_voice_id: 'zh-CN-XiaoxiaoNeural',
+  default_llm_model: 'doubao-seed-2-0-mini-260428',
+  reasoning_llm_model: 'doubao-seed-2-0-pro-260215',
+  tts_provider: 'volcengine',
+  default_voice_id: 'zh_female_xiaohe_uranus_bigtts',
   lite_mode: false,
   enable_voice: true,
   enable_action_2d: true,
@@ -103,7 +103,7 @@ function renderApiKeysSection() {
   if (!container) return;
 
   const llmPairs = [
-    { key: 'openai_api_key', base: 'openai_base_url' },
+    { key: 'ark_api_key', base: 'ark_base_url' },
     { key: 'anthropic_api_key', base: 'anthropic_base_url' },
   ];
   const voicePairs = [
@@ -453,7 +453,7 @@ async function testLLMConnection() {
 
   resultsContainer.innerHTML = '';
 
-  const openaiKey = currentConfig.openai_api_key;
+  const openaiKey = currentConfig.ark_api_key;
   const anthropicKey = currentConfig.anthropic_api_key;
 
   if (!openaiKey && !anthropicKey) {
@@ -488,7 +488,7 @@ async function testLLMConnection() {
 }
 
 async function testOpenAI(apiKey) {
-  const baseUrl = (currentConfig.openai_base_url || 'https://api.openai.com/v1').replace(/\/$/, '');
+  const baseUrl = (currentConfig.ark_base_url || 'https://ark.cn-beijing.volces.com/api/v3').replace(/\/$/, '');
   const resp = await fetch(`${baseUrl}/models`, {
     method: 'GET',
     headers: {
@@ -603,13 +603,13 @@ function setupActionButtons() {
 }
 
 function validateRequired() {
-  const openai = currentConfig.openai_api_key;
+  const openai = currentConfig.ark_api_key;
   const anthropic = currentConfig.anthropic_api_key;
 
   if (!openai && !anthropic) {
     showToast('请至少填写 OpenAI 或 Anthropic API Key', 'error');
     // Highlight the fields
-    document.querySelectorAll('[data-key="openai_api_key"], [data-key="anthropic_api_key"]').forEach(el => {
+    document.querySelectorAll('[data-key="ark_api_key"], [data-key="anthropic_api_key"]').forEach(el => {
       el.classList.add('error');
     });
     // Switch to API keys section
@@ -649,8 +649,8 @@ function exportEnvFile() {
 
   // Map config keys to env vars with COMPANION_ prefix
   const envMap = {
-    openai_api_key: 'COMPANION_OPENAI_API_KEY',
-    openai_base_url: 'COMPANION_OPENAI_BASE_URL',
+    ark_api_key: 'COMPANION_ARK_API_KEY',
+    ark_base_url: 'COMPANION_ARK_BASE_URL',
     anthropic_api_key: 'COMPANION_ANTHROPIC_API_KEY',
     anthropic_base_url: 'COMPANION_ANTHROPIC_BASE_URL',
     tts_api_key: 'COMPANION_TTS_API_KEY',
@@ -696,8 +696,8 @@ function importEnvFile(file) {
 
       // Map env vars back to config keys
       const reverseMap = {
-        'COMPANION_OPENAI_API_KEY': 'openai_api_key',
-        'COMPANION_OPENAI_BASE_URL': 'openai_base_url',
+        'COMPANION_ARK_API_KEY': 'ark_api_key',
+        'COMPANION_ARK_BASE_URL': 'ark_base_url',
         'COMPANION_ANTHROPIC_API_KEY': 'anthropic_api_key',
         'COMPANION_ANTHROPIC_BASE_URL': 'anthropic_base_url',
         'COMPANION_TTS_API_KEY': 'tts_api_key',

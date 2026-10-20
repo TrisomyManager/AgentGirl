@@ -68,7 +68,7 @@ async def test_get_default_store_returns_sqlite_not_memory() -> None:
     try:
         _ = SQLiteUserProfileStore()
     except Exception:
-        pytest.skip("shared.database not available in this environment")
+        pytest.skip("shared_runtime.database not available in this environment")
 
     user_profile._default_store = None
     store = get_default_store()

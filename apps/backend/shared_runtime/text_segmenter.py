@@ -75,11 +75,10 @@ class SentenceSegmenter:
                 if len(text[: m.end()].strip()) >= self._min:
                     cut_at = m.end()
                     break
+            if self._max is not None and len(text) > self._max and (cut_at is None or cut_at > self._max):
+                cut_at = self._max
             if cut_at is None:
-                if self._max is not None and len(text) > self._max:
-                    cut_at = self._max
-                else:
-                    break
+                break
             sentence, text = text[:cut_at].strip(), text[cut_at:]
             if sentence:
                 out.append(sentence)

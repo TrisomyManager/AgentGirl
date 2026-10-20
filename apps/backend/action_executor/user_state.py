@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from action_executor.reminders import get_reminders_store
+from action_executor.task_store import task_store
 
 
 async def build_user_state(user_id: str) -> dict[str, Any]:
@@ -60,6 +61,7 @@ async def build_user_state(user_id: str) -> dict[str, Any]:
     # Keep only the 20 most recent to avoid blowing up the response
     recent = recent[:20]
 
+    tasks = await task_store.list_for_user(user_id)
     return {
         "user_id": user_id,
         "reminders": {
@@ -67,21 +69,21 @@ async def build_user_state(user_id: str) -> dict[str, Any]:
             "recent": recent,
         },
         "tasks": {
-            "open": [],
-            "completed_recent": [],
+            "open": [task for task in tasks if task["status"] in {"running", "awaiting_input"}],
+            "completed_recent": [task for task in tasks if task["status"] not in {"running", "awaiting_input"}],
         },
         "proactive": {
-            "rules": _get_proactive_rules(user_id),
+            "rules": await _get_proactive_rules(user_id),
         },
     }
 
 
-def _get_proactive_rules(user_id: str) -> list[dict[str, Any]]:
+async def _get_proactive_rules(user_id: str) -> list[dict[str, Any]]:
     """Return proactive care rules for the frontend capability panel."""
     try:
         from action_executor.proactive_care import get_proactive_care_scheduler
 
         scheduler = get_proactive_care_scheduler()
-        return scheduler.user_proactive_rules(user_id)
+        return await scheduler.user_proactive_rules(user_id)
     except Exception:
         return []

@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 import structlog
 
 from shared_contracts.models import Platform
+from shared_runtime.user_lifecycle import assert_user_context
 
 logger = structlog.get_logger(__name__)
 
@@ -47,6 +48,7 @@ class SessionManager:
         platform: Platform,
         platform_session_id: str,
     ) -> SessionInfo:
+        assert_user_context()
         key = (user_id, platform, platform_session_id)
         existing = self._sessions.get(key)
         if existing:

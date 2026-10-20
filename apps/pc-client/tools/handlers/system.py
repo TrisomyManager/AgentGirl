@@ -1,6 +1,7 @@
 """System info, volume control, notifications."""
 
 import platform
+import json
 import subprocess
 import sys
 from typing import Any, Dict
@@ -10,16 +11,23 @@ from registry import ToolResult, get_registry
 
 def _win_notify(title: str, body: str) -> None:
     ps = (
-        f'[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null;'
-        f'$t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);'
-        f'$t.GetElementsByTagName("text")[0].AppendChild($t.CreateTextNode("{title}")) > $null;'
-        f'$t.GetElementsByTagName("text")[1].AppendChild($t.CreateTextNode("{body}")) > $null;'
-        f'$n = New-Object Windows.UI.Notifications.ToastNotification($t);'
-        f'[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("小暖").Show($n)'
+        "$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new();"
+        "$p=[Console]::In.ReadToEnd() | ConvertFrom-Json;"
+        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null;"
+        "$t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);"
+        '$t.GetElementsByTagName("text")[0].AppendChild($t.CreateTextNode([string]$p.title)) > $null;'
+        '$t.GetElementsByTagName("text")[1].AppendChild($t.CreateTextNode([string]$p.body)) > $null;'
+        "$n = New-Object Windows.UI.Notifications.ToastNotification($t);"
+        '[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("小暖").Show($n)'
     )
     subprocess.run(
         ["powershell", "-NoProfile", "-Command", ps],
         capture_output=True,
+        input=json.dumps({"title": title, "body": body}, ensure_ascii=False).encode(
+            "utf-8"
+        ),
+        timeout=10,
+        check=True,
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
 
@@ -51,19 +59,14 @@ def register_system_handlers() -> None:
         if platform.system() == "Windows":
             _win_notify(title, body)
         else:
-            subprocess.run(["notify-send", title, body])
+            subprocess.run(["notify-send", "--", title, body], timeout=10, check=True)
         return ToolResult(ok=True, message="Notification shown")
 
-    @reg.register("volume_control", "Adjust system volume", risk="medium", requires_confirm=True)
+    @reg.register(
+        "volume_control", "Adjust system volume", risk="medium", requires_confirm=True
+    )
     def volume_control(params: Dict[str, Any]) -> ToolResult:
-        action = params.get("action", "get")
-        if action == "get":
-            return ToolResult(ok=True, message="Volume query not implemented", data={"volume": None})
-        level = params.get("level")
-        if action == "set" and level is not None:
-            level = max(0, min(100, int(level)))
-            return ToolResult(ok=True, message=f"Volume set to {level}% (requires pycaw on Windows)", data={"volume": level})
-        return ToolResult(ok=False, message=f"Unknown volume action: {action}")
+        return ToolResult(ok=False, message="音量控制尚未实现。")
 
     @reg.register("get_device_status", "Get current device status", risk="low")
     def get_device_status(_params: Dict[str, Any]) -> ToolResult:

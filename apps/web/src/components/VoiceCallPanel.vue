@@ -22,8 +22,9 @@
           <div class="halo halo-1"></div>
           <div class="halo halo-2"></div>
           <div class="halo halo-3"></div>
-          <div class="avatar-core">
-            <span class="avatar-emoji">{{ stateIcon }}</span>
+          <div class="call-character">
+            <AvatarDisplay :emotion="avatarFrame.active ? avatarFrame.emotion : 'calm'" :emotion-label="stateLabel"
+              action-label="" :is-typing="false" />
           </div>
         </div>
 
@@ -112,6 +113,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useRealtimeVoice } from '../composables/useRealtimeVoice';
+import AvatarDisplay from './AvatarDisplay.vue';
+import { avatarFrame } from '../composables/useAvatarPresentation';
 
 const props = defineProps<{ visible: boolean }>();
 const emit = defineEmits<{
@@ -180,17 +183,6 @@ const stateLabel = computed(() => {
   }
 });
 
-const stateIcon = computed(() => {
-  switch (state.value) {
-    case 'listening': return '👂';
-    case 'thinking': return '💭';
-    case 'speaking': return '💬';
-    case 'connecting': return '🔌';
-    case 'error': return '⚠️';
-    default: return '🌸';
-  }
-});
-
 const stateClass = computed(() => `state-${state.value}`);
 
 // ── 字幕：取最新一条 ──
@@ -246,6 +238,10 @@ watch(
 </script>
 
 <style scoped>
+.call-character { position: relative; width: 100%; height: 130%; z-index: 1; }
+.call-character :deep(.avatar-display) { padding: 0; }
+.call-character :deep(.avatar-container) { max-height: 100%; width: 100%; }
+.call-character :deep(.avatar-info), .call-character :deep(.decoration-orbs) { display: none; }
 /* ===== 全屏「手机通话」背景 ===== */
 .call-overlay {
   position: fixed;

@@ -77,10 +77,39 @@ _DISLIKE_PATTERN = re.compile(r"我(?:很|最)?讨厌([^，。！？!?\n]{1,30})
 _ROLE_PATTERN = re.compile(r"我是(?:一个|一名)?([\u4e00-\u9fff]{2,12})")
 
 _TOPIC_STOPWORDS = {
-    "我", "你", "他", "她", "它", "我们", "你们", "他们",
-    "是", "的", "了", "吗", "呢", "吧", "啊", "呀", "哈", "哦",
-    "今天", "现在", "一下", "一些", "一点", "什么", "有点",
-    "可以", "应该", "好像", "感觉", "觉得", "知道", "想要", "喜欢",
+    "我",
+    "你",
+    "他",
+    "她",
+    "它",
+    "我们",
+    "你们",
+    "他们",
+    "是",
+    "的",
+    "了",
+    "吗",
+    "呢",
+    "吧",
+    "啊",
+    "呀",
+    "哈",
+    "哦",
+    "今天",
+    "现在",
+    "一下",
+    "一些",
+    "一点",
+    "什么",
+    "有点",
+    "可以",
+    "应该",
+    "好像",
+    "感觉",
+    "觉得",
+    "知道",
+    "想要",
+    "喜欢",
 }
 
 
@@ -109,6 +138,7 @@ class WorkingMemoryState:
     dominant_topic: Optional[str] = None
     dominant_topic_heuristic: Optional[str] = None
     session_digest: Optional[str] = None
+    history_digest: Optional[str] = None
     last_user_emotion: Optional[str] = None
     last_assistant_preview: Optional[str] = None
 
@@ -123,6 +153,7 @@ class WorkingMemoryState:
             "dominant_topic": self.dominant_topic,
             "dominant_topic_heuristic": self.dominant_topic_heuristic,
             "session_digest": self.session_digest,
+            "history_digest": self.history_digest,
             "last_user_emotion": self.last_user_emotion,
             "last_assistant_preview": self.last_assistant_preview,
             "turns": [
@@ -145,7 +176,7 @@ class WorkingMemory:
     def __init__(self, window_size: int = 6) -> None:
         self.window_size = window_size
         self._states: Dict[str, WorkingMemoryState] = {}
-        self._lock = asyncio.Lock()
+        self._session_locks: Dict[str, asyncio.Lock] = {}
         self._short_term = short_term_memory
         # session_id -> {fingerprint, topic, digest, monotonic_ts}
         self._llm_cache: Dict[str, Dict[str, Any]] = {}
@@ -158,6 +189,8 @@ class WorkingMemory:
         assistant_message: str,
         emotion: Optional[str] = None,
         intent: Optional[str] = None,
+        user_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
     ) -> WorkingMemoryState:
         """Record a turn and refresh the live summary for this session."""
         try:
@@ -167,13 +200,15 @@ class WorkingMemory:
                 user_message=user_message,
                 assistant_message=assistant_message,
                 emotion=None,
-                metadata={"intent": intent, "emotion": emotion},
+                metadata={**(metadata or {}), "intent": intent, "emotion": emotion, "user_id": user_id},
             )
         except Exception as exc:
             logger.warning("working_memory.short_term_write_failed", error=str(exc))
 
-        async with self._lock:
+        async with self._session_locks.setdefault(session_id, asyncio.Lock()):
             state = await self._rebuild_state(session_id)
+            from shared_runtime.user_lifecycle import assert_user_context
+            assert_user_context()
             self._states[session_id] = state
         logger.info(
             "working_memory.observed",
@@ -184,7 +219,7 @@ class WorkingMemory:
         return state
 
     async def snapshot(self, session_id: str) -> WorkingMemoryState:
-        async with self._lock:
+        async with self._session_locks.setdefault(session_id, asyncio.Lock()):
             state = self._states.get(session_id)
             if state is None:
                 state = await self._rebuild_state(session_id)
@@ -192,7 +227,7 @@ class WorkingMemory:
             return state
 
     async def clear(self, session_id: str) -> None:
-        async with self._lock:
+        async with self._session_locks.setdefault(session_id, asyncio.Lock()):
             self._states.pop(session_id, None)
             self._llm_cache.pop(session_id, None)
         try:
@@ -200,13 +235,17 @@ class WorkingMemory:
         except Exception as exc:
             logger.warning("working_memory.clear_failed", error=str(exc))
 
+    async def invalidate(self, session_id: str) -> None:
+        """Discard computed context after an atomic database deletion, without deleting new turns."""
+        async with self._session_locks.setdefault(session_id, asyncio.Lock()):
+            self._states.pop(session_id, None)
+            self._llm_cache.pop(session_id, None)
+
     async def _rebuild_state(self, session_id: str) -> WorkingMemoryState:
         try:
             raw_turns = await self._short_term.get_session_turns(session_id)
         except Exception as exc:
-            logger.warning(
-                "working_memory.short_term_read_failed", session_id=session_id, error=str(exc)
-            )
+            logger.warning("working_memory.short_term_read_failed", session_id=session_id, error=str(exc))
             raw_turns = []
 
         windowed = raw_turns[-self.window_size :]
@@ -225,19 +264,20 @@ class WorkingMemory:
             )
 
         state = WorkingMemoryState(session_id=session_id, turns=turns)
+        await self._compact_history(session_id, raw_turns, state)
 
         if turns:
             last = turns[-1]
             state.last_user_emotion = last.emotion
-            state.last_assistant_preview = (
-                last.assistant_message[:60] + ("…" if len(last.assistant_message) > 60 else "")
+            state.last_assistant_preview = last.assistant_message[:60] + (
+                "…" if len(last.assistant_message) > 60 else ""
             )
 
         for t in turns:
             msg = t.user_message
-            if (m := _NAME_PATTERN.search(msg)) and not state.user_name:
+            if m := _NAME_PATTERN.search(msg):
                 state.user_name = m.group(1).strip()
-            if (m := _ROLE_PATTERN.search(msg)) and not state.user_role:
+            if m := _ROLE_PATTERN.search(msg):
                 state.user_role = m.group(1).strip()
             if m := _PREFERENCE_PATTERN.search(msg):
                 like = m.group(1).strip()
@@ -252,6 +292,83 @@ class WorkingMemory:
         state.dominant_topic = state.dominant_topic_heuristic
         await self._maybe_llm_enrich(state)
         return state
+
+    async def _compact_history(
+        self, session_id: str, raw_turns: List[Dict[str, Any]], state: WorkingMemoryState
+    ) -> None:
+        """Preserve evicted context and user facts without expanding the raw prompt window."""
+        saved = await self._short_term.load_digest(session_id)
+        older = raw_turns[: -self.window_size]
+        covered = saved.get("covered_turn_id")
+        if covered and any(t.get("turn_id") == covered for t in older):
+            index = next(i for i, t in enumerate(older) if t.get("turn_id") == covered)
+            pending = older[index + 1 :]
+        elif saved.get("last_seq"):
+            pending = [t for t in older if t.get("storage_seq", 0) > saved["last_seq"]]
+        else:
+            pending = older
+
+        if pending:
+            previous = saved.get("digest", "")
+            transcript = "\n".join(
+                f"用户：{t.get('user_message', '')[:400]}\n助手：{t.get('assistant_message', '')[:200]}"
+                for t in pending
+            )
+            digest = (previous + "\n" + transcript).strip()[-2000:]
+            settings = get_settings()
+            saved["pending_compression_turns"] = saved.get("pending_compression_turns", 0) + len(pending)
+            use_model = getattr(settings, "working_memory_compression_use_llm", False) or getattr(
+                settings, "working_memory_llm_digest", False
+            )
+            batch_size = getattr(settings, "working_memory_compression_batch_turns", 3)
+            if (
+                use_model
+                and saved["pending_compression_turns"] >= batch_size
+                and time.time() - saved.get("last_summary_attempt_epoch", 0) >= 45
+            ):
+                from shared_runtime.llm_client import LLMClient
+
+                llm = LLMClient()
+                if llm.has_configured_provider():
+                    saved["last_summary_attempt_epoch"] = time.time()
+                    try:
+                        result = await asyncio.wait_for(
+                            llm.generate(
+                                system_prompt="将已有摘要与新增对话合并为简洁的连续摘要。保留用户的事实、约定、未解决事项与情绪变化。不要把助手猜测当成用户事实。只输出摘要。",
+                                user_message=f"已有摘要：{previous[:2000]}\n新增对话：\n{transcript[:6000]}",
+                                model=settings.working_memory_summary_model,
+                                temperature=0.2,
+                                max_tokens=600,
+                            ),
+                            timeout=4.0,
+                        )
+                        candidate = (result.get("assistant_message") or "").strip()
+                        if candidate:
+                            digest = candidate[:2000]
+                            saved["pending_compression_turns"] = 0
+                    except Exception as exc:
+                        logger.warning("working_memory.compaction_fallback", error=type(exc).__name__)
+                    finally:
+                        if closer := getattr(llm, "close", None):
+                            await closer()
+
+            for turn in pending:
+                message = turn.get("user_message", "")
+                if match := _NAME_PATTERN.search(message):
+                    saved["user_name"] = match.group(1).strip()
+                if match := _ROLE_PATTERN.search(message):
+                    saved["user_role"] = match.group(1).strip()
+                for pattern, key in ((_PREFERENCE_PATTERN, "likes"), (_DISLIKE_PATTERN, "dislikes")):
+                    if match := pattern.search(message):
+                        saved[key] = list(dict.fromkeys(saved.get(key, []) + [match.group(1).strip()]))[-20:]
+            saved.update(digest=digest, covered_turn_id=pending[-1]["turn_id"], last_seq=pending[-1].get("storage_seq"))
+            await self._short_term.save_digest(session_id, saved)
+
+        state.history_digest = saved.get("digest")
+        state.user_name = saved.get("user_name")
+        state.user_role = saved.get("user_role")
+        state.likes = list(saved.get("likes", []))
+        state.dislikes = list(saved.get("dislikes", []))
 
     @staticmethod
     def _transcript_fingerprint(turns: List[WorkingMemoryTurn]) -> str:
@@ -293,7 +410,7 @@ class WorkingMemory:
             return
 
         try:
-            from shared.llm_client import LLMClient
+            from shared_runtime.llm_client import LLMClient
         except Exception as exc:
             logger.warning("working_memory.llm_import_failed", error=str(exc))
             return
@@ -351,6 +468,9 @@ class WorkingMemory:
         except Exception as exc:
             logger.warning("working_memory.llm_enrich_failed", error=str(exc))
             return
+        finally:
+            if closer := getattr(llm, "close", None):
+                await closer()
 
         self._cache_set(state.session_id, fingerprint, topic_out, digest_out)
 

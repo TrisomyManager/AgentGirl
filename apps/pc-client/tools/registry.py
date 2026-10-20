@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from policy import CONFIRMATION_REQUIRED, get_policy
+
 
 @dataclass
 class ToolResult:
@@ -57,19 +59,28 @@ class ToolRegistry:
                 requires_confirm=requires_confirm,
             )
             return fn
+
         return _decorator
 
     def list_tools(self) -> List[Dict[str, Any]]:
-        return [t.to_meta() for t in self._tools.values()]
+        policy = get_policy()
+        return [
+            {**t.to_meta(), "requires_confirm": t.name in CONFIRMATION_REQUIRED}
+            for t in self._tools.values()
+            if t.name in policy.capabilities
+        ]
 
-    def exec(self, name: str, params: Dict[str, Any]) -> ToolResult:
+    def exec(self, name: str, params: Dict[str, Any], *, approved=False) -> ToolResult:
         tool = self._tools.get(name)
         if not tool:
-            return ToolResult(ok=False, message=f"Unknown tool: {name}")
+            return ToolResult(ok=False, message="不可用的工具。")
         try:
+            get_policy().authorize(name, params, approved=approved)
             return tool.handler(params)
-        except Exception as exc:
+        except (ValueError, PermissionError) as exc:
             return ToolResult(ok=False, message=str(exc))
+        except Exception:
+            return ToolResult(ok=False, message="本机操作未能完成。")
 
 
 _registry: Optional[ToolRegistry] = None

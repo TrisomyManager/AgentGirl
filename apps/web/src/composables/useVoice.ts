@@ -1,16 +1,33 @@
-import { ref } from 'vue';
+import { getCurrentScope, onScopeDispose, ref } from 'vue';
 
 import { absoluteApiUrl } from './useApi';
+import { rms, type AvatarTimeline } from '../../../../packages/avatar-runtime/src';
+import { avatarClock } from './useAvatarPresentation';
+import { apiFetch as fetch, hasAccessSession } from './accessSession';
+
+export interface PlaybackOptions { force?: boolean; avatarTimeline?: AvatarTimeline }
+
+const AUTO_PLAY_KEY = 'companion_voice_auto_play';
+
+function loadAutoPlayPreference(): boolean {
+  try { return localStorage.getItem(AUTO_PLAY_KEY) !== 'false'; } catch { return true; }
+}
 
 export function useVoice() {
   const isRecording = ref(false);
   const isPlaying = ref(false);
-  const autoPlayEnabled = ref(true);
+  const autoPlayEnabled = ref(loadAutoPlayPreference());
   const recordingDuration = ref(0);
 
   let mediaRecorder: MediaRecorder | null = null;
+  let recordingGeneration = 0;
+  let recordingStream: MediaStream | null = null;
   let audioChunks: Blob[] = [];
   let audioElement: HTMLAudioElement | null = null;
+  let playbackGeneration = 0;
+  let sequenceGeneration = 0;
+  let settlePlayback: (() => void) | null = null;
+  let stopPresentation: (() => void) | null = null;
   let recordingTimer: ReturnType<typeof setInterval> | null = null;
   let recordingStartTime = 0;
 
@@ -18,31 +35,38 @@ export function useVoice() {
 
   async function startRecording(): Promise<void> {
     if (isRecording.value) return;
+    stopAudio();
+    const generation = ++recordingGeneration;
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (generation !== recordingGeneration) { stream.getTracks().forEach(track => track.stop()); return; }
+      recordingStream = stream;
       mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       audioChunks = [];
 
       mediaRecorder.ondataavailable = (e) => {
+        if (generation !== recordingGeneration) return;
         if (e.data.size > 0) {
           audioChunks.push(e.data);
         }
       };
 
       mediaRecorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        if (generation !== recordingGeneration) return;
         const blob = new Blob(audioChunks, { type: 'audio/webm' });
         const durationMs = Math.max(0, Date.now() - recordingStartTime);
         isRecording.value = false;
         stopRecordingTimer();
-        stream.getTracks().forEach((t) => t.stop());
-        onStopRecording.value?.(blob, durationMs);
+        if (generation === recordingGeneration) onStopRecording.value?.(blob, durationMs);
       };
 
       mediaRecorder.onerror = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        if (generation !== recordingGeneration) return;
         isRecording.value = false;
         stopRecordingTimer();
-        stream.getTracks().forEach((t) => t.stop());
       };
 
       mediaRecorder.start(100);
@@ -60,6 +84,16 @@ export function useVoice() {
     if (mediaRecorder && isRecording.value) {
       mediaRecorder.stop();
     }
+  }
+
+  function discardRecording(): void {
+    recordingGeneration += 1;
+    stopRecording();
+    recordingStream?.getTracks().forEach(track => track.stop());
+    recordingStream = null;
+    audioChunks = [];
+    isRecording.value = false;
+    stopRecordingTimer();
   }
 
   function startRecordingTimer() {
@@ -103,63 +137,140 @@ export function useVoice() {
     return resolved;
   }
 
-  async function playAudio(url: string, opts: { force?: boolean } = {}): Promise<void> {
-    if (!opts.force && !autoPlayEnabled.value) {
-      return;
-    }
-
+  async function playSingle(url: string, opts: PlaybackOptions = {}): Promise<void> {
+    if (!opts.force && !autoPlayEnabled.value) return;
+    cancelCurrent();
+    const generation = playbackGeneration;
     let resolved: string;
-    try {
-      resolved = await verifyVoiceAudioReachable(url);
-    } catch (e) {
-      if (e instanceof Error) {
-        throw e;
-      }
-      throw new Error(String(e));
+    try { resolved = await verifyVoiceAudioReachable(url); }
+    catch (error) { if (generation !== playbackGeneration) return; throw error; }
+    if (generation !== playbackGeneration) return;
+    let ownedBlobUrl: string | null = null;
+    if (hasAccessSession()) {
+      const response = await fetch(resolved);
+      if (!response.ok) throw new Error('无法读取当前账号的音频，请重新登录或重新生成语音。');
+      const blob = await response.blob();
+      if (generation !== playbackGeneration) return;
+      ownedBlobUrl = URL.createObjectURL(blob);
+      resolved = ownedBlobUrl;
     }
-
     return new Promise((resolve, reject) => {
-      stopAudio();
-      audioElement = new Audio(resolved);
-      audioElement.onended = () => {
-        isPlaying.value = false;
-        resolve();
+      const element = new Audio();
+      element.crossOrigin = 'anonymous';
+      element.src = resolved;
+      audioElement = element;
+      let context: AudioContext | null = null;
+      let analyser: AnalyserNode | null = null;
+      let source: MediaElementAudioSourceNode | null = null;
+      let frameId = 0, token: number | null = null;
+      const cleanup = () => {
+        if (ownedBlobUrl) { URL.revokeObjectURL(ownedBlobUrl); ownedBlobUrl = null; }
+        cancelAnimationFrame(frameId);
+        if (token !== null) avatarClock.stop(token);
+        source?.disconnect();
+        analyser?.disconnect();
+        if (context) void context.close().catch(() => {});
+        context = null;
       };
-      audioElement.onerror = () => {
-        isPlaying.value = false;
-        reject(
-          new Error(
-            '浏览器无法解码或加载该音频：若为相对路径请确认 VITE_API_BASE_URL 指向后端；若接口返回 502 则为 TTS 上游错误。',
-          ),
-        );
-      };
-      audioElement
-        .play()
-        .then(() => {
-          isPlaying.value = true;
-        })
-        .catch((err) => {
+      stopPresentation = cleanup;
+      let settled = false;
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        element.onended = null;
+        element.onerror = null;
+        if (audioElement === element) {
+          cleanup();
+          stopPresentation = null;
+          audioElement = null;
+          settlePlayback = null;
           isPlaying.value = false;
-          reject(err);
-        });
+        }
+        if (error) reject(error); else resolve();
+      };
+      settlePlayback = () => finish();
+      element.onended = () => finish();
+      element.onerror = () => finish(new Error('音频加载或解码失败，请重试。'));
+      // Keep ordinary audio working when a browser lacks WebAudio analysis.
+      try {
+        const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+        if (Ctx && typeof Ctx.prototype.createMediaElementSource === 'function') {
+          context = new Ctx();
+          void context!.resume().catch(() => {});
+          source = context!.createMediaElementSource(element);
+          source.connect(context!.destination);
+          analyser = context!.createAnalyser();
+          analyser.fftSize = 256;
+          source.connect(analyser);
+        }
+      } catch { /* Mouth stays closed if analysis is unavailable. */ }
+      element.play().then(() => {
+        if (generation !== playbackGeneration || audioElement !== element) return;
+        isPlaying.value = true;
+        token = avatarClock.begin(opts.avatarTimeline);
+        const samples = new Float32Array(analyser?.fftSize || 256);
+        const tick = () => {
+          if (generation !== playbackGeneration || audioElement !== element || token === null) return;
+          analyser?.getFloatTimeDomainData(samples);
+          avatarClock.sample(token, element.currentTime * 1000, analyser ? rms(samples) : 0, !element.paused && !element.ended);
+          frameId = requestAnimationFrame(tick);
+        };
+        frameId = requestAnimationFrame(tick);
+      }).catch(error => {
+        if (generation === playbackGeneration) finish(error);
+      });
     });
   }
 
-  function stopAudio(): void {
+  function cancelCurrent(): void {
+    playbackGeneration++;
     if (audioElement) {
       audioElement.pause();
-      audioElement.currentTime = 0;
-      audioElement = null;
+      try { audioElement.currentTime = 0; } catch { /* not loaded yet */ }
     }
+    settlePlayback?.();
+    stopPresentation?.();
+    stopPresentation = null;
+    audioElement = null;
+    settlePlayback = null;
     isPlaying.value = false;
+  }
+
+  async function playAudio(url: string, opts: PlaybackOptions = {}): Promise<void> {
+    sequenceGeneration++;
+    await playSingle(url, opts);
+  }
+
+  async function playAudioSequence(
+    urls: string[], opts: PlaybackOptions & { avatarTimelines?: (AvatarTimeline | undefined)[] } = {},
+  ): Promise<void> {
+    stopAudio();
+    const generation = sequenceGeneration;
+    for (const [index, url] of urls.entries()) {
+      if (generation !== sequenceGeneration || (!opts.force && !autoPlayEnabled.value)) return;
+      await playSingle(url, { ...opts, avatarTimeline: opts.avatarTimelines?.[index] || opts.avatarTimeline });
+    }
+  }
+
+  function stopAudio(): void {
+    sequenceGeneration++;
+    cancelCurrent();
   }
 
   function toggleAutoPlay(): void {
     autoPlayEnabled.value = !autoPlayEnabled.value;
+    try { localStorage.setItem(AUTO_PLAY_KEY, String(autoPlayEnabled.value)); } catch { /* optional browser storage */ }
     if (!autoPlayEnabled.value) {
       stopAudio();
     }
   }
+
+  if (getCurrentScope()) onScopeDispose(() => {
+    onStopRecording.value = null;
+    discardRecording();
+    stopAudio();
+    stopRecordingTimer();
+  });
 
   return {
     isRecording,
@@ -168,7 +279,9 @@ export function useVoice() {
     recordingDuration,
     startRecording,
     stopRecording,
+    discardRecording,
     playAudio,
+    playAudioSequence,
     verifyVoiceAudioReachable,
     stopAudio,
     toggleAutoPlay,

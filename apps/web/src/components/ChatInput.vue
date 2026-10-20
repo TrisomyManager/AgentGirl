@@ -1,6 +1,16 @@
 <template>
   <div class="chat-input-area">
+    <div v-if="attachments.images.value.length" class="image-previews">
+      <div v-for="(image, index) in attachments.images.value" :key="image.url" class="image-preview">
+        <img :src="image.url" :alt="image.name" />
+        <button type="button" :aria-label="`移除图片 ${index + 1}`" @click="attachments.images.value.splice(index, 1)">×</button>
+      </div>
+    </div>
+    <p v-if="attachments.error.value" role="alert" class="image-error">{{ attachments.error.value }}</p>
     <div class="input-wrapper">
+      <input ref="imageInput" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden @change="selectImages" />
+      <button type="button" class="image-btn" aria-label="添加图片" title="添加图片（最多 3 张）"
+        :disabled="isLoading || attachments.reading.value" @click="imageInput?.click()">＋</button>
       <button
         class="voice-btn"
         :class="{ recording: voice.isRecording.value }"
@@ -49,6 +59,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue';
 import type { useVoice } from '../composables/useVoice';
+import type { SendMessageOptions } from '../composables/useChat';
+import { useImageAttachments } from '../composables/useImageAttachments';
 
 const props = defineProps<{
   isLoading: boolean;
@@ -57,14 +69,22 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'send', text: string): void;
+  (e: 'send', text: string, options?: SendMessageOptions): void;
   (e: 'filled'): void;
 }>();
 
 const inputText = ref('');
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
+const imageInput = ref<HTMLInputElement | null>(null);
+const attachments = useImageAttachments();
 
-const canSend = computed(() => inputText.value.trim().length > 0);
+async function selectImages(event: Event) {
+  const input = event.target as HTMLInputElement;
+  await attachments.select(Array.from(input.files || []));
+  input.value = '';
+}
+
+const canSend = computed(() => !attachments.reading.value && (inputText.value.trim().length > 0 || attachments.images.value.length > 0));
 
 // When parent sets fillText prop, paste it into the input field and focus.
 watch(
@@ -99,8 +119,9 @@ function handleKeydown(e: KeyboardEvent) {
 
 function send() {
   const text = inputText.value.trim();
-  if (!text || props.isLoading) return;
-  emit('send', text);
+  if (!canSend.value || props.isLoading) return;
+  emit('send', text, { imageUrls: attachments.images.value.map(image => image.url) });
+  attachments.clear();
   inputText.value = '';
   nextTick(() => {
     const el = textareaRef.value;
@@ -125,6 +146,13 @@ function stopVoice() {
 </script>
 
 <style scoped>
+.image-previews { display: flex; gap: 10px; margin-bottom: 10px; }
+.image-preview { position: relative; }
+.image-preview img { width: 72px; height: 72px; object-fit: cover; border-radius: 10px; }
+.image-preview button { position: absolute; top: -5px; right: -5px; border: 0; border-radius: 50%; background: #b92846; color: white; cursor: pointer; width: 24px; height: 24px; }
+.image-error { color: #fda4af; font-size: 12px; margin: 0 0 8px; }
+.image-btn { flex-shrink: 0; width: 32px; height: 42px; border: 0; background: transparent; color: #cbd5e1; font-size: 26px; cursor: pointer; }
+.image-btn:disabled { opacity: .4; cursor: not-allowed; }
 .chat-input-area {
   padding: 14px 16px 16px;
   background: rgba(15, 20, 34, 0.92);

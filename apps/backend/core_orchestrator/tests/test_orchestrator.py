@@ -83,7 +83,7 @@ async def test_intent_router_classify_chat() -> None:
     mock_llm.ainvoke = AsyncMock(return_value=mock_response)
     router._llm = mock_llm
 
-    result = await router.classify("你好")
+    result = await router.classify("今天心情不错")
     assert result.intent == Intent.CHAT
     assert result.confidence == pytest.approx(0.95)
 

@@ -18,7 +18,7 @@ _default_provider_name: str = "local"
 _fallback_reason: str | None = None
 _configured_provider: str = "local"
 
-_CLOUD_TTS_PROVIDERS = {"siliconflow", "openai", "dashscope", "fish_audio", "xiaomi_mimo"}
+_CLOUD_TTS_PROVIDERS = {"volcengine", "siliconflow", "openai", "dashscope", "fish_audio", "xiaomi_mimo"}
 
 
 def reset_realtime_registry() -> None:
@@ -64,21 +64,24 @@ def init_registry() -> None:
     register_provider("local", LocalRealtimeProvider())
 
     settings = get_settings()
-    configured = settings.realtime_voice_provider
+    from shared_runtime.voice_runtime_config import get_runtime_voice_config
+
+    rt = get_runtime_voice_config()
+    configured = rt.get("realtime_voice_provider") or settings.realtime_voice_provider
     _configured_provider = configured
     _fallback_reason = None
 
     if configured == "volc_realtime":
-        if settings.volc_app_id and settings.volc_access_token:
-            from voice_layer.providers.realtime.volc_realtime import VolcRealtimeProvider
+        from voice_layer.providers.realtime.volc_realtime import VolcRealtimeProvider
 
-            register_provider("volc_realtime", VolcRealtimeProvider())
-            _default_provider_name = "volc_realtime"
-        else:
+        register_provider("volc_realtime", VolcRealtimeProvider())
+        _default_provider_name = "volc_realtime"
+        if not (rt.get("volc_api_key") or settings.volc_api_key
+                or (settings.volc_app_id and settings.volc_access_token)):
             _fallback_reason = "missing_credentials"
             structlog.get_logger("voice_layer.providers.realtime").warning(
                 "volc_realtime.requested_but_missing_credentials",
-                fallback="local",
+                note="请在设置页填写豆包语音 API Key",
             )
         return
 
