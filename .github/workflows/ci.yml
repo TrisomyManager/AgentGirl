@@ -24,6 +24,8 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v5
+      - name: Install audio conversion tools used by the runtime
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: uv venv && uv pip install -e '.[dev,arch,platforms]'
       - name: Enforce independent module and contract boundaries
         run: .venv/bin/lint-imports --no-cache

@@ -12,6 +12,14 @@ from shared_runtime.access import AccessController, AccessError, Principal, devi
 from shared_runtime.database import AsyncSessionLocal
 from voice_layer.media_access import owns_voice_asset
 
+try:
+    # FastAPI's lazy included routers require effective, prefixed contexts for
+    # introspection. Their outer matches() deliberately discards path_params.
+    from fastapi.routing import iter_route_contexts
+except ImportError:
+    # Earlier supported FastAPI releases flatten routers into app.routes.
+    iter_route_contexts = iter
+
 _ADMIN_PREFIXES = (
     "/orchestrator/admin/",
     "/orchestrator/settings/",
@@ -56,7 +64,7 @@ class HostAccessPolicy:
         if principal.mode == "internal":
             return principal
         params, route_path = {}, ""
-        for route in self.app.routes:
+        for route in iter_route_contexts(self.app.routes):
             match, child = route.matches(scope)
             if match is Match.FULL:
                 params, route_path = child.get("path_params", {}), getattr(route, "path", "")

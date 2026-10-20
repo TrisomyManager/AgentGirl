@@ -73,6 +73,23 @@ async def test_reference_host_binds_users_sessions_and_admin_operations(secure_h
     client.headers["Authorization"] = "Bearer " + keys["bob"]
     assert (await client.post("/orchestrator/turn", json=payload)).status_code == 404
     assert (await client.get(f"/memory/working/{session_id}")).status_code == 404
+
+
+async def test_nested_router_prefix_keeps_path_ownership_checks(secure_host):
+    from fastapi import APIRouter
+
+    app, client, keys = secure_host
+    inner, outer = APIRouter(), APIRouter()
+
+    @inner.get("/users/{user_id}")
+    async def owned(user_id: str):
+        return {"user_id": user_id}
+
+    outer.include_router(inner, prefix="/level")
+    app.include_router(outer, prefix="/compat")
+    client.headers["Authorization"] = "Bearer " + keys["alice"]
+    assert (await client.get("/compat/level/users/alice")).status_code == 200
+    assert (await client.get("/compat/level/users/bob")).status_code == 403
     client.headers["Authorization"] = "Bearer " + keys["operator"]
     assert (await client.get("/orchestrator/settings/llm")).status_code == 200
 
