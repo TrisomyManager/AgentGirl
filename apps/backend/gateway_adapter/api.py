@@ -144,16 +144,26 @@ async def broadcast_message(
 ) -> Dict[str, Any]:
     """Broadcast a message to all platforms for a user."""
     sent: List[str] = []
+    unconfirmed: List[str] = []
     for platform, adapter in adapters.items():
         if platform in req.exclude_platforms:
             continue
         try:
-            await adapter.broadcast(req.user_id, req.content)
-            sent.append(platform.value)
-        except Exception:
-            logger.exception("api.broadcast_failed", platform=platform.value, user_id=req.user_id)
+            receipt = await adapter.broadcast(req.user_id, req.content)
+            if receipt is not None:
+                sent.append(platform.value)
+            else:
+                unconfirmed.append(platform.value)
+        except Exception as error:
+            unconfirmed.append(platform.value)
+            logger.warning("api.broadcast_failed", platform=platform.value, reason=type(error).__name__)
     logger.info("api.broadcast", user_id=req.user_id, sent=sent)
-    return {"success": True, "sent_to": sent}
+    result = {"success": bool(sent) and not unconfirmed, "sent_to": sent, "unconfirmed": unconfirmed}
+    if unconfirmed:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(result, status_code=502)
+    return result
 
 
 @router.post("/receive")
@@ -251,7 +261,7 @@ async def app_websocket(
                 has_image=payload.get("has_image", False),
                 image_urls=payload.get("image_urls", []),
             )
-            logger.debug("api.ws_message", user_id=user_id, content=content[:50])
+            logger.debug("api.ws_message", user_id=user_id, content_length=len(content))
     except WebSocketDisconnect:
         await app_ws.disconnect(user_id, websocket)
         logger.info("api.ws_disconnected", user_id=user_id)

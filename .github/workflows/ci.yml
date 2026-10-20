@@ -28,7 +28,7 @@ jobs:
       - name: Enforce independent module and contract boundaries
         run: .venv/bin/lint-imports --no-cache
       - name: Offline Lite regression including worker cleanup
-        run: .venv/bin/python -m pytest -q --ignore=voice_layer/tests/test_voice.py --ignore=memory_system/tests/test_memory.py -W error::pytest.PytestUnhandledThreadExceptionWarning
+        run: .venv/bin/python -m pytest -q --ignore=voice_layer/tests/test_voice.py --ignore=memory_system/tests/test_memory.py -W error::pytest.PytestUnhandledThreadExceptionWarning -W error::pytest.PytestUnraisableExceptionWarning
       - name: Build distributable wheel with runtime persona assets
         run: uv build --wheel --out-dir dist
       - name: Desktop tool scope and private bridge regression

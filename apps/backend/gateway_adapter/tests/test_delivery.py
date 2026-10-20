@@ -128,3 +128,26 @@ async def test_gateway_does_not_claim_delivery_without_platform_receipt():
         )
     assert error.value.status_code == 502
     adapter.send_message.assert_awaited_once()
+
+
+async def test_legacy_broadcast_exposes_partial_confirmation_and_does_not_retry():
+    from gateway_adapter.api import BroadcastRequest, broadcast_message
+
+    confirmed, unconfirmed = AsyncMock(), AsyncMock()
+    confirmed.broadcast.return_value = "real-receipt"
+    unconfirmed.broadcast.return_value = None
+    response = await broadcast_message(BroadcastRequest(user_id="owner", content="synthetic"),
+        {Platform.TELEGRAM: confirmed, Platform.DISCORD: unconfirmed})
+    assert response.status_code == 502
+    assert json.loads(response.body) == {"success": False, "sent_to": ["telegram"], "unconfirmed": ["discord"]}
+    confirmed.broadcast.assert_awaited_once()
+    unconfirmed.broadcast.assert_awaited_once()
+
+
+async def test_telegram_broadcast_returns_actual_confirmation():
+    adapter = TelegramAdapter({"bot_token": "123:synthetic"})
+    await attach(adapter, lambda _: httpx.Response(200, json={"ok": True, "result": {"message_id": 90}}))
+    try:
+        assert await adapter.broadcast("22", "synthetic") == "90"
+    finally:
+        await adapter._client.aclose()

@@ -55,9 +55,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._logger.warning("telegram.delivery_unconfirmed", outcome=response.outcome, status=response.status)
         return None
 
-    async def broadcast(self, user_id: str, content: str) -> None:
+    async def broadcast(self, user_id: str, content: str) -> Optional[str]:
         # Telegram has no native broadcast; just send to the user
-        await self.send_message(user_id, content)
+        return await self.send_message(user_id, content)
 
     async def health_check(self) -> bool:
         if not self._token:

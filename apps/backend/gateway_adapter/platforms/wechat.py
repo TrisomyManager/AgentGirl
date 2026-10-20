@@ -70,5 +70,5 @@ class WeChatAdapter(BasePlatformAdapter):
             self._logger.warning("wechat.send_failed", user_id=user_id, reason=type(exc).__name__)
         return None
 
-    async def broadcast(self, user_id: str, content: str) -> None:
-        await self.send_message(user_id, content)
+    async def broadcast(self, user_id: str, content: str) -> Optional[str]:
+        return await self.send_message(user_id, content)

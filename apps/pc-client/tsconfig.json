@@ -16,7 +16,13 @@
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
     "paths": {
-      "@/*": ["../web/src/*"]
+      "@/*": ["../web/src/*"],
+      "vue": ["./node_modules/vue"],
+      "pixi.js": ["./node_modules/pixi.js"],
+      "pixi-live2d-display": ["./node_modules/pixi-live2d-display/types/index.d.ts"],
+      "pixi-live2d-display/cubism2": ["./node_modules/pixi-live2d-display/types/index.d.ts"],
+      "@ricky0123/vad-web": ["./node_modules/@ricky0123/vad-web"],
+      "onnxruntime-web": ["./node_modules/onnxruntime-web"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.vue", "../web/src/**/*.ts", "../web/src/**/*.vue"],

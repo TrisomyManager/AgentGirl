@@ -45,5 +45,5 @@ class DiscordAdapter(BasePlatformAdapter):
         self._logger.warning("discord.delivery_unconfirmed", outcome=response.outcome, status=response.status)
         return None
 
-    async def broadcast(self, user_id: str, content: str) -> None:
-        await self.send_message(user_id, content)
+    async def broadcast(self, user_id: str, content: str) -> Optional[str]:
+        return await self.send_message(user_id, content)

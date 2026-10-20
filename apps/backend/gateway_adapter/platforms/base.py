@@ -43,8 +43,8 @@ class BasePlatformAdapter(ABC):
         self,
         user_id: str,
         content: str,
-    ) -> None:
-        """Broadcast a message to all sessions for this user on this platform."""
+    ) -> Optional[str]:
+        """Return a confirmed platform receipt, or None when delivery is unconfirmed."""
 
     async def health_check(self) -> bool:
         """Optional health check. Override if the platform supports it."""

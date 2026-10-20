@@ -95,15 +95,18 @@ class GatewayEventConsumer:
             logger.warning("event_consumer.no_adapter", platform=event.platform.value)
             return
         try:
-            await adapter.send_message(
+            receipt = await adapter.send_message(
                 user_id=event.user_id,
                 content=event.content,
                 media={"voice_url": event.voice_url, "action_sequence": event.action_sequence.model_dump() if event.action_sequence else None},
                 reply_to_message_id=event.reply_to_message_id,
             )
+            if receipt is None:
+                logger.warning("event_consumer.delivery_unconfirmed", platform=event.platform.value)
+                return
             logger.info("event_consumer.sent", platform=event.platform.value, user_id=event.user_id)
-        except Exception:
-            logger.exception("event_consumer.send_failed", platform=event.platform.value, user_id=event.user_id)
+        except Exception as error:
+            logger.warning("event_consumer.send_failed", platform=event.platform.value, reason=type(error).__name__)
 
     async def _handle_broadcast(self, data: Dict[str, Any]) -> None:
         try:
@@ -115,10 +118,13 @@ class GatewayEventConsumer:
             if platform in event.exclude_platforms:
                 continue
             try:
-                await adapter.broadcast(event.user_id, event.content)
+                receipt = await adapter.broadcast(event.user_id, event.content)
+                if receipt is None:
+                    logger.warning("event_consumer.broadcast_unconfirmed", platform=platform.value)
+                    continue
                 logger.info("event_consumer.broadcasted", platform=platform.value, user_id=event.user_id)
-            except Exception:
-                logger.exception("event_consumer.broadcast_failed", platform=platform.value, user_id=event.user_id)
+            except Exception as error:
+                logger.warning("event_consumer.broadcast_failed", platform=platform.value, reason=type(error).__name__)
 
     # ------------------------------------------------------------------
     # Publishing helpers (used by incoming webhooks / WS)
