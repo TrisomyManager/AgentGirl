@@ -136,8 +136,10 @@ async def test_legacy_broadcast_exposes_partial_confirmation_and_does_not_retry(
     confirmed, unconfirmed = AsyncMock(), AsyncMock()
     confirmed.broadcast.return_value = "real-receipt"
     unconfirmed.broadcast.return_value = None
-    response = await broadcast_message(BroadcastRequest(user_id="owner", content="synthetic"),
-        {Platform.TELEGRAM: confirmed, Platform.DISCORD: unconfirmed})
+    response = await broadcast_message(
+        BroadcastRequest(user_id="owner", content="synthetic"),
+        {Platform.TELEGRAM: confirmed, Platform.DISCORD: unconfirmed},
+    )
     assert response.status_code == 502
     assert json.loads(response.body) == {"success": False, "sent_to": ["telegram"], "unconfirmed": ["discord"]}
     confirmed.broadcast.assert_awaited_once()

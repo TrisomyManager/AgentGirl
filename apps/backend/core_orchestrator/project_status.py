@@ -114,8 +114,8 @@ def get_project_status() -> ProjectStatusData:
     """Return current project development status."""
     return ProjectStatusData(
         project_name="Companion AI（通用陪伴 AI 模块库 · 内部技术原型）",
-        version="0.2.0 · V2.26 多平台收发与绑定",
-        current_phase="平台实现待账号验收 · 继续部署，3D待确认",
+        version="0.2.0 · V2.27 CI与容器验收",
+        current_phase="当前可执行计划已验收 · 平台账号与3D暂缓",
         summary=(
             "2026-10-20：用户要求持续至全部计划完成。5.2 图片与 5.3/8.4 表情音频同步已真实验证，继续插件与生态。主动陪伴设置、用户独立评估、原子提醒与持久化补收已接通；"
             "对话存档、批次摘要、可恢复遗忘、实体图谱融合检索和日回顾已落地；真实方舟摘要和压缩已验证。"
@@ -127,7 +127,7 @@ def get_project_status() -> ProjectStatusData:
             "默认参考宿主的账号隔离、撤销活动流、导出/删除与待重试清理已通过真实验证。"
             "普通/SSE/任务/TTS 发出前规则检查与原生无文字音频暂存、用户 SQL 记忆网络及原文依据已验证。"
             "桌面内置工具的私有桥/能力与文件范围、逐次确认、原子命令状态和 Windows 原生通知已实际验证。"
-            "当前按路线图 38 项中验收 35 项计为 92%，整体计划尚未完成；多平台真实账号验收暂缓，实际容器/CI继续；3D由用户暂缓，待讨论确认。"
+            "当前按路线图 38 项中验收 36 项计为 95%，整体计划尚未完成；实际容器/CI已验收；多平台真实账号与3D按用户要求暂缓。"
             "以下为既有工程的历史能力说明："
             "内部技术原型 Demo，目标是让所有模块都可以独立拆开接入任意第三方数字生命项目。"
             "demo 形态完整：FastAPI 单体 + LangGraph 编排 + 实时语音 + 记忆双层 + 行动执行器 + Live2D 前端。"
@@ -138,8 +138,9 @@ def get_project_status() -> ProjectStatusData:
             "check_arch 反向依赖=0 / 直连SDK=0 / 横向耦合=1（action_layer→action_executor 兼容 shim）/ hardcoded_persona=59（绝大多数集中在 voice_layer/tests/test_resolver.py 与 voice_layer/resolver.py 的预设别名，已记入 baseline）。"
         ),
         last_updated="2026-10-20",
-        overall_progress=92,
+        overall_progress=95,
         recent_highlights=[
+            "V2.27：36/38；远端Linux839/桌面工具16/Web86/双端审计构建/6导入契约/生产存储/非root容器全部通过，PR10保留审阅。",
             "V2.26：三平台收发/绑定/持久回执/隐私联动与本地实际SDK通过；真实账号验收暂缓，3D待用户确认。",
             "V2.25：35/38；图来源、单删/淡化/恢复、持续清理和服务器防重放通过实际数据库/方舟/安装包验证。",
             "V2.24：仍34/38；实际Neo4j审阅迁移/隔离、整库清理补偿与重启恢复通过；继续单条记忆图来源解绑。",
@@ -206,8 +207,8 @@ def get_project_status() -> ProjectStatusData:
         ],
         next_focus=[
             FocusItem(
-                title="继续实际部署与远端CI",
-                detail="已验收35/38；继续实际容器与远端CI。多平台真实账号验收按用户要求暂缓，3D先讨论确认后开发。",
+                title="平台账号验收待用户配置",
+                detail="已验收36/38；实际CI与容器完成。平台功能已实现，真实账号和专用目标由用户暂缓提供；3D待讨论确认。",
             ),
             FocusItem(
                 title="记忆增强与数据连续性",
@@ -224,8 +225,8 @@ def get_project_status() -> ProjectStatusData:
         ],
         risks=[
             FocusItem(
-                title="平台与部署仍待实际联调",
-                detail="Lite与实时语音人格/关系已验证；生产SQL/Neo4j与图来源清理已验收；多平台真实账号、Docker/远端CI和3D仍待完成。",
+                title="平台真实账号与3D暂缓",
+                detail="Lite与实时语音人格/关系已验证；生产SQL/Neo4j与图来源清理已验收；Docker/远端CI已验；平台真实账号和3D按用户要求暂缓。",
             ),
             FocusItem(
                 title="TTS HTTP 注入与宿主范围",
@@ -339,10 +340,11 @@ def get_project_status() -> ProjectStatusData:
                 "pytest -q --ignore=voice_layer/tests/test_voice.py --ignore=memory_system/tests/test_memory.py "
                 "-W error::pytest.PytestUnhandledThreadExceptionWarning"
             ),
-            passed=836,
+            passed=839,
             failed=0,
             skipped=0,
             notes=[
+                "V2.27：远端Linux839（67.24s）、桌面工具16、Web86、双端审计构建、实际PostgreSQL/Redis7/Neo4j和非root Docker均通过。",
                 "V2.26：836 passed（55.22s，严格线程/无法回收异常警告）、Web86/双构建/6导入契约；真实本地Discord SDK HTTP/WS与QQ监听通过。",
                 "V2.25：778 passed（42.86s）、Web85/双构建、6导入契约；实际图来源/单删/淡化/恢复/防重放与干净wheel SQL/Neo4j通过。",
                 "V2.24：773 passed（46.04s）、Web83/双端构建、6导入契约和干净wheel宿主/端口通过；实际图提取/迁移/整库清理通过，单条来源仍待补齐。",

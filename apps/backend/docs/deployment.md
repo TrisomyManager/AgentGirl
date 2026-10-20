@@ -39,7 +39,11 @@ docker compose up --build -d
 
 V2.26镜像包含平台可选依赖，但多平台仍默认关闭，启用条件见[平台会话](platform-conversations.md)。发布前扫描排除本机`.codex/config.toml`；该文件曾被Git跟踪且含明文服务凭据，新快照移除其跟踪但保留本机文件。历史记录中的凭据需要账号所有者轮换，当前文件删除不等于历史清除。
 
-本地已构建并检查 wheel，使用独立安装目录中的模块实际启动宿主，验证人格资源、健康状态、记忆、导出和删除。当前执行机器没有 Docker 引擎；Docker/Compose 的真实运行、Linux 镜像与远端 workflow 结果尚未验收。6.3 保持进行中，不能把 YAML 解析和本机 wheel 验证记录为镜像成功。
+V2.27已通过[实际Linux CI](https://github.com/TrisomyManager/AgentGirl/actions/runs/39377276774)：后端839、桌面工具16、Web86、双端审计/测试/构建、6导入契约、wheel，以及真实PostgreSQL/Redis7/Neo4j门禁。Docker实际构建并通过非root就绪、登录、重启撤销、卷持久化、导出与删除；6.3验收。本机仍没有Docker引擎，该证据来自隔离的GitHub runner，未部署或推送注册表。
+
+干净安装使用`sqlalchemy[asyncio]`显式带入greenlet；音频回归安装FFmpeg/ffprobe。FastAPI0.150使用公开`iter_route_contexts`提取有效路由及前缀，旧版本保留平铺路由兼容，不能因为框架升级而丢失账号所有权判断。PC类型解析明确使用其自身已安装的SDK，独立CI不再借用Web的node_modules。
+
+本地干净wheel独立宿主和真实Windows解包程序此前已验。签名安装器、其他OS实际运行、多worker与负载测试仍保留原边界，不能由Linux构建或容器冒烟推定。
 
 ## 桌面打包来源与语音资源
 

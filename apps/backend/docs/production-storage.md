@@ -1,5 +1,7 @@
 # PostgreSQL 生产存储与迁移
 
+V2.27补充：已通过[远端Linux生产存储门禁](https://github.com/TrisomyManager/AgentGirl/actions/runs/39377276774)，包含实际PostgreSQL/pgvector、Redis7与Neo4j的隔离、迁移、重启和清理。平台真实账号与3D按用户要求暂缓，整体状态以根执行表为准。
+
 2026-10-20 · V2.23。2.1 的生产 SQL 联调已验收，累计 34/38。SQL、对话原文、批次摘要、人格/关系、记忆状态及本地实体索引均已在真实 PostgreSQL 验证。参考宿主仍按单进程运行；多 worker 编排与分布式租约不属于这次验收。
 
 ## 运行
