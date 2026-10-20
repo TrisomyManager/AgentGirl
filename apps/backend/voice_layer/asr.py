@@ -10,6 +10,7 @@ import contextlib
 import io
 import struct
 import time
+import wave
 from typing import Any
 from urllib.parse import urlparse
 
@@ -19,7 +20,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from shared_contracts.models import EmotionTag, VoiceTranscriptionResult
 from shared_runtime.llm_client import get_runtime_llm_config
-from shared_runtime.voice_runtime_config import get_runtime_voice_config
+from shared_runtime.voice_runtime_config import get_effective_voice_config as get_runtime_voice_config
 from voice_layer.voice_errors import VoiceConfigurationError
 
 logger = structlog.get_logger("voice_layer.asr")
@@ -64,6 +65,8 @@ class ASRClient:
         if not base_url:
             return "unset"
         bl = base_url.lower()
+        if "openspeech.bytedance.com" in bl:
+            return "volcengine"
         if "dashscope" in bl or "aliyuncs" in bl:
             return "dashscope"
         if "groq" in bl:
@@ -92,6 +95,17 @@ class ASRClient:
     async def close(self) -> None:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+
+    @staticmethod
+    def _uploaded_duration_ms(audio_data: bytes) -> int:
+        """Use decoded WAV metadata; zero means the encoded duration is unknown."""
+        try:
+            with wave.open(io.BytesIO(audio_data), "rb") as audio:
+                samples = audio.readframes(audio.getnframes())
+                frame_bytes = audio.getnchannels() * audio.getsampwidth()
+                return round((len(samples) // frame_bytes) * 1000 / audio.getframerate())
+        except (wave.Error, EOFError, ZeroDivisionError):
+            return 0
 
     @staticmethod
     def _pcm_to_wav(pcm_int16: bytes, sample_rate: int = 16000) -> bytes:
@@ -130,6 +144,9 @@ class ASRClient:
         model = self.default_model
         host = _base_url_host(self.base_url)
 
+        if self.provider == "volcengine":
+            wav = self._pcm_to_wav(pcm_int16, sample_rate)
+            return (await self._transcribe_volcengine(wav, model))[0]
         if self.provider == "dashscope":
             wav = self._pcm_to_wav(pcm_int16, sample_rate)
             from voice_layer.providers.dashscope import transcribe_dashscope
@@ -240,7 +257,16 @@ class ASRClient:
             upload_filename=fname,
         )
 
-        if self.provider == "dashscope":
+        if self.provider == "volcengine":
+            # Browser MediaRecorder emits WebM; the API accepts WAV/MP3/Ogg Opus.
+            if fname.endswith(".webm") or audio_data[:4] == b"\x1aE\xdf\xa3":
+                from voice_layer.audio_utils import convert_audio_format
+
+                audio_data = await convert_audio_format(
+                    audio_data, "webm", "wav", target_sample_rate=16000, target_channels=1,
+                )
+            text, confidence = await self._transcribe_volcengine(audio_data, model)
+        elif self.provider == "dashscope":
             text, confidence = await self._transcribe_dashscope(audio_data, model)
         else:
             text, confidence = await self._transcribe_openai_compat(
@@ -258,7 +284,7 @@ class ASRClient:
         )
 
         detected_emotion = await self._detect_emotion(text, language)
-        duration_ms = len(audio_data) // 32
+        duration_ms = self._uploaded_duration_ms(audio_data)
 
         return VoiceTranscriptionResult(
             text=text,
@@ -295,6 +321,14 @@ class ASRClient:
         text = payload.get("text", "").strip()
         confidence = self._extract_confidence(payload)
         return text, confidence
+
+    async def _transcribe_volcengine(self, audio_data: bytes, model: str) -> tuple[str, float]:
+        from voice_layer.providers.volcengine import transcribe
+
+        return await transcribe(
+            await self._get_client(), audio_data, api_key=self.api_key,
+            base_url=self.base_url, resource_id=model,
+        )
 
     async def _transcribe_dashscope(self, audio_data: bytes, model: str) -> tuple[str, float]:
         from voice_layer.providers.dashscope import transcribe_dashscope

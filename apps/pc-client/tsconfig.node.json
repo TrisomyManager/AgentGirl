@@ -10,5 +10,5 @@
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["electron/**/*.ts", "vite.config.ts"]
+  "include": ["electron/**/*.ts", "vite.config.mts"]
 }

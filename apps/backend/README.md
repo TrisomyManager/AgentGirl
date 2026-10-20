@@ -200,3 +200,7 @@ Important boundary: `avatar_runtime` must not own Xiaonuan's persona, memory, to
 OpenTalking-like projects may be used as architectural references for realtime digital-human pipelines, backend adapters, WebRTC transport, subtitles, and interruption handling. Do not import their full source trees into this repository.
 
 Detailed design: [`docs/avatar-runtime-architecture.md`](docs/avatar-runtime-architecture.md).
+
+## 火山引擎模型配置
+
+默认聊天、推理、记忆向量与语音已统一为火山引擎。填写 `.env` 中的 `COMPANION_ARK_API_KEY` 和 `COMPANION_VOLC_API_KEY`，或通过设置页填写。详见 [火山引擎接入说明](VOLCENGINE.md) 和 [.env.example](.env.example)。

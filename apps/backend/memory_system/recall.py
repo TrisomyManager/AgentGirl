@@ -4,9 +4,23 @@ from typing import List, Optional
 
 import httpx
 import structlog
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared_runtime.config import get_settings
+from memory_system.dream import DailySummaryORM
+from memory_system.graph_index import graph_candidates
+from memory_system.graph_lifecycle import cleanup_pending, eligible_memory_ids
+from memory_system.graph_store import graph_store
+from memory_system.lifecycle import (
+    MemoryEpochORM,
+    capture_memory_epoch,
+    lock_memory_epoch,
+    record_recall,
+    restore_memory,
+)
+from memory_system.short_term import short_term_memory
+from memory_system.vector_store import search_similar
+from memory_system.working import get_working_memory
 from shared_contracts.models import (
     MemoryCategory,
     MemoryEntry,
@@ -14,10 +28,7 @@ from shared_contracts.models import (
     RelationshipMetrics,
     WorkingMemorySnapshot,
 )
-
-from memory_system.graph_store import graph_store
-from memory_system.vector_store import search_similar
-from memory_system.working import get_working_memory
+from shared_runtime.config import get_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -56,6 +67,7 @@ async def recall_memory(
     include_graph: bool = True,
     category: Optional[MemoryCategory] = None,
     min_importance: Optional[float] = None,
+    include_dormant: bool = False,
 ) -> MemoryRecallResult:
     """Combined memory recall: vector search + graph traversal + relationship metrics."""
     logger.info(
@@ -67,33 +79,68 @@ async def recall_memory(
     )
 
     # 1. Vector similarity search
-    entries = await search_similar(
+    read_epoch = await capture_memory_epoch(user_id)
+    semantic_entries = await search_similar(
         session=session,
         user_id=user_id,
         query=query,
-        top_k=top_k,
+        top_k=min(150, top_k * 3),
         category=category,
         min_importance=min_importance,
+        include_dormant=include_dormant,
     )
 
+    graph_entries, local_graph_facts = (
+        await graph_candidates(
+            session,
+            user_id,
+            query,
+            semantic_entries,
+            top_k=min(150, top_k * 3),
+            category=category,
+            min_importance=min_importance,
+            include_dormant=include_dormant,
+            facts_with_sources=True,
+        )
+        if include_graph and settings.enable_local_memory_graph
+        else ([], [])
+    )
+    entries = fuse_candidates(semantic_entries, graph_entries, top_k, include_dormant=include_dormant)
+    stale_read = not await lock_memory_epoch(session, user_id, expected=read_epoch)
+    if not stale_read:
+        for entry in entries:
+            if include_dormant and entry.expires_at is not None:
+                await restore_memory(session, user_id, entry.entry_id, commit=False, record_access=False)
+                entry.expires_at = None
+        await record_recall(session, user_id, entries)
+    else:
+        await session.rollback()
+        entries = []
+    await session.commit()
+    previous = await short_term_memory.history.latest_user_digest(user_id, exclude_session_id=session_id)
+    daily = (
+        await session.execute(
+            select(DailySummaryORM)
+            .where(
+                DailySummaryORM.user_id == user_id,
+            )
+            .order_by(DailySummaryORM.day.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
     # 2. Knowledge graph facts
-    graph_facts: List[str] = []
-    if include_graph and settings.enable_knowledge_graph and getattr(graph_store, "_driver", None) is not None:
+    external_evidence = []
+    if (include_graph and settings.enable_knowledge_graph and getattr(graph_store, "_driver", None) is not None
+            and not await cleanup_pending(user_id, session=session)):
         try:
-            graph_facts = await graph_store.get_user_facts(user_id, limit=top_k * 2)
+            ids = await eligible_memory_ids(session, user_id, [entry.entry_id for entry in entries])
+            external_evidence = await graph_store.get_memory_facts(user_id, memory_ids=list(ids), limit=top_k * 2)
         except Exception as exc:
             logger.warning("recall.graph_fetch_failed", user_id=user_id, error=str(exc))
 
     # 3. Relationship metrics from persona_engine
     relationship_snapshot = await _fetch_relationship_metrics(user_id)
-
-    # 4. Build user profile summary from graph
-    user_profile_summary = None
-    if graph_facts:
-        user_profile_summary = (
-            f"User {user_id} has {len(graph_facts)} known facts. "
-            f"Key facts: {', '.join(graph_facts[:3])}"
-        )
 
     # 5. Working memory: rolling per-session context + structured live summary.
     #    Sits orthogonal to the persistent vector / graph layers above. Only
@@ -114,6 +161,7 @@ async def recall_memory(
                     dominant_topic=wm_state.dominant_topic,
                     dominant_topic_heuristic=wm_state.dominant_topic_heuristic,
                     session_digest=wm_state.session_digest,
+                    history_digest=wm_state.history_digest,
                     last_user_emotion=wm_state.last_user_emotion,
                     last_assistant_preview=wm_state.last_assistant_preview,
                     recent_turns=[
@@ -136,12 +184,34 @@ async def recall_memory(
                 error=str(exc),
             )
 
+    # Every fact keeps its SQL source until publication. A delayed graph or
+    # profile response cannot restore a deleted/faded source or a cleared digest.
+    current_epoch = await session.scalar(select(MemoryEpochORM.epoch).where(MemoryEpochORM.user_id == user_id)) or 0
+    if stale_read or current_epoch != read_epoch:
+        entries, local_graph_facts, external_evidence = [], [], []
+        previous, daily, working_memory_snapshot = {}, None, None
+    source_ids = {entry.entry_id for entry in entries} | {
+        item["memory_id"] for item in local_graph_facts + external_evidence
+    }
+    current = await eligible_memory_ids(session, user_id, source_ids)
+    entries = [entry for entry in entries if entry.entry_id in current]
+    if await cleanup_pending(user_id, session=session):
+        external_evidence = []
+    graph_facts = list(dict.fromkeys(item["text"] for item in local_graph_facts + external_evidence
+                                     if item["memory_id"] in current))
+    user_profile_summary = (
+        f"User {user_id} has {len(graph_facts)} known facts. Key facts: {', '.join(graph_facts[:3])}"
+        if graph_facts else None
+    )
     result = MemoryRecallResult(
         entries=entries,
         graph_facts=graph_facts,
         relationship_snapshot=relationship_snapshot,
         user_profile_summary=user_profile_summary,
         working_memory=working_memory_snapshot,
+        previous_session_digest=previous.get("digest"),
+        daily_summary=daily.summary if daily else None,
+        daily_summary_date=daily.day if daily else None,
     )
     logger.info(
         "recall.done",
@@ -152,3 +222,26 @@ async def recall_memory(
         working_memory_turns=working_memory_snapshot.turn_count if working_memory_snapshot else 0,
     )
     return result
+
+
+def fuse_candidates(
+    semantic: List[MemoryEntry], graph: List[MemoryEntry], top_k: int, *, include_dormant: bool = False
+) -> List[MemoryEntry]:
+    """Weighted reciprocal-rank fusion plus retention, without comparing incompatible score scales."""
+    scores = {}
+    candidates = {}
+    for channel, weight in ((semantic, 1.0), (graph, 0.9)):
+        for rank, entry in enumerate(channel):
+            if channel is semantic and entry.similarity is not None and entry.similarity < 0.18:
+                continue
+            if entry.memory_status == "dormant" and not include_dormant:
+                # A precise semantic cue can bring a faded memory back; generic graph associations cannot.
+                if entry.similarity is None or entry.similarity < 0.8:
+                    continue
+            salience = entry.effective_importance if entry.effective_importance is not None else entry.importance
+            factor = 0.6 + 0.4 * salience
+            scores[entry.entry_id] = scores.get(entry.entry_id, 0) + weight * factor / (60 + rank + 1)
+            if entry.entry_id not in candidates or entry.similarity is not None:
+                candidates[entry.entry_id] = entry
+    entries = [candidates[key] for key in sorted(scores, key=scores.get, reverse=True)[:top_k]]
+    return entries

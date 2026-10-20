@@ -2,7 +2,21 @@
 
 > 来源：路线图 Phase 8.1，借鉴 [dlp3d-ai/orchestrator](https://github.com/dlp3d-ai/orchestrator) 的
 > Aggregator 模式（长回复切句 → TTS/Reaction 并行 → 聚合后按序下发）。
-> 状态：设计稿 v1，待评审后实施。
+> 状态：8.1/8.2 已实现并验收（2026-10-19）；用户已恢复开发，5.1 连续性进展见 realtime-conversation-continuity.md。下方原设计保留为历史方案，实际接线与差异以本节为准。
+
+## 实施与验收记录（V2.11）
+
+2026-10-20 更新：5.3/8.4 已实现实际音频时钟驱动的表情/动作/RMS 口型和独立 avatar_runtime；真实浏览器播放/停止/重播及默认原生通话通过。详见 [avatar-audio-synchronization.md](avatar-audio-synchronization.md)。下方“尚未聚合”指 V2.11 的历史边界。
+
+- 链路 A：`core_orchestrator/streaming_voice.py::stream_voice_events` 注入合成回调，受控并行、按序交付；客户端以 `supports_segmented_voice=true` 协商。SSE 事件为 `voice_segment`、`voice_segment_error`、`voice_done`；结束响应保存 `voice_mode` 与 `voice_segments`。单段失败继续文字/其他段，旧客户端和普通非流式入口保留全文合成。最多 128 段，超出时明确 truncated；`_voice_context` 只供宿主内部使用，不暴露于 SSE。
+- 默认配置：`enable_streaming_tts=true`，`streaming_tts_max_concurrency=2`（1–4），句长 min=8、max=100，单段 timeout=30 秒；环境变量前缀均为 `COMPANION_`。表情/动作时间轴另属 8.4，当前未实现该聚合器。
+- 链路 B：实际端点 `/voice/realtime`；`voice_layer/streaming_pipeline.py::stream_pcm_speech` 分离 token 消费、预合成、有序输出；cloud 两个合成工作单元，本地 Piper 因引擎串行使用一个。队列有界、PCM 拆 4 KiB，取消等待子任务与 LLM/TTS 迭代器退出。输入录音最多 60 秒，超限 recoverable，reset/interrupt 可恢复。
+- 播放：`segmentedPlayback.ts` 保序、跳过失败段，支持停止/重听和刷新保留。`useRealtimeVoice.ts` 通过代次拒绝迟到解码，压缩块按源顺序交付，PCM 半采样拼接；生成结束后仍等真实声音播放完再回到聆听。自适应启动缓冲 40–250ms，待播时长含新块最多 30 秒、待解码 16、单帧 2 MiB。挂断后的迟到麦克风授权会释放资源。
+- 原生豆包 `volc_realtime`/O2 默认保持：打断后丢弃旧文本/音频直到下一轮 ASR 完结；双向任务在取消时都清理，文本结束与音频结束分别发送事件。没有语音流的动作/表情取消仍留在 8.4。
+- 生命周期：SSE 显式关闭嵌套生成器，断流释放会话锁；本地线程桥停止后不再给旧循环投递。SQLite 取消建连时等建连/关闭/工作线程退出再传播，覆盖真实 aiosqlite 与二次取消，不忽略线程异常。
+- 真实语音：聊天 7 段全部成功，首段早于末 token；前两段下载并经豆包 ASR 回识别得到原句。固定 101 字/三句文本、两臂交替顺序 20 组（40/40 成功），首音中位全文 6.703s、分段 4.234s，下降 36.8%；均值 6.887s/4.406s。该固定文本服务测量未宣称达到 50% 估计，也不代表泛化性能或主观听感评分。可用 `tools/benchmark_streaming_voice.py` 复跑，报告在忽略目录 `output/playwright/streaming-latency.json`。
+- O2 实测打断确认后 2 秒残留音频 0 字节，下一轮重新收到音频。浏览器验证自动播放、停止/重听、刷新保存及 390×844 布局。本轮临时服务和浏览器已关闭。
+- 最终回归：后端 603 passed（49.76s，线程警告视为错误，3 条既有弃用提示），Web 42 passed，Web/PC builds passed。5.1 完整实时人格/记忆/独立反应链路、8.4 时间轴聚合、图片与其他未验收项仍保留；整体计划 21/38，当前暂停。
 
 ---
 

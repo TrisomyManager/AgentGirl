@@ -1,4 +1,5 @@
 # Environment files
+.codex/config.toml
 .env
 .env.local
 .env.lite
@@ -57,6 +58,8 @@ Thumbs.db
 
 # Database
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 
@@ -101,8 +104,22 @@ temp/
 # companion-ai specific
 companion_lite.db
 companion_lite.db-journal
+companion_lite.db-wal
+companion_lite.db-shm
 companion_llm_config.json
+companion_voice_config.json
+companion_mcp_config.json
+companion_plugins_config.json
+companion_access_config.json
+companion_access_credentials*.json
+companion_graph_migration*.json
+companion_platforms_config.json
 mvp.env
 
 # Local packaged test apps (build outputs, 500MB+)
 packaged-test-apps/
+
+# Local browser verification artifacts
+.playwright-cli/
+output/playwright/
+output/qa/

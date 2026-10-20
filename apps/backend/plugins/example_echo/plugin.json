@@ -1,0 +1,7 @@
+{
+  "api_version": 1,
+  "id": "example_echo",
+  "name": "回声示例",
+  "version": "1.0.0",
+  "entrypoint": "plugin.py"
+}

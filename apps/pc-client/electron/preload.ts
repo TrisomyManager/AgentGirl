@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showNotification: (title: string, body: string) => {
     ipcRenderer.send('notification:show', title, body);
   },
+  showBackgroundNotification: (title: string, body: string) => {
+    ipcRenderer.send('notification:background', title, body);
+  },
 
   minimizeToTray: () => ipcRenderer.send('window:minimize-to-tray'),
 

@@ -5,58 +5,57 @@ import json
 import struct
 import uuid
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
+from urllib.parse import urlparse
 
 import httpx
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 
+from memory_system.graph_index import delete_graph_index, index_entry
+from memory_system.graph_lifecycle import GraphMemoryDeletionORM, cleanup_locked, graph_lock
+from memory_system.lifecycle import (
+    StaleMemoryWriteError,
+    capture_memory_epoch,
+    decorate_entries,
+    delete_lifecycle,
+    ensure_state,
+    lock_memory_epoch,
+)
+from shared_contracts.models import MemoryCategory, MemoryEntry
 from shared_runtime.config import get_settings
 from shared_runtime.llm_client import get_runtime_llm_config
-from shared_contracts.models import MemoryCategory, MemoryEntry
-
-from memory_system.db import MemoryORM
+from shared_runtime.model_presets import EMBEDDING_DIM, EMBEDDING_MODEL
 
 logger = structlog.get_logger(__name__)
 
 settings = get_settings()
 
-# Default embedding dimension (matches OpenAI text-embedding-3-small).
-# DashScope text-embedding-v3 is 1024-dim; SiliconFlow BGE-M3 is also 1024-dim.
-# In lite_mode (SQLite + JSON storage) the dim is flexible; in PostgreSQL the
-# table column is fixed at create time so a single dim must be chosen there.
-EMBEDDING_DIM = 1536
-EMBEDDING_MODEL = "text-embedding-3-small"
-LOCAL_FALLBACK_DIM = 384  # used when no API key configured
+# Ark embeddings use a dedicated model, endpoint and dimension independent of chat.
+# The 1024-dimensional reduction fits pgvector IVFFlat indexes.
+LOCAL_FALLBACK_DIM = EMBEDDING_DIM
 
 
-def _cosine_similarity(a: List[float], b: List[float]) -> float:
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors in Python."""
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     norm_a = sum(x * x for x in a) ** 0.5
     norm_b = sum(x * x for x in b) ** 0.5
     return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
 
 
-def _resolve_embedding_config() -> Tuple[Optional[str], str, str, int]:
+def _resolve_embedding_config() -> tuple[str | None, str, str, int]:
     """Resolve (api_key, base_url, model, dim) from runtime config + settings."""
     rt = get_runtime_llm_config()
-    api_key = rt.get("openai_api_key") or settings.openai_api_key
-    base_url = (
-        rt.get("openai_base_url") or settings.openai_base_url or "https://api.openai.com/v1"
-    ).rstrip("/")
-    base_lower = base_url.lower()
-    if "dashscope" in base_lower or "aliyuncs" in base_lower:
-        model = "text-embedding-v3"
-        dim = 1024
-    elif "siliconflow" in base_lower:
-        model = "BAAI/bge-m3"
-        dim = 1024
-    else:
-        model = EMBEDDING_MODEL
-        dim = EMBEDDING_DIM
-    return api_key, base_url, model, dim
+    host = urlparse(rt.get("openai_base_url") or "").hostname or ""
+    runtime_ark = rt.get("provider") == "volcengine" or host.endswith(".volces.com")
+    runtime_key = rt.get("openai_api_key") if runtime_ark else None
+    return (
+        settings.embedding_api_key or runtime_key or settings.ark_api_key,
+        (settings.embedding_base_url or settings.ark_base_url).rstrip("/"),
+        settings.embedding_model or EMBEDDING_MODEL,
+        settings.embedding_dim,
+    )
 
 
 def resolve_embedding_dim() -> int:
@@ -64,7 +63,7 @@ def resolve_embedding_dim() -> int:
     return _resolve_embedding_config()[3]
 
 
-def _local_fallback_embedding(text_content: str, dim: int = LOCAL_FALLBACK_DIM) -> List[float]:
+def _local_fallback_embedding(text_content: str, dim: int = LOCAL_FALLBACK_DIM) -> list[float]:
     """Deterministic hash-based pseudo-embedding for offline dev / no API key.
 
     Generates a unit-normalized float vector seeded from SHA-256 of the input.
@@ -72,7 +71,7 @@ def _local_fallback_embedding(text_content: str, dim: int = LOCAL_FALLBACK_DIM) 
     """
     digest = hashlib.sha256(text_content.encode("utf-8")).digest()
     # Stretch the 32-byte digest into `dim` floats by chained hashing
-    out: List[float] = []
+    out: list[float] = []
     seed = digest
     while len(out) < dim:
         for i in range(0, len(seed), 4):
@@ -87,19 +86,24 @@ def _local_fallback_embedding(text_content: str, dim: int = LOCAL_FALLBACK_DIM) 
     return [v / norm for v in out]
 
 
-async def _get_embedding(text_content: str) -> List[float]:
+async def _get_embedding(text_content: str) -> list[float]:
     """Fetch embedding via OpenAI-compatible /embeddings endpoint.
 
-    Auto-detects model + dim from base_url (OpenAI / DashScope / SiliconFlow).
+    Uses the dedicated Ark memory model, independent of the chat provider.
     Falls back to a hash-based pseudo-embedding when no API key is configured.
     """
     api_key, base_url, model, dim = _resolve_embedding_config()
 
     if not api_key:
         logger.warning("vector_store.no_api_key.using_local_fallback")
-        return _local_fallback_embedding(text_content)
+        return _local_fallback_embedding(text_content, dim)
 
     payload: dict = {"input": text_content, "model": model}
+    multimodal = model.startswith("doubao-embedding-vision") or (
+        "volces.com" in base_url and not model.startswith("doubao-embedding-large-text")
+    )
+    if multimodal:
+        payload.update(input=[{"type": "text", "text": text_content}], dimensions=dim, encoding_format="float")
     # `dimensions` only honored by OpenAI text-embedding-3-* family.
     if "openai.com" in base_url and "text-embedding-3" in model:
         payload["dimensions"] = dim
@@ -107,7 +111,7 @@ async def _get_embedding(text_content: str) -> List[float]:
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
-                f"{base_url}/embeddings",
+                f"{base_url}/embeddings" + ("/multimodal" if multimodal else ""),
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -116,22 +120,32 @@ async def _get_embedding(text_content: str) -> List[float]:
             )
             resp.raise_for_status()
             data = resp.json()
-            return data["data"][0]["embedding"]
+            embedding = data["data"]["embedding"] if multimodal else data["data"][0]["embedding"]
+            if len(embedding) != dim:
+                raise ValueError(f"Expected {dim} embedding dimensions, received {len(embedding)}")
+            return embedding
     except Exception as exc:
         logger.warning("vector_store.embedding_call_failed", error=str(exc), model=model)
-        return _local_fallback_embedding(text_content)
+        return _local_fallback_embedding(text_content, dim)
 
 
 async def store_memory(
     session: AsyncSession,
     entry: MemoryEntry,
+    *, extracted: dict | None = None,
+    expected_epoch: int | None = None,
 ) -> MemoryEntry:
     """Store a memory entry with embedding into pgvector or SQLite."""
+    if expected_epoch is None:
+        expected_epoch = await capture_memory_epoch(entry.user_id)
     embedding = entry.embedding
     if embedding is None:
         embedding = await _get_embedding(entry.content)
         entry.embedding = embedding
 
+    if not await lock_memory_epoch(session, entry.user_id, expected=expected_epoch):
+        await session.rollback()
+        raise StaleMemoryWriteError("Memory was cleared while this write was in progress")
     memory_id = str(uuid.uuid4())
 
     if settings.lite_mode:
@@ -173,7 +187,7 @@ async def store_memory(
                     emotion_tags, embedding, source_turn_id, created_at, expires_at
                 ) VALUES (
                     :id, :user_id, :category, :content, :importance,
-                    :emotion_tags, :embedding::vector, :source_turn_id, :created_at, :expires_at
+                    CAST(:emotion_tags AS json), CAST(:embedding AS vector), :source_turn_id, :created_at, :expires_at
                 )
                 """
             ),
@@ -183,7 +197,7 @@ async def store_memory(
                 "category": entry.category.value,
                 "content": entry.content,
                 "importance": entry.importance,
-                "emotion_tags": [tag.value for tag in entry.emotion_tags],
+                "emotion_tags": json.dumps([tag.value for tag in entry.emotion_tags]),
                 "embedding": embedding_str,
                 "source_turn_id": entry.source_turn_id,
                 "created_at": entry.created_at or datetime.utcnow(),
@@ -191,8 +205,10 @@ async def store_memory(
             },
         )
 
-    await session.commit()
     entry.entry_id = str(memory_id)
+    await ensure_state(session, entry)
+    await index_entry(session, entry, extracted)
+    await session.commit()
     logger.info(
         "vector_store.stored",
         memory_id=str(memory_id),
@@ -207,9 +223,10 @@ async def search_similar(
     user_id: str,
     query: str,
     top_k: int = 5,
-    category: Optional[MemoryCategory] = None,
-    min_importance: Optional[float] = None,
-) -> List[MemoryEntry]:
+    category: MemoryCategory | None = None,
+    min_importance: float | None = None,
+    include_dormant: bool = False,
+) -> list[MemoryEntry]:
     """Vector similarity search using cosine distance (pgvector) or Python fallback (SQLite)."""
     embedding = await _get_embedding(query)
 
@@ -217,6 +234,9 @@ async def search_similar(
         # SQLite: fetch all user memories and compute similarity in Python
         filters = ["user_id = :user_id"]
         params: dict = {"user_id": user_id}
+        if not include_dormant:
+            filters.append("(expires_at IS NULL OR expires_at > :active_at)")
+            params["active_at"] = datetime.utcnow()
 
         if category:
             filters.append("category = :category")
@@ -253,17 +273,17 @@ async def search_similar(
                     row_embedding = json.loads(row_embedding)
                 except json.JSONDecodeError:
                     continue
-            if not isinstance(row_embedding, list):
+            if not isinstance(row_embedding, list) or len(row_embedding) != len(embedding):
                 continue
             similarity = _cosine_similarity(embedding, row_embedding)
             scored.append((similarity, row))
 
         # Sort by similarity descending, take top_k
         scored.sort(key=lambda x: x[0], reverse=True)
-        top_rows = [row for _, row in scored[:top_k]]
+        top_rows = scored[:top_k]
 
-        entries: List[MemoryEntry] = []
-        for row in top_rows:
+        entries: list[MemoryEntry] = []
+        for similarity, row in top_rows:
             # Parse emotion_tags from JSON string in SQLite
             emotion_tags_raw = row["emotion_tags"]
             if isinstance(emotion_tags_raw, str):
@@ -278,10 +298,11 @@ async def search_similar(
                     category=MemoryCategory(row["category"]),
                     content=row["content"],
                     importance=row["importance"],
-                    emotion_tags=[tag for tag in emotion_tags_raw] if emotion_tags_raw else [],
+                    emotion_tags=list(emotion_tags_raw) if emotion_tags_raw else [],
                     source_turn_id=row["source_turn_id"],
                     created_at=row["created_at"],
                     expires_at=row["expires_at"],
+                    similarity=max(-1.0, min(1.0, similarity)),
                 )
             )
         logger.info(
@@ -290,7 +311,7 @@ async def search_similar(
             query=query[:50],
             results=len(entries),
         )
-        return entries
+        return await decorate_entries(session, user_id, entries)
 
     # PostgreSQL + pgvector: use native vector operators
     embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
@@ -301,6 +322,9 @@ async def search_similar(
         "embedding": embedding_str,
         "top_k": top_k,
     }
+    if not include_dormant:
+        filters.append("(expires_at IS NULL OR expires_at > :active_at)")
+        params["active_at"] = datetime.utcnow()
 
     if category:
         filters.append("category = :category")
@@ -317,10 +341,10 @@ async def search_similar(
             SELECT
                 id, user_id, category, content, importance,
                 emotion_tags, source_turn_id, created_at, expires_at,
-                embedding <=> :embedding::vector AS distance
+                embedding <=> CAST(:embedding AS vector) AS distance
             FROM memories
             WHERE {where_clause}
-            ORDER BY embedding <=> :embedding::vector
+            ORDER BY embedding <=> CAST(:embedding AS vector)
             LIMIT :top_k
             """
         ),
@@ -330,6 +354,9 @@ async def search_similar(
     rows = result.mappings().all()
     entries = []
     for row in rows:
+        tags = row["emotion_tags"] or []
+        if isinstance(tags, str):
+            tags = json.loads(tags)
         entries.append(
             MemoryEntry(
                 entry_id=str(row["id"]),
@@ -337,10 +364,11 @@ async def search_similar(
                 category=MemoryCategory(row["category"]),
                 content=row["content"],
                 importance=row["importance"],
-                emotion_tags=[tag for tag in row["emotion_tags"]],
+                emotion_tags=tags,
                 source_turn_id=row["source_turn_id"],
                 created_at=row["created_at"],
                 expires_at=row["expires_at"],
+                similarity=max(-1.0, min(1.0, 1.0 - float(row["distance"]))),
             )
         )
     logger.info(
@@ -349,7 +377,7 @@ async def search_similar(
         query=query[:50],
         results=len(entries),
     )
-    return entries
+    return await decorate_entries(session, user_id, entries)
 
 
 async def delete_expired(session: AsyncSession) -> int:
@@ -405,8 +433,8 @@ async def list_user_memories(
     user_id: str,
     limit: int = 50,
     offset: int = 0,
-    category: Optional[MemoryCategory] = None,
-) -> List[MemoryEntry]:
+    category: MemoryCategory | None = None,
+) -> list[MemoryEntry]:
     """List a user's memories ordered by created_at desc, with optional category filter."""
     filters = ["user_id = :user_id"]
     params: dict = {"user_id": user_id, "limit": limit, "offset": offset}
@@ -430,7 +458,7 @@ async def list_user_memories(
         params,
     )
     rows = result.mappings().all()
-    entries: List[MemoryEntry] = []
+    entries: list[MemoryEntry] = []
     for row in rows:
         emotion_tags_raw = row["emotion_tags"]
         if isinstance(emotion_tags_raw, str):
@@ -445,22 +473,25 @@ async def list_user_memories(
                 category=MemoryCategory(row["category"]),
                 content=row["content"],
                 importance=row["importance"],
-                emotion_tags=[tag for tag in (emotion_tags_raw or [])],
+                emotion_tags=list(emotion_tags_raw or []),
                 source_turn_id=row["source_turn_id"],
                 created_at=row["created_at"],
                 expires_at=row["expires_at"],
             )
         )
-    return entries
+    return await decorate_entries(session, user_id, entries)
 
 
-async def delete_user_memories(session: AsyncSession, user_id: str) -> int:
+async def delete_user_memories(session: AsyncSession, user_id: str, *, commit: bool = True) -> int:
     """Delete all memories for a user. Returns count deleted."""
     result = await session.execute(
         text("DELETE FROM memories WHERE user_id = :user_id"),
         {"user_id": user_id},
     )
-    await session.commit()
+    await delete_lifecycle(session, user_id=user_id)
+    await delete_graph_index(session, user_id=user_id)
+    if commit:
+        await session.commit()
     deleted = result.rowcount or 0
     logger.info("vector_store.user_memories_deleted", user_id=user_id, count=deleted)
     return deleted
@@ -468,11 +499,22 @@ async def delete_user_memories(session: AsyncSession, user_id: str) -> int:
 
 async def delete_memory_by_id(session: AsyncSession, memory_id: str) -> bool:
     """Delete a single memory by id."""
-    result = await session.execute(
-        text("DELETE FROM memories WHERE id = :id"),
-        {"id": memory_id},
-    )
-    await session.commit()
+    try:
+        memory_id = str(uuid.UUID(memory_id))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    owner = await session.scalar(text("SELECT user_id FROM memories WHERE id = :id"), {"id": memory_id})
+    if owner is None:
+        return False
+    async with graph_lock(owner):
+        result = await session.execute(text("DELETE FROM memories WHERE id = :id AND user_id = :user"),
+                                       {"id": memory_id, "user": owner})
+        await delete_lifecycle(session, memory_id=memory_id)
+        await delete_graph_index(session, memory_id=memory_id)
+        if settings.enable_knowledge_graph and not settings.lite_mode:
+            await session.merge(GraphMemoryDeletionORM(user_id=owner, memory_id=memory_id))
+        await session.commit()
+        await cleanup_locked(owner)
     return (result.rowcount or 0) > 0
 
 

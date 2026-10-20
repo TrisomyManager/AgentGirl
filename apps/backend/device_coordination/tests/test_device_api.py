@@ -44,7 +44,7 @@ def client() -> TestClient:
     from main import create_app
 
     app = create_app()
-    with TestClient(app) as tc:
+    with TestClient(app, client=("127.0.0.1", 50000)) as tc:
         yield tc
 
 

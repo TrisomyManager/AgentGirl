@@ -22,10 +22,13 @@ Every handler is async and registered into the process-wide
 
 from __future__ import annotations
 
+import re
+
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
+from shared_runtime.access import reference_http_kwargs
 import structlog
 
 from shared_runtime.config import get_settings
@@ -151,6 +154,12 @@ async def set_reminder(params: Dict[str, Any]) -> ActionResult:
         if repeat_td is not None and repeat_td.total_seconds() >= 60
         else None
     )
+    explicit_repeat = params.get("repeat_interval_seconds")
+    if explicit_repeat is not None:
+        if type(explicit_repeat) is not int or not 60 <= explicit_repeat <= 31536000:
+            return ActionResult(ok=False, message="重复间隔需要在一分钟到一年之间。",
+                                data={"error": "invalid_repeat_interval"})
+        repeat_seconds = explicit_repeat
 
     reminder = await get_reminders_store().add(
         user_id=user_id,
@@ -230,12 +239,32 @@ async def list_reminders(params: Dict[str, Any]) -> ActionResult:
 async def cancel_reminder(params: Dict[str, Any]) -> ActionResult:
     reminder_id = params.get("id") or params.get("reminder_id")
     user_id = params.get("user_id")
+    if not user_id:
+        return ActionResult(ok=False, message="无法确认提醒所属用户，请重新打开聊天后再试。",
+                            data={"error": "missing_user_id"})
     if not reminder_id:
-        return ActionResult(
-            ok=False,
-            message="需要告诉我要取消哪一条提醒（reminder id）。",
-            data={"error": "missing_id"},
-        )
+        from shared_runtime.reminder_language import cancellation_target
+
+        target = cancellation_target(str(params.get("raw_text") or ""))
+        if target is None:
+            return ActionResult(ok=False, message="你想取消哪一条提醒？", data={"error": "missing_id"})
+        pending = await get_reminders_store().list_for_user(user_id or "anonymous")
+        if target in {"全部", "所有", "所有的", "全部的"}:
+            cancelled = sum([await get_reminders_store().cancel(reminder.id, user_id=user_id or "anonymous")
+                             for reminder in pending])
+            return ActionResult(ok=True, message=f"已取消你的 {cancelled} 条待办提醒。", data={"cancelled_count": cancelled})
+        def normalize(text):
+            return re.sub(r"[\s，。！？!?,、的]", "", text).lower()
+        target_key = normalize(target)
+        matches = [reminder for reminder in pending if not target_key or
+                   target_key == reminder.id.lower() or target_key in normalize(reminder.text)]
+        if len(matches) != 1:
+            if not matches:
+                return ActionResult(ok=False, message="没找到对应的待办提醒。", data={"error": "not_found"})
+            titles = "、".join(f"「{reminder.text}」" for reminder in matches[:5])
+            return ActionResult(ok=False, message=f"你想取消哪一条：{titles}？", data={"error": "ambiguous_reminder",
+                                "reminders": [reminder.to_dict() for reminder in matches]})
+        reminder_id = matches[0].id
     ok = await get_reminders_store().cancel(reminder_id, user_id=user_id)
     if not ok:
         return ActionResult(
@@ -263,12 +292,6 @@ def _companion_self_http_base() -> str:
     return f"http://127.0.0.1:{int(settings.service_port)}"
 
 
-def _memory_use_in_process() -> bool:
-    """Lite / monolithic single-process runs: avoid loopback HTTP so tests and offline dev stay stable."""
-    s = get_settings()
-    return bool(s.lite_mode or s.monolithic)
-
-
 def _memory_entry_to_dict(entry: Any) -> Dict[str, Any]:
     if isinstance(entry, dict):
         return {
@@ -286,51 +309,16 @@ def _memory_entry_to_dict(entry: Any) -> Dict[str, Any]:
     return {"content": content, "importance": imp_f}
 
 
-async def _call_memory_recall_direct(
-    user_id: str, query: str, session_id: Optional[str] = None
-) -> List[Dict[str, Any]]:
-    from memory_system.recall import recall_memory
-    from shared_runtime.database import AsyncSessionLocal
-
-    async with AsyncSessionLocal() as session:
-        result = await recall_memory(
-            session=session,
-            user_id=user_id,
-            query=query,
-            session_id=session_id,
-            top_k=5,
-            include_graph=False,
-        )
-    return [_memory_entry_to_dict(e) for e in result.entries]
-
-
-async def _call_memory_list_direct(user_id: str, limit: int) -> List[Dict[str, Any]]:
-    from memory_system.vector_store import list_user_memories
-    from shared_runtime.database import AsyncSessionLocal
-
-    async with AsyncSessionLocal() as session:
-        entries = await list_user_memories(session=session, user_id=user_id, limit=limit)
-    return [_memory_entry_to_dict(e) for e in entries]
-
-
-async def _call_working_memory_direct(session_id: str) -> Optional[Dict[str, Any]]:
-    from memory_system.working import get_working_memory
-
-    state = await get_working_memory().snapshot(session_id)
-    return state.to_dict()
-
-
 async def _call_memory_recall(user_id: str, query: str, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Semantic recall — in-process when lite/monolithic, else HTTP."""
-    if _memory_use_in_process():
-        try:
-            return await _call_memory_recall_direct(user_id, query, session_id)
-        except Exception as exc:
-            logger.warning("query_memory.recall_direct_failed", user_id=user_id, error=str(exc))
-            return []
+    from action_executor.memory_port import get_memory_reader
+
+    if reader := get_memory_reader():
+        entries = await reader.recall(user_id=user_id, query=query, session_id=session_id)
+        return [_memory_entry_to_dict(entry) for entry in entries]
     try:
         timeout = httpx.Timeout(8.0, connect=3.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, **reference_http_kwargs()) as client:
             resp = await client.post(
                 f"{_companion_self_http_base()}/memory/recall",
                 json={
@@ -351,15 +339,14 @@ async def _call_memory_recall(user_id: str, query: str, session_id: Optional[str
 
 
 async def _call_memory_list(user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-    if _memory_use_in_process():
-        try:
-            return await _call_memory_list_direct(user_id, limit)
-        except Exception as exc:
-            logger.warning("query_memory.list_direct_failed", user_id=user_id, error=str(exc))
-            return []
+    from action_executor.memory_port import get_memory_reader
+
+    if reader := get_memory_reader():
+        entries = await reader.list_recent(user_id=user_id, limit=limit)
+        return [_memory_entry_to_dict(entry) for entry in entries]
     try:
         timeout = httpx.Timeout(8.0, connect=3.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, **reference_http_kwargs()) as client:
             resp = await client.get(
                 f"{_companion_self_http_base()}/memory/user/{user_id}/list",
                 params={"limit": limit},
@@ -372,16 +359,14 @@ async def _call_memory_list(user_id: str, limit: int = 10) -> List[Dict[str, Any
         return []
 
 
-async def _call_working_memory(session_id: str) -> Optional[Dict[str, Any]]:
-    if _memory_use_in_process():
-        try:
-            return await _call_working_memory_direct(session_id)
-        except Exception as exc:
-            logger.warning("query_memory.working_direct_failed", session_id=session_id, error=str(exc))
-            return None
+async def _call_working_memory(user_id: str, session_id: str) -> Optional[Dict[str, Any]]:
+    from action_executor.memory_port import get_memory_reader
+
+    if reader := get_memory_reader():
+        return await reader.working(user_id=user_id, session_id=session_id)
     try:
         timeout = httpx.Timeout(5.0, connect=2.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, **reference_http_kwargs()) as client:
             resp = await client.get(f"{_companion_self_http_base()}/memory/working/{session_id}")
             resp.raise_for_status()
             return resp.json()
@@ -393,8 +378,8 @@ async def _call_working_memory(session_id: str) -> Optional[Dict[str, Any]]:
 async def query_memory(params: Dict[str, Any]) -> ActionResult:
     """Recall a user's long-term memories + working memory snapshot.
 
-    Uses in-process memory_system calls when ``lite_mode`` or ``monolithic`` is
-    enabled; otherwise calls memory HTTP APIs at ``self_base_url`` (env
+    Uses a host-injected read-only memory port when configured; otherwise
+    calls memory HTTP APIs at ``self_base_url`` (env
     ``COMPANION_SELF_BASE_URL``) or ``http://127.0.0.1:{service_port}``.
 
     Parameters:
@@ -428,7 +413,7 @@ async def query_memory(params: Dict[str, Any]) -> ActionResult:
         # Working memory: per-session rolling context.
         session_id = params.get("session_id")
         if session_id:
-            wm_data = await _call_working_memory(str(session_id))
+            wm_data = await _call_working_memory(str(user_id), str(session_id))
             if wm_data:
                 working_summary = {
                     "session_id": wm_data.get("session_id"),
@@ -476,11 +461,11 @@ async def query_memory(params: Dict[str, Any]) -> ActionResult:
             },
         )
     except Exception as exc:
-        logger.exception("query_memory.unexpected_error", user_id=user_id, error=str(exc))
+        logger.warning("query_memory.unavailable", user_id=user_id, reason=type(exc).__name__)
         return ActionResult(
             ok=False,
             message=f"{_COMPANION_NAME}查记忆的时候遇到了小意外，再试一次好吗？",
-            data={"error": "unexpected", "detail": str(exc)},
+            data={"error": "memory_unavailable"},
         )
 
 
@@ -704,7 +689,7 @@ async def _call_device_api(path: str, method: str = "GET", json_data: dict | Non
     base = _companion_self_http_base()
     try:
         timeout = httpx.Timeout(10.0, connect=3.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, **reference_http_kwargs()) as client:
             if method == "POST":
                 resp = await client.post(f"{base}{path}", json=json_data)
             else:

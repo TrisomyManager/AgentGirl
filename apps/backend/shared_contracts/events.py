@@ -2,7 +2,7 @@
 
 P1-C 物理搬迁完成 (V2.1):
 - 原 ``shared.events`` 的物理实现现在位于本文件
-- ``shared.events`` 反向 re-export, 保留向后兼容
+- 旧 ``shared.events`` 兼容包在 V2.22 已物理移除
 - 业务侧应优先 ``from shared_contracts import X``
 
 所有模块通过中央事件总线发布/消费事件, 事件以 JSON 序列化的 Pydantic 模型形式传输.

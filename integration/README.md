@@ -2,6 +2,8 @@
 
 本目录提供 **Windows PowerShell** 下的轻量启动脚本与 **Device Gateway 冒烟** 脚本。不要求 Docker；默认假设后端为 Lite Mode（`COMPANION_LITE_MODE=true`）。
 
+容器检查另见 `scripts/smoke_container.py` 与 [部署说明](../apps/backend/docs/deployment.md)。该脚本需要 Docker，使用随机测试身份和独立卷验证重启、鉴权、持久化与删除；仅清理本次创建的资源。
+
 ## 排障字段（统一约定）
 
 联调时在日志、抓包、后端日志中尽量对齐以下 ID，便于串起一次完整设备指令流：

@@ -52,7 +52,9 @@ if _settings.lite_mode:
 def attach_monolithic_app(app: Any) -> None:
     """Attach the in-process FastAPI app for internal service calls."""
     global _MONOLITHIC_APP
-    _MONOLITHIC_APP = app
+    from shared_runtime.access import trusted_internal_app
+
+    _MONOLITHIC_APP = trusted_internal_app(app)
 
 
 class ServiceClient:

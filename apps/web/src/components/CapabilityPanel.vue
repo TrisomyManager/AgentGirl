@@ -58,6 +58,8 @@
 
         <!-- Tab: My Tasks -->
         <template v-if="activeTab === 'mytasks'">
+          <div class="panel-body">
+          <TaskHistory :user-id="userId" @changed="loadTasks" />
           <div v-if="taskLoading" class="status-box"><span class="spinner"></span><span>加载中…</span></div>
           <div v-else-if="taskError" class="status-box error"><span>{{ taskError }}</span></div>
           <div v-else-if="taskEmpty" class="status-box">
@@ -66,7 +68,7 @@
               <p class="empty-hint">你可以对小暖说：<br><em>明天上午 10 点提醒我交材料</em></p>
             </div>
           </div>
-          <div v-else class="panel-body">
+          <div v-else class="task-details">
             <!-- Upcoming -->
             <div v-if="upcoming.length" class="task-section">
               <div class="task-section-title">待提醒</div>
@@ -78,9 +80,10 @@
               </div>
             </div>
 
-            <!-- Proactive (placeholder) -->
+            <!-- User-controlled proactive care -->
             <div v-if="rules.length" class="task-section">
               <div class="task-section-title">主动陪伴</div>
+              <CareSettings :user-id="userId" @saved="refreshCareRules" />
               <div v-for="rule in rules" :key="rule.id" class="task-card proactive-card">
                 <span class="task-title">{{ rule.title }}</span>
                 <span :class="['status-tag', rule.enabled ? 'on' : 'off']">{{ rule.enabled ? '开启' : '关闭' }}</span>
@@ -97,6 +100,7 @@
                 </span>
               </div>
             </div>
+          </div>
           </div>
         </template>
 
@@ -115,6 +119,8 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useApi, type CapabilityItem, type UserStateItem, type UserStateResponse } from '../composables/useApi';
 import DevicePanel from './DevicePanel.vue';
+import TaskHistory from './TaskHistory.vue';
+import CareSettings from './CareSettings.vue';
 
 const props = defineProps<{ visible: boolean; userId: string }>();
 const emit = defineEmits<{
@@ -184,7 +190,6 @@ function fillExample(text: string) {
 const taskLoading = ref(false);
 const taskError = ref('');
 const state = ref<UserStateResponse | null>(null);
-
 const upcoming = computed(() => state.value?.reminders?.upcoming || []);
 const recent = computed(() => state.value?.reminders?.recent || []);
 const rules = computed(() => state.value?.proactive?.rules || []);
@@ -202,11 +207,20 @@ async function loadTasks() {
     const data = await getUserState(props.userId || 'user_001');
     if (data === null) throw new Error('接口请求失败');
     state.value = data;
+
   } catch (e) {
     taskError.value = e instanceof Error ? e.message : '加载事项失败';
   } finally {
     taskLoading.value = false;
   }
+}
+
+async function refreshCareRules() {
+  const user = props.userId;
+  try {
+    const data = await getUserState(user);
+    if (user === props.userId) state.value = data;
+  } catch { /* Existing settings retain their own save result; refresh can be retried. */ }
 }
 
 // Reload tasks every time the tab is activated so newly created reminders
@@ -216,8 +230,14 @@ watch(activeTab, (t) => {
   if (t === 'capabilities') loadCapabilities();
 });
 
+watch(() => props.visible, (visible) => {
+  if (!visible) return;
+  if (activeTab.value === 'capabilities') void loadCapabilities();
+  if (activeTab.value === 'mytasks') void loadTasks();
+});
+
 async function cancelReminder(id: string) {
-  const ok = await apiCancelReminder(id);
+  const ok = await apiCancelReminder(id, props.userId);
   if (ok) {
     // Remove from local state immediately so UI feels responsive.
     if (state.value) {

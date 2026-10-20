@@ -84,7 +84,7 @@ def load_persona(path: str | Path | None = None) -> Dict[str, Any]:
 
 def _parse_emotion_baseline(raw: Dict[str, Any]) -> Dict[str, Any]:
     """Convert the YAML emotional_baseline block into an EmotionState dict."""
-    from shared.models import EmotionTag
+    from shared_contracts.models import EmotionTag
 
     baseline = {
         "primary": EmotionTag(raw.get("primary", "calm")),
@@ -105,7 +105,7 @@ def get_persona_profile(path: str | Path | None = None, *, role_id: str | None =
     - ``role_id`` (波次 4 多角色化, 走 PersonaRegistry)
     - 兜底: ``data/soul.yaml`` (单角色历史路径)
     """
-    from shared.models import PersonaProfile
+    from shared_contracts.models import PersonaProfile
 
     if path is not None:
         raw = load_persona(path)

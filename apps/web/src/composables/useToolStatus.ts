@@ -11,6 +11,9 @@ export interface ToolExecutionState {
 }
 
 const TOOL_NAME_MAP: Record<string, string> = {
+  get_time: '查看时间', get_weather: '查询天气', set_reminder: '创建提醒', cancel_reminder: '取消提醒',
+  list_reminders: '查看提醒', query_memory: '回忆', timer_countdown: '设置计时', update_user_profile: '更新资料',
+  list_devices: '查看设备', device_ping: '检查设备', device_notify: '发送通知', device_open_url: '打开网页',
   weather: '查天气',
   search: '搜索',
   reminder: '设提醒',

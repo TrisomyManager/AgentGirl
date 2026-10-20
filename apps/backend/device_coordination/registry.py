@@ -9,8 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import structlog
 
-import shared.models
-from shared_contracts.models import DeviceInfo, DeviceType
+from shared_contracts.models import DeviceInfo, DeviceType, Platform
 from shared_runtime.config import get_settings
 
 logger = structlog.get_logger(__name__)
@@ -298,7 +297,7 @@ def _row_to_device(row: asyncpg.Record) -> DeviceInfo:
         user_id=row["user_id"],
         device_type=DeviceType(row["device_type"]),
         device_name=row["device_name"] if "device_name" in row and row["device_name"] else row["device_id"],
-        platform=shared.models.Platform(row["platform"]),
+        platform=Platform(row["platform"]),
         capabilities=list(row["capabilities"]) if row["capabilities"] else [],
         is_online=row["is_online"],
         last_heartbeat=row["last_heartbeat"],

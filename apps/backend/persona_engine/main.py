@@ -24,6 +24,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from shared_runtime.config import get_settings
+from shared_runtime.log_safety import connection_target
 from shared_contracts.models import PersonaProfile
 
 from persona_engine.api import router
@@ -70,57 +71,63 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     state.persona = get_persona_profile()
     logger.info("lifespan.persona_loaded", name=state.persona.name)
 
-    # 2. Redis (best-effort — service can run without it for local dev)
-    try:
-        import redis.asyncio as aioredis
-        state.redis = await aioredis.from_url(
-            settings.redis_url,
-            decode_responses=False,
-            socket_connect_timeout=5,
-        )
-        await state.redis.ping()
-        logger.info("lifespan.redis_connected", url=settings.redis_url)
-    except Exception as exc:
-        logger.warning("lifespan.redis_failed", error=str(exc))
-        state.redis = None
-
-    # 3. PostgreSQL (best-effort)
-    try:
-        import asyncpg
-        state.db_pool = await asyncpg.create_pool(
-            dsn=settings.postgres_url,
-            min_size=1,
-            max_size=5,
-            command_timeout=10,
-        )
-        logger.info("lifespan.postgres_connected", url=settings.postgres_url)
-
-        # Ensure relationship_metrics table exists
-        async with state.db_pool.acquire() as conn:
-            await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS relationship_metrics (
-                    user_id TEXT PRIMARY KEY,
-                    intimacy DOUBLE PRECISION NOT NULL DEFAULT 0.0,
-                    trust DOUBLE PRECISION NOT NULL DEFAULT 0.0,
-                    familiarity DOUBLE PRECISION NOT NULL DEFAULT 0.0,
-                    affection DOUBLE PRECISION NOT NULL DEFAULT 0.0,
-                    total_interactions INTEGER NOT NULL DEFAULT 0,
-                    first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
+    # Lite Mode must not probe Docker services.
+    if not settings.lite_mode:
+        # 2. Redis (best-effort — service can run without it for local dev)
+        try:
+            import redis.asyncio as aioredis
+            state.redis = await aioredis.from_url(
+                settings.redis_url,
+                decode_responses=False,
+                socket_connect_timeout=5,
             )
-        logger.info("lifespan.db_migrated")
-    except Exception as exc:
-        logger.warning("lifespan.postgres_failed", error=str(exc))
-        state.db_pool = None
+            await state.redis.ping()
+            logger.info("lifespan.redis_connected", target=connection_target(settings.redis_url))
+        except Exception as exc:
+            logger.warning("lifespan.redis_failed", error=type(exc).__name__)
+            state.redis = None
+
+        # 3. PostgreSQL (best-effort)
+        try:
+            import asyncpg
+            state.db_pool = await asyncpg.create_pool(
+                dsn=settings.postgres_url,
+                min_size=1,
+                max_size=5,
+                command_timeout=10,
+            )
+            logger.info("lifespan.postgres_connected", target=connection_target(settings.postgres_url))
+
+            # Ensure relationship_metrics table exists
+            async with state.db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS relationship_metrics (
+                        user_id TEXT PRIMARY KEY,
+                        intimacy DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                        trust DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                        familiarity DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                        affection DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                        total_interactions INTEGER NOT NULL DEFAULT 0,
+                        first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            logger.info("lifespan.db_migrated")
+        except Exception as exc:
+            logger.warning("lifespan.postgres_failed", error=type(exc).__name__)
+            state.db_pool = None
 
     # 4. Engines
-    state.emotion_engine = EmotionEngine(redis_client=state.redis)
+    from persona_engine.runtime import get_state_store, set_emotion_engine, set_relationship_tracker
+
+    persona_state_store = get_state_store()
+    await persona_state_store.initialize()
+    state.emotion_engine = EmotionEngine(state_store=persona_state_store, baseline=state.persona.emotional_baseline)
     # In lite mode, pass SQLite session factory to RelationshipTracker
     if settings.lite_mode:
-        from shared.database import AsyncSessionLocal
+        from shared_runtime.database import AsyncSessionLocal
         sqlite_session_factory = AsyncSessionLocal
     else:
         sqlite_session_factory = None
@@ -128,7 +135,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         redis_client=state.redis,
         db_pool=state.db_pool,
         sqlite_session_factory=sqlite_session_factory,
+        state_store=persona_state_store,
     )
+    set_emotion_engine(state.emotion_engine)
+    set_relationship_tracker(state.relationship_tracker)
     state.tone_generator = ToneGenerator(persona=state.persona)
     state.llm_client = LLMClient()
 

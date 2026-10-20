@@ -10,12 +10,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import structlog
 
-from shared_contracts.models import DeviceInfo
-from shared_runtime.config import Settings, get_settings
-
+from device_coordination.command_policy import valid_payload
 from device_coordination.registry import DeviceRegistry
 from device_coordination.stores.base import DeviceAuditStore, DeviceCommandStore
 from device_coordination.transport.base import DeviceTransport
+from shared_contracts.models import DeviceInfo
+from shared_runtime.config import Settings, get_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -85,6 +85,20 @@ class DeviceGatewayService:
         self._transport = transport
         self._settings = settings or get_settings()
 
+    async def export_user_data(self, user_id: str):
+        return {
+            "devices": [public_device_dict(device) for device in await self._registry.list_for_user(user_id)],
+            "commands": await self._commands.list_for_user(user_id, limit=100001),
+            "audit": await self._audit.list_for_scope(user_id=user_id, limit=100001),
+        }
+
+    async def delete_user_data(self, user_id: str):
+        for device in await self._registry.list_for_user(user_id):
+            await self._transport.disconnect(device.device_id)
+            await self._registry.unregister(device.device_id)
+        await self._commands.delete_user(user_id)
+        await self._audit.delete_user(user_id)
+
     # ------------------------------------------------------------------
     # Policy
     # ------------------------------------------------------------------
@@ -96,6 +110,8 @@ class DeviceGatewayService:
             return {}, "unknown_command"
         if spec.get("risk_level") == "high":
             return spec, "high_risk_blocked"
+        if not valid_payload(command, payload):
+            return spec, "payload_invalid"
         validator: Optional[Callable[[dict], bool]] = spec.get("validator")
         if validator and not validator(payload):
             return spec, "payload_invalid"
@@ -216,6 +232,8 @@ class DeviceGatewayService:
 
         if not target.is_online:
             return False, {}, "Device is offline"
+        if command not in target.capabilities:
+            return False, {}, "Device has not enabled this capability"
 
         ttl = int(self._settings.device_command_ttl_seconds)
         now = _utcnow()
@@ -254,52 +272,18 @@ class DeviceGatewayService:
             details="",
         )
 
-        # Try WebSocket push first for real-time delivery
-        ws_delivered = False
-        try:
-            from .api import get_ws_push
-            ws_delivered = await get_ws_push()(target.device_id, {"type": "command", "command": dict(entry)})
-        except Exception:
-            pass
-
-        if ws_delivered:
-            await self._commands.update(
-                cmd_id,
-                {"status": "delivered", "updated_at": _iso(_utcnow())},
-            )
-        else:
-            try:
-                await self._transport.subscribe(target.device_id)
-                await self._transport.deliver(dict(entry))
-            except Exception as exc:
-                logger.warning("gateway.transport_deliver_failed", command_id=cmd_id, error=str(exc))
-                await self._commands.update(
-                    cmd_id,
-                    {"status": "failed", "error": str(exc), "updated_at": _iso(_utcnow())},
-                )
-                await self._audit_row(
-                    user_id=user_id,
-                    device_id=target.device_id,
-                    command_id=cmd_id,
-                    command=command,
-                    actor="system",
-                    action="failed",
-                    details=str(exc),
-                )
-                return False, {}, f"Delivery failed: {exc}"
-            # Mark delivered so polling devices can claim it
-            await self._commands.update(
-                cmd_id,
-                {"status": "delivered", "delivered_at": _iso(_utcnow()), "updated_at": _iso(_utcnow())},
-            )
-
-        delivered = await self._commands.update(
+        # Publish a claimable receipt before push: a fast client may respond
+        # while delivery is still awaited. Never overwrite its newer state.
+        delivered = await self._commands.transition(
             cmd_id,
+            {"pending"},
             {
                 "status": "delivered",
                 "delivered_at": _iso(_utcnow()),
             },
         )
+        if delivered is None:
+            return False, {}, "Command no longer deliverable"
         await self._audit_row(
             user_id=user_id,
             device_id=target.device_id,
@@ -307,10 +291,40 @@ class DeviceGatewayService:
             command=command,
             actor="system",
             action="delivered",
-            details="",
         )
+        ws_delivered = False
+        try:
+            from .api import get_ws_push
+
+            ws_delivered = await get_ws_push()(target.device_id, {"type": "command", "command": dict(delivered)})
+        except Exception:
+            pass
+
+        if not ws_delivered:
+            try:
+                await self._transport.subscribe(target.device_id)
+                await self._transport.deliver(dict(delivered))
+            except Exception as exc:
+                logger.warning("gateway.transport_deliver_failed", command_id=cmd_id, reason=type(exc).__name__)
+                failed = await self._commands.transition(
+                    cmd_id,
+                    {"delivered"},
+                    {"status": "failed", "error": "transport_unavailable"},
+                )
+                if failed is None:
+                    return True, dict(await self._commands.get(cmd_id) or delivered), None
+                await self._audit_row(
+                    user_id=user_id,
+                    device_id=target.device_id,
+                    command_id=cmd_id,
+                    command=command,
+                    actor="system",
+                    action="failed",
+                    details="transport_unavailable",
+                )
+                return False, {}, "Device transport is unavailable"
         logger.info("gateway.command_delivered", command_id=cmd_id, device_id=target.device_id)
-        return True, dict(delivered or entry), None
+        return True, dict(await self._commands.get(cmd_id) or delivered), None
 
     async def _resolve_target_device(
         self, user_id: str, device_id: Optional[str]
@@ -341,10 +355,13 @@ class DeviceGatewayService:
         st = row["status"]
         if st in _TERMINAL_STATUSES:
             raise ValueError("already_terminal")
-        updated = await self._commands.update(
+        updated = await self._commands.transition(
             command_id,
+            set(_ACTIVE_STATUSES),
             {"status": "cancelled", "error": "cancelled_by_user"},
         )
+        if updated is None:
+            raise ValueError("already_terminal")
         await self._audit_row(
             user_id=user_id,
             device_id=row["device_id"],
@@ -366,7 +383,9 @@ class DeviceGatewayService:
         if self._is_expired(row):
             await self._timeout_command(row, "expired_before_claim")
             return None
-        updated = await self._commands.update(row["command_id"], {"status": "claimed"})
+        updated = await self._commands.transition(row["command_id"], {"delivered"}, {"status": "claimed"})
+        if updated is None:
+            return None
         await self._audit_row(
             user_id=row["user_id"],
             device_id=device_id,
@@ -390,7 +409,9 @@ class DeviceGatewayService:
         if self._is_expired(row):
             await self._timeout_command(row, "expired_before_claim")
             raise ValueError("expired")
-        updated = await self._commands.update(command_id, {"status": "claimed"})
+        updated = await self._commands.transition(command_id, {"delivered"}, {"status": "claimed"})
+        if updated is None:
+            raise ValueError("invalid_state")
         await self._audit_row(
             user_id=row["user_id"],
             device_id=device_id,
@@ -414,7 +435,9 @@ class DeviceGatewayService:
         if self._is_expired(row):
             await self._timeout_command(row, "expired")
             raise ValueError("expired")
-        updated = await self._commands.update(command_id, {"status": "running"})
+        updated = await self._commands.transition(command_id, {"claimed"}, {"status": "running"})
+        if updated is None:
+            raise ValueError("invalid_state")
         await self._audit_row(
             user_id=row["user_id"],
             device_id=device_id,
@@ -437,17 +460,24 @@ class DeviceGatewayService:
         return _utcnow() > exp.replace(tzinfo=None) if exp.tzinfo else _utcnow() > exp
 
     async def _timeout_command(self, row: Dict[str, Any], details: str) -> None:
-        cid = row["command_id"]
-        await self._commands.update(cid, {"status": "timeout", "error": details})
-        await self._audit_row(
-            user_id=row["user_id"],
-            device_id=row["device_id"],
-            command_id=cid,
-            command=row.get("command", ""),
-            actor="system",
-            action="timeout",
-            details=details,
-        )
+        from shared_runtime.user_lifecycle import user_operation
+
+        async with user_operation(row["user_id"]):
+            cid = row["command_id"]
+            updated = await self._commands.transition(
+                cid, set(_ACTIVE_STATUSES), {"status": "timeout", "error": details}
+            )
+            if updated is None:
+                return
+            await self._audit_row(
+                user_id=row["user_id"],
+                device_id=row["device_id"],
+                command_id=cid,
+                command=row.get("command", ""),
+                actor="system",
+                action="timeout",
+                details=details,
+            )
 
     async def apply_command_result(
         self,
@@ -477,10 +507,13 @@ class DeviceGatewayService:
         if row["status"] not in {"claimed", "running"}:
             raise ValueError("invalid_state")
 
-        updated = await self._commands.update(
+        updated = await self._commands.transition(
             command_id,
+            {"claimed", "running"},
             {"status": status, "result": result, "error": error},
         )
+        if updated is None:
+            return dict(await self._commands.get(command_id) or row)
         await self._audit_row(
             user_id=row["user_id"],
             device_id=device_id,
@@ -518,7 +551,14 @@ class DeviceGatewayService:
                 continue
             if not self._is_expired(row):
                 continue
-            await self._timeout_command(row, "ttl_expired")
+            import asyncio
+
+            from shared_runtime.user_lifecycle import StaleUserOperation
+
+            try:
+                await asyncio.create_task(self._timeout_command(row, "ttl_expired"))
+            except StaleUserOperation:
+                continue
             n += 1
         return n
 

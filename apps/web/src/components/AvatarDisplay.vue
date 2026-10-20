@@ -1,5 +1,5 @@
 <template>
-  <div class="avatar-display">
+  <div class="avatar-display" :data-speaking="avatarFrame.active" :data-mouth-open="avatarFrame.mouthOpen.toFixed(3)" :data-emotion="presentationEmotion">
     <!-- Live2D容器 -->
     <div class="avatar-container" :class="{ floating: isTyping }">
       <div class="avatar-glow"></div>
@@ -20,7 +20,7 @@
       <!-- 错误降级到静态图片 -->
       <img
         v-if="live2dError"
-        src="https://placehold.co/400x600/1a1a2e/FFF?text=小暖"
+        :src="`${baseUrl}xiaonuan-avatar.svg`"
         alt="小暖"
         class="avatar-image fallback"
       />
@@ -45,8 +45,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { useLive2D } from '../composables/useLive2D';
+import { avatarFrame } from '../composables/useAvatarPresentation';
+import { emotionPresentation } from '../../../../packages/avatar-runtime/src';
+const baseUrl = import.meta.env.BASE_URL;
 
 const props = defineProps<{
   emotionLabel: string;
@@ -58,13 +61,14 @@ const props = defineProps<{
 // Live2D容器引用
 const live2dContainer = ref<HTMLElement | null>(null);
 
-// 使用免费CDN测试模型（Shizuku - SDK 2.x样本）
+// Shizuku SDK 2.x 示例模型及其资源随应用一起提供。
 const {
   isLoading,
   error: live2dError,
   playMotion,
   setExpression,
   getMotionGroups,
+  setPresentation,
 } = useLive2D(live2dContainer, {
   modelPath: '/live2d/shizuku/shizuku.model.json',
   width: 260,
@@ -72,45 +76,30 @@ const {
   autoInteract: true,
 });
 
-// 情绪映射到Live2D动作
-const emotionToMotion: Record<string, string> = {
-  happy: 'tap_body',
-  excited: 'shake',
-  sad: 'flick_head',
-  angry: 'pinch_in',
-  surprised: 'shake',
-  calm: 'idle',
-  neutral: 'idle',
-};
-
-// 监听情绪变化，播放对应动作
-watch(
-  () => props.emotion,
-  (newEmotion) => {
-    const motionGroup = emotionToMotion[newEmotion] || 'idle';
-    playMotion(motionGroup, 0, 2);
+const presentationEmotion = computed(() => avatarFrame.value.active ? avatarFrame.value.emotion : props.emotion);
+let previousExpression = '', previousMotion = '', lastMotionAt = -Infinity;
+watch([isLoading, presentationEmotion, avatarFrame], () => {
+  const style = emotionPresentation(presentationEmotion.value);
+  const frame = avatarFrame.value;
+  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const strength = frame.active ? frame.intensity : .5;
+  const gestureTime = frame.positionMs;
+  const decay = Math.exp(-gestureTime / 450);
+  setPresentation({ mouthOpen: frame.mouthOpen, mouthForm: style.mouthForm * (.4 + .6 * strength),
+    angleY: !reducedMotion && frame.active && frame.gesture === 'nod' ? Math.sin(gestureTime / 120) * 5 * decay : 0,
+    angleZ: !reducedMotion && frame.active && frame.gesture === 'tilt' ? 5 * strength * decay : 0,
+  });
+  if (isLoading.value) return;
+  if (previousExpression !== style.expression) {
+    previousExpression = style.expression;
+    setExpression(style.expression);
   }
-);
-
-// 监听打字状态
-watch(
-  () => props.isTyping,
-  (typing) => {
-    if (typing) {
-      playMotion('tap_body', 0, 3); // 高优先级打字动作
-    }
+  if (!reducedMotion && style.motion !== previousMotion && performance.now() - lastMotionAt >= 800) {
+    previousMotion = style.motion;
+    lastMotionAt = performance.now();
+    playMotion(getMotionGroups().includes(style.motion) ? style.motion : 'idle', 0, 2);
   }
-);
-
-// 调试：输出可用的动作组
-onMounted(() => {
-  setTimeout(() => {
-    const groups = getMotionGroups();
-    if (groups.length > 0) {
-      console.log('Available Live2D motion groups:', groups);
-    }
-  }, 2000);
-});
+}, { immediate: true });
 
 const emotionClass = computed(() => {
   const map: Record<string, string> = {

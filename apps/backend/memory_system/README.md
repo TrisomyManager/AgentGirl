@@ -8,9 +8,11 @@
 
 - **5 阶段管线**：Raw → Entity → Importance → Conflict → Long-term
 - **向量存储**：PostgreSQL + pgvector（Lite Mode 自动降级到 SQLite）
-- **知识图谱**：Neo4j（Lite Mode 跳过）
-- **短时缓存**：Redis（Lite Mode 内存兜底）
-- **Working Memory**：滚动 N 轮 + 结构化用户摘要 + 可选 LLM 一次 JSON 精炼（topic + digest）
+- **关系检索**：按用户隔离的 SQL 实体/关系索引 + 个性化 PageRank，与向量排序融合；Neo4j 是可选外部适配。
+- **对话存档**：SQLite / PostgreSQL 持久化；Redis 维护临时用户上下文。
+- **Working Memory**：滚动 N 轮、窗口外摘要与结构事实；配置密钥后默认按批次压缩旧对话，可选额外精炼窗口主题。
+- **可恢复遗忘**：基于重要性、时间和访问频率计算清晰度；淡化后保留原文，明确检索和手动恢复可重新激活。
+- **离线整理**：当地凌晨 2–6 点、至少 30 分钟无用户互动时生成日总结，默认追赶最近 7 天；按指纹和数据库租约避免重复调用。
 
 ## 暴露什么 API
 
@@ -58,23 +60,40 @@ import asyncio, os
 os.environ["COMPANION_LITE_MODE"] = "true"
 
 from memory_system.db import AsyncSessionLocal, init_schema
-from memory_system.vector_store import store_memory, search_similar
-from shared.models import MemoryCategory
+from memory_system.vector_store import store_memory
+from memory_system.recall import recall_memory
+from shared_contracts.models import MemoryCategory, MemoryEntry
 
 async def demo():
     await init_schema()
     async with AsyncSessionLocal() as session:
-        mem_id = await store_memory(
-            session, user_id="u1", category=MemoryCategory.FACT,
-            content="用户养了一只叫 Mimi 的猫", importance=0.7,
-        )
-        hits = await search_similar(session, query="宠物", user_id="u1", top_k=3)
-        print(mem_id, [h.content for h in hits])
+        entry = await store_memory(session, MemoryEntry(
+            entry_id="", user_id="u1", category=MemoryCategory.FACT,
+            content="用户养了宠物猫 Mimi", importance=0.7,
+        ))
+        hits = await recall_memory(session, user_id="u1", query="Mimi", top_k=3)
+        print(entry.entry_id, [memory.content for memory in hits.entries])
 
 asyncio.run(demo())
 ```
 
-> **注意**：`store_memory` / `search_similar` 需要 embeddings；Lite Mode 默认会用 LLMClient 默认实现，因此需要配置 `OPENAI_API_KEY` 或兼容 endpoint，或在测试中 monkey-patch embeddings 方法。
+> 向量默认使用豆包多模态文本向量。未配置 Key 时，本地词项与关系索引仍可检索；哈希向量用于一致性匹配。生成式摘要失败时保留明确标注的摘录。
+
+## 维护与回顾 API
+
+- `POST /memory/maintenance/decay`：按访问与时间淡化，原文保留。
+- `POST /memory/user/{user_id}/restore/{memory_id}`：恢复该用户的一条记忆。
+- `POST /memory/user/{user_id}/consolidate`：整理今天，或传 `{"day":"2026-10-19"}` 指定日期。
+- `GET /memory/user/{user_id}/daily_summaries`：读取日总结与明确的偏好变化。
+- `DELETE /memory/user/{user_id}/all`：原子清除记忆库、相关索引、对话存档与回顾；后台旧写入失效。
+
+数据库使用 WAL 支持 Lite 读写并发。对话原文以 SQL 为主存，旧 Redis 临时对话缓存不再作为恢复来源，避免已删除内容重新出现。`delete_expired` 是保留的旧显式工具；默认维护调度不调用它。
+
+配置：`COMPANION_ENABLE_LOCAL_MEMORY_GRAPH`、`COMPANION_WORKING_MEMORY_COMPRESSION_USE_LLM`、`COMPANION_WORKING_MEMORY_COMPRESSION_BATCH_TURNS`、`COMPANION_MEMORY_MAINTENANCE_ENABLED`、`COMPANION_MEMORY_MAINTENANCE_INTERVAL_SECONDS`、`COMPANION_MEMORY_DREAM_USE_LLM`、`COMPANION_MEMORY_DREAM_BACKFILL_DAYS`、`COMPANION_MEMORY_TIMEZONE`。参考应用使用用户主动陪伴设置中的时区。
+
+## 当前验收边界
+
+Lite 本地关系检索、恢复、日总结、跨会话回顾与真实方舟摘要已验证。PostgreSQL/Neo4j 实例联调及关系指标的离线复核仍按执行清单继续推进。
 
 ## 第三方宿主接入提示
 

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 import uuid
+from contextlib import aclosing
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import structlog
 from langchain_core.messages import AIMessage, SystemMessage
 
 from shared_runtime.config import get_settings
+from shared_runtime.response_behavior import response_behavior
+from shared_runtime.user_lifecycle import user_scoped
 from shared_contracts.events import TurnEndEvent
 from shared_contracts.models import EmotionTag, TurnContext
 
@@ -91,6 +94,9 @@ class Orchestrator:
         self.settings = get_settings()
         self._event_bus: Optional[EventBus] = None
         self._graph: Any = None
+        from core_orchestrator.turn_coordinator import TurnCoordinator
+
+        self._turn_coordinator = TurnCoordinator()
 
     async def startup(self) -> None:
         logger.info("orchestrator_startup_begin")
@@ -115,16 +121,49 @@ class Orchestrator:
                 logger.info("orchestrator_service_health", service=svc["service"], status=status)
 
         logger.info("orchestrator_startup_complete")
+        from core_orchestrator.runtime_hooks import configure_runtime_hooks
+
+        self._memory_reader = configure_runtime_hooks(self)
 
     async def shutdown(self) -> None:
         logger.info("orchestrator_shutdown_begin")
         from core_orchestrator.http_client import close_all
+        from voice_layer.realtime_memory_sync import drain_memory_sync, set_memory_sync_handler
+
+        await drain_memory_sync()
+        set_memory_sync_handler(None)
+        from voice_layer.conversation_context import set_conversation_context_loader
+
+        set_conversation_context_loader(None)
+        from core_orchestrator.memory_tasks import drain_memory_tasks
+
+        await drain_memory_tasks()
+        from action_executor.memory_port import get_memory_reader, set_memory_reader
+
+        if get_memory_reader() is getattr(self, "_memory_reader", None):
+            set_memory_reader(None)
 
         await close_all()
         logger.info("orchestrator_shutdown_complete")
 
+    async def _record_user_activity(self, turn_context: TurnContext) -> None:
+        try:
+            from action_executor.proactive_preferences import care_preferences_store
+
+            await care_preferences_store.touch(turn_context.user.user_id, turn_context.session_id)
+        except Exception as exc:
+            logger.warning("care_activity_write_failed", error=str(exc))
+
     async def process_turn(self, turn_context: TurnContext) -> Dict[str, Any]:
+        async with self._turn_coordinator.hold(turn_context.user.user_id, turn_context.session_id):
+            from voice_layer.realtime_memory_sync import drain_memory_sync
+
+            await drain_memory_sync(user_id=turn_context.user.user_id, session_id=turn_context.session_id)
+            return await self._process_turn(turn_context)
+
+    async def _process_turn(self, turn_context: TurnContext) -> Dict[str, Any]:
         """Process a single user turn end-to-end through the state machine."""
+        await self._record_user_activity(turn_context)
         log = logger.bind(turn_id=turn_context.turn_id, session_id=turn_context.session_id)
         log.info(
             "process_turn_start",
@@ -138,8 +177,8 @@ class Orchestrator:
         try:
             final_state = await self._graph.ainvoke(initial_state)
         except Exception as exc:
-            log.exception("process_turn_graph_error", error=str(exc))
-            return self._build_error_result(turn_context, str(exc))
+            log.warning("process_turn_graph_error", reason=type(exc).__name__)
+            return self._build_error_result(turn_context, "对话服务暂时不可用，请稍后重试。")
 
         result = self._build_success_result(turn_context, final_state)
         await self._publish_turn_end(turn_context, final_state, result)
@@ -147,6 +186,18 @@ class Orchestrator:
         return result
 
     async def process_turn_stream(
+        self,
+        turn_context: TurnContext,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        async with self._turn_coordinator.hold(turn_context.user.user_id, turn_context.session_id):
+            from voice_layer.realtime_memory_sync import drain_memory_sync
+
+            await drain_memory_sync(user_id=turn_context.user.user_id, session_id=turn_context.session_id)
+            async with aclosing(self._process_turn_stream(turn_context)) as stream:
+                async for event in stream:
+                    yield event
+
+    async def _process_turn_stream(
         self,
         turn_context: TurnContext,
     ) -> AsyncIterator[Dict[str, Any]]:
@@ -162,6 +213,7 @@ class Orchestrator:
         intent classification + memory recall have run and before the first
         token. ``done`` is fired after voice / action / memory sync.
         """
+        await self._record_user_activity(turn_context)
         log = logger.bind(turn_id=turn_context.turn_id, session_id=turn_context.session_id)
         log.info(
             "process_turn_stream_start",
@@ -170,41 +222,54 @@ class Orchestrator:
         )
 
         try:
-            async for event in stream_assistant_response(turn_context):
-                if event.get("event") == "done":
-                    state = event.pop("_state", None)
-                    if state is not None:
-                        result = self._build_success_result(turn_context, state)
-                        await self._publish_turn_end(turn_context, state, result)
-                        event.update(
-                            {
-                                "assistant_message": result["assistant_message"],
-                                "emotion": result["emotion"],
-                                "voice_url": result["voice_url"],
-                                "voice_duration_ms": result.get("voice_duration_ms"),
-                                "voice_error": result.get("voice_error"),
-                                "action_sequence": result["action_sequence"],
-                                "intent": result["intent"],
-                                "intent_confidence": result["intent_confidence"],
-                                "memory_entries_count": result["memory_entries_count"],
-                                "turn_id": tc_dict_id(turn_context),
-                                "session_id": turn_context.session_id,
-                                "user_id": turn_context.user.user_id,
-                            }
-                        )
-                yield event
+            async with aclosing(stream_assistant_response(turn_context)) as source:
+                async for event in source:
+                    if event.get("event") == "done":
+                        state = event.pop("_state", None)
+                        if state is not None:
+                            result = self._build_success_result(turn_context, state)
+                            await self._publish_turn_end(turn_context, state, result)
+                            event.update(
+                                {
+                                    "assistant_message": result["assistant_message"],
+                                    "emotion": result["emotion"],
+                                    "expression_emoji": result.get("expression_emoji"),
+                                    "reply_suppressed": result["reply_suppressed"],
+                                    "content_filtered": result["content_filtered"],
+                                    "talk_value": result["talk_value"],
+                                    "reply_reason": result["reply_reason"],
+                                    "specialist": result.get("specialist"),
+                                    "task": result.get("task"),
+                                    "error": result.get("error"),
+                                    "voice_url": result["voice_url"],
+                                    "voice_duration_ms": result.get("voice_duration_ms"),
+                                    "voice_error": result.get("voice_error"),
+                                    "voice_mode": result.get("voice_mode"),
+                                    "voice_segments": result.get("voice_segments", []),
+                                    "action_sequence": result["action_sequence"],
+                                    "intent": result["intent"],
+                                    "intent_confidence": result["intent_confidence"],
+                                    "memory_entries_count": result["memory_entries_count"],
+                                    "turn_id": tc_dict_id(turn_context),
+                                    "session_id": turn_context.session_id,
+                                    "user_id": turn_context.user.user_id,
+                                }
+                            )
+                    yield event
         except Exception as exc:
-            log.exception("process_turn_stream_error", error=str(exc))
-            yield {"event": "error", "error": str(exc)}
+            log.warning("process_turn_stream_error", reason=type(exc).__name__)
+            yield {"event": "error", "error": "对话服务暂时不可用，请稍后重试。"}
             yield {
                 "event": "done",
-                **self._build_error_result(turn_context, str(exc)),
+                **self._build_error_result(turn_context, "对话服务暂时不可用，请稍后重试。"),
             }
             return
 
         log.info("process_turn_stream_complete")
 
     def _build_success_result(self, tc: TurnContext, state: Dict[str, Any]) -> Dict[str, Any]:
+        from avatar_runtime import build_avatar_timeline
+
         emotion = state.get("emotion_state")
         action_seq = state.get("action_sequence")
         memory_result = state.get("memory_result")
@@ -221,15 +286,31 @@ class Orchestrator:
             "session_id": tc.session_id,
             "user_id": tc.user.user_id,
             "assistant_message": state.get("assistant_message") or "",
+            "reply_suppressed": bool(state.get("reply_suppressed")),
+            "content_filtered": bool(state.get("safety_input_blocked") or state.get("safety_output_blocked")),
+            "talk_value": state.get("talk_value") if state.get("talk_value") is not None else 1.0,
+            "reply_reason": state.get("reply_reason"),
             "emotion": emotion.model_dump() if emotion else None,
+            "expression_emoji": response_behavior(
+                emotion, user_message=tc.user_message,
+                intent=state["reaction_signal"].intent if state.get("reaction_signal") else state.get("intent") or "chat",
+            ).emoji if not state.get("reply_suppressed") else None,
             "voice_url": state.get("voice_url"),
             "voice_duration_ms": state.get("voice_duration_ms"),
             "voice_error": state.get("voice_error"),
+            "voice_mode": state.get("voice_mode"),
+            "voice_segments": state.get("voice_segments") or [],
+            "avatar_timeline": build_avatar_timeline(
+                turn_id=tc.turn_id, duration_ms=state.get("voice_duration_ms"),
+                emotion=emotion.model_dump() if emotion else None,
+            ).model_dump(mode="json") if state.get("voice_url") else None,
             "action_sequence": action_seq.model_dump() if action_seq else None,
             "intent": state.get("intent"),
             "intent_confidence": state.get("intent_confidence"),
             "memory_entries_count": memory_entries_count,
             "error": state.get("error"),
+            "specialist": state.get("specialist", "chat"),
+            "task": state.get("task"),
         }
 
     def _build_error_result(self, tc: TurnContext, error: str) -> Dict[str, Any]:
@@ -278,6 +359,7 @@ class Orchestrator:
         except Exception as exc:
             logger.warning("turn_end_publish_failed", error=str(exc))
 
+    @user_scoped()
     async def generate_proactive_turn(
         self,
         user_id: str,
@@ -384,14 +466,13 @@ class Orchestrator:
 
         state["assistant_message"] = assistant_msg
 
-        # 5. Sync memory (so proactive messages are part of conversation history)
-        try:
-            await sync_completed_turn_to_memory(
-                turn_context=tc,
-                orchestration_state=state,
-            )
-        except Exception as exc:
-            _log.warning("proactive_sync_memory_failed", error=str(exc))
+        from core_orchestrator.state_machine import node_check_output
+        state = await node_check_output(state)
+        if state.get("safety_output_blocked"):
+            # Unsolicited care must not send an unrelated refusal to the user.
+            assistant_msg = ""
+
+        # The care scheduler records accepted messages after the durable delivery commit.
 
         emotion = state.get("emotion_state")
         return {

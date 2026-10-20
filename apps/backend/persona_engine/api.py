@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import asyncio
+from typing import Any
+from uuid import uuid4
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from persona_engine.conversation_preferences import ConversationPreferences, conversation_preferences_store
 from persona_engine.emotion_engine import EmotionEngine
 from persona_engine.persona_store import get_persona_profile_async
+from persona_engine.reaction import ReactionSignal
+from persona_engine.reaction_service import ReactionService
 from persona_engine.relationship_tracker import RelationshipTracker
 from persona_engine.tone_generator import ToneGenerator
-from shared_runtime.llm_client import LLMClient
 from shared_contracts.models import EmotionState, EmotionTag, PersonaProfile, RelationshipMetrics
+from shared_runtime.image_input import IMAGE_FAILED, IMAGE_PROMPT, IMAGE_UNAVAILABLE, ImageInputError, normalize_images
+from shared_runtime.llm_client import LLMClient
+from shared_runtime.response_behavior import response_behavior
 
 logger = structlog.get_logger("persona_engine.api")
 router = APIRouter(prefix="/persona", tags=["persona"])
@@ -40,10 +47,10 @@ class UpdateEmotionRequest(BaseModel):
         pattern="^(user_message|memory_recall|time_of_day|decay)$",
         description="What triggered the emotion update",
     )
-    sentiment: Optional[str] = Field(default=None, pattern="^(positive|negative|neutral)$")
-    memory_emotion_tags: Optional[List[EmotionTag]] = Field(default=None)
-    hour: Optional[int] = Field(default=None, ge=0, le=23)
-    message_content: Optional[str] = Field(default=None)
+    sentiment: str | None = Field(default=None, pattern="^(positive|negative|neutral)$")
+    memory_emotion_tags: list[EmotionTag] | None = Field(default=None)
+    hour: int | None = Field(default=None, ge=0, le=23)
+    message_content: str | None = Field(default=None)
 
 
 class UpdateEmotionResponse(BaseModel):
@@ -73,17 +80,68 @@ class GenerateResponseRequest(BaseModel):
     session_id: str
     user_message: str = Field(..., description="Raw user input")
     system_prompt: str = Field(..., description="Full system prompt built by core orchestrator")
-    emotion: Optional[Dict[str, Any]] = Field(default=None, description="Current emotion state")
-    relationship: Optional[Dict[str, Any]] = Field(default=None, description="Current relationship metrics")
-    model: Optional[str] = Field(default=None, description="Override default LLM model")
+    emotion: dict[str, Any] | None = Field(default=None, description="Current emotion state")
+    relationship: dict[str, Any] | None = Field(default=None, description="Current relationship metrics")
+    model: str | None = Field(default=None, description="Override default LLM model")
+    turn_id: str = Field(default_factory=lambda: uuid4().hex, max_length=128)
+    reaction: ReactionSignal | None = None
+    image_urls: list[str] = Field(default_factory=list)
 
 
 class GenerateResponseResponse(BaseModel):
     assistant_message: str = Field(..., description="AI-generated reply")
-    new_emotion: Optional[EmotionState] = Field(default=None, description="Emotion after this turn")
+    new_emotion: EmotionState | None = Field(default=None, description="Emotion after this turn")
     sentiment: str = Field(..., pattern="^(positive|negative|neutral)$")
-    tokens_used: Optional[int] = Field(default=None)
+    tokens_used: int | None = Field(default=None)
     model: str = Field(..., description="Actual model used")
+    reaction: ReactionSignal | None = None
+
+
+class ClassifyReactionRequest(BaseModel):
+    user_message: str = Field(min_length=1, max_length=12000)
+
+
+class ObserveTurnRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    turn_id: str = Field(min_length=1, max_length=128)
+    user_message: str = Field(min_length=1, max_length=12000)
+    reaction: ReactionSignal | None = None
+
+
+@router.post("/observe_turn")
+async def observe_turn(body: ObserveTurnRequest, request: Request):
+    service = ReactionService(_emotion_engine(request), _relationship_tracker(request))
+    persona = await get_persona_profile_async()
+    emotion, relationship = await service.commit(
+        body.user_id, body.turn_id, body.user_message, body.reaction, baseline=persona.emotional_baseline,
+    )
+    return {"emotion": emotion, "relationship": relationship}
+
+
+@router.get("/conversation_preferences/{user_id}", response_model=ConversationPreferences)
+async def get_conversation_preferences(user_id: str):
+    return await conversation_preferences_store.get(user_id)
+
+
+@router.put("/conversation_preferences/{user_id}", response_model=ConversationPreferences)
+async def save_conversation_preferences(user_id: str, preferences: ConversationPreferences):
+    return await conversation_preferences_store.save(user_id, preferences)
+
+
+@router.post("/classify_reaction", response_model=ReactionSignal)
+async def classify_reaction(body: ClassifyReactionRequest, request: Request):
+    service = ReactionService(_emotion_engine(request), _relationship_tracker(request))
+    return await service.classifier.classify(body.user_message)
+
+
+@router.get("/relationship_reviews/{user_id}")
+async def relationship_reviews(user_id: str, request: Request, limit: int = Query(default=7, ge=1, le=30)):
+    from persona_engine.relationship_review import RelationshipReviewer
+
+    store = _relationship_tracker(request).state_store
+    if store is None:
+        return {"reviews": []}
+    return {"reviews": await RelationshipReviewer(store).list_reviews(user_id, limit)}
 
 
 def _emotion_engine(request: Request) -> EmotionEngine:
@@ -123,12 +181,12 @@ def _local_sentiment(text: str) -> str:
     return "neutral"
 
 
-def _extract_memory_lines(system_prompt: str) -> List[str]:
+def _extract_memory_lines(system_prompt: str) -> list[str]:
     # prompt_engine.py uses the Chinese section header 【记忆片段】
     if "【记忆片段】" not in system_prompt:
         return []
 
-    lines: List[str] = []
+    lines: list[str] = []
     capture = False
     for line in system_prompt.splitlines():
         stripped = line.strip()
@@ -176,7 +234,7 @@ def _build_local_response(
 
 
 @router.post("/get_profile", response_model=GetProfileResponse)
-async def get_profile(body: GetProfileRequest, request: Request) -> Dict[str, Any]:
+async def get_profile(body: GetProfileRequest, request: Request) -> dict[str, Any]:
     """Return PersonaProfile + current emotion + relationship metrics for a user."""
     user_id = body.user_id
     logger.info("api.get_profile", user_id=user_id)
@@ -195,7 +253,7 @@ async def get_profile(body: GetProfileRequest, request: Request) -> Dict[str, An
 
 
 @router.post("/update_emotion", response_model=UpdateEmotionResponse)
-async def update_emotion(body: UpdateEmotionRequest, request: Request) -> Dict[str, Any]:
+async def update_emotion(body: UpdateEmotionRequest, request: Request) -> dict[str, Any]:
     """Update emotion state from an external event."""
     user_id = body.user_id
     event_type = body.event_type
@@ -232,13 +290,13 @@ async def update_emotion(body: UpdateEmotionRequest, request: Request) -> Dict[s
 
 
 @router.post("/relationship", response_model=RelationshipResponse)
-async def get_relationship(body: RelationshipRequest, request: Request) -> Dict[str, Any]:
+async def get_relationship(body: RelationshipRequest, request: Request) -> dict[str, Any]:
     relationship = await _relationship_tracker(request).get_metrics(body.user_id)
     return {"relationship": relationship}
 
 
 @router.post("/daily_digest", response_model=DailyDigestResponse)
-async def daily_digest(body: DailyDigestRequest, request: Request) -> Dict[str, Any]:
+async def daily_digest(body: DailyDigestRequest, request: Request) -> dict[str, Any]:
     user_id = body.user_id
     logger.info("api.daily_digest", user_id=user_id)
 
@@ -254,8 +312,12 @@ async def daily_digest(body: DailyDigestRequest, request: Request) -> Dict[str, 
 
 
 @router.post("/generate_response", response_model=GenerateResponseResponse)
-async def generate_response(body: GenerateResponseRequest, request: Request) -> Dict[str, Any]:
+async def generate_response(body: GenerateResponseRequest, request: Request) -> dict[str, Any]:
     """Generate assistant response, analyze sentiment, and update emotion state."""
+    try:
+        images = await asyncio.to_thread(normalize_images, body.image_urls) if body.image_urls else []
+    except ImageInputError as exc:
+        raise HTTPException(422, str(exc)) from None
     user_id = body.user_id
     logger.info(
         "api.generate_response",
@@ -270,14 +332,23 @@ async def generate_response(body: GenerateResponseRequest, request: Request) -> 
     persona = await get_persona_profile_async()
 
     system_prompt = body.system_prompt
+    if images:
+        system_prompt += IMAGE_PROMPT
     voice_pref = (body.emotion or {}).get("voice_preference")
     if voice_pref:
         system_prompt += f"\n\nVoice preference: {voice_pref}"
 
-    sentiment = await llm_client.analyze_sentiment(body.user_message)
+    service = ReactionService(emotion_engine, tracker)
+    reaction = body.reaction or await service.classifier.classify(body.user_message)
+    sentiment = reaction.sentiment
+    relationship = await tracker.get_metrics(user_id)
+    predicted = service.predict(await emotion_engine.get_current_emotion(user_id), relationship, reaction,
+                                baseline=persona.emotional_baseline)
+    behavior = response_behavior(predicted, user_message=body.user_message, intent=reaction.intent)
+    system_prompt += "\n\n【本轮回应方式】" + behavior.instruction
 
     assistant_message: str
-    tokens_used: Optional[int]
+    tokens_used: int | None
     model_used: str
 
     if llm_client.has_configured_provider():
@@ -286,30 +357,30 @@ async def generate_response(body: GenerateResponseRequest, request: Request) -> 
                 system_prompt=system_prompt,
                 user_message=body.user_message,
                 model=body.model,
-                temperature=0.7,
-                max_tokens=1024,
+                temperature=behavior.temperature,
+                max_tokens=behavior.max_tokens,
+                **({"image_urls": images} if images else {}),
             )
             assistant_message = gen_result["assistant_message"]
             tokens_used = gen_result.get("tokens_used")
             model_used = gen_result.get("model", body.model or "unknown")
         except Exception as exc:
+            if images:
+                raise HTTPException(502, IMAGE_FAILED) from None
             logger.warning("api.generate_response_fallback", error=str(exc))
             assistant_message = _build_local_response(persona, body.user_message, system_prompt, sentiment)
             tokens_used = None
             model_used = "local-fallback"
     else:
+        if images:
+            raise HTTPException(503, IMAGE_UNAVAILABLE)
         assistant_message = _build_local_response(persona, body.user_message, system_prompt, sentiment)
         tokens_used = None
         model_used = "local-fallback"
 
-    relationship = RelationshipMetrics(**body.relationship) if body.relationship else await tracker.get_metrics(user_id)
-    new_emotion = await emotion_engine.transition_from_user_message(
-        user_id=user_id,
-        sentiment=sentiment or _local_sentiment(body.user_message),
-        relationship=relationship,
-        message_content=body.user_message,
+    new_emotion, _relationship = await service.commit(
+        user_id, body.turn_id, body.user_message, reaction, baseline=persona.emotional_baseline,
     )
-    await tracker.record_interaction(user_id=user_id, sentiment=sentiment)
 
     logger.info(
         "api.generate_response_done",
@@ -326,4 +397,5 @@ async def generate_response(body: GenerateResponseRequest, request: Request) -> 
         "sentiment": sentiment,
         "tokens_used": tokens_used,
         "model": model_used,
+        "reaction": reaction,
     }

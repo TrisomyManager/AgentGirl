@@ -1,89 +1,98 @@
-"""File system operations."""
+"""Bounded UTF-8 reads and create-only writes in an explicit host workspace."""
 
+import codecs
 import os
+import tempfile
 from pathlib import Path
-from typing import Any, Dict
 
+from policy import MAX_FILE_BYTES, get_policy, reparse
 from registry import ToolResult, get_registry
 
-MAX_READ_BYTES = 50_000
-ALLOWED_READ_DIRS = [str(Path.home()), str(Path.home() / "Desktop"), str(Path.home() / "Documents")]
 
-
-def register_filesystem_handlers() -> None:
+def register_filesystem_handlers():
     reg = get_registry()
 
-    @reg.register("list_files", "List files in a directory", risk="medium")
-    def list_files(params: Dict[str, Any]) -> ToolResult:
-        path = params.get("path") or str(Path.home())
-        p = Path(path).expanduser().resolve()
-        if not p.exists():
-            return ToolResult(ok=False, message=f"Path not found: {path}")
-        if not p.is_dir():
-            return ToolResult(ok=False, message=f"Not a directory: {path}")
-
+    @reg.register(
+        "list_files", "列出专用工作区内的文件", risk="medium", requires_confirm=True
+    )
+    def list_files(params):
+        policy = get_policy()
+        path = policy.file_path(params.get("path", "."))
         entries = []
-        try:
-            for item in sorted(p.iterdir()):
-                try:
-                    stat = item.stat()
-                    entries.append({
+        with os.scandir(path) as iterator:
+            for item in iterator:
+                if reparse(Path(item.path)):
+                    continue
+                info = item.stat(follow_symlinks=False)
+                if info.st_nlink > 1 and item.is_file(follow_symlinks=False):
+                    continue
+                entries.append(
+                    {
                         "name": item.name,
-                        "is_dir": item.is_dir(),
-                        "size": stat.st_size,
-                        "modified": stat.st_mtime,
-                    })
-                except OSError:
-                    entries.append({"name": item.name, "is_dir": False, "size": 0, "modified": 0})
-        except PermissionError:
-            return ToolResult(ok=False, message=f"Permission denied: {path}")
-
+                        "is_dir": item.is_dir(follow_symlinks=False),
+                        "size": info.st_size,
+                    }
+                )
+                if len(entries) == 101:
+                    break
         return ToolResult(
-            ok=True,
-            message=f"Listed {len(entries)} entries in {str(p)}",
-            data={"path": str(p), "entries": entries[:100]},
+            message="工作区文件列表",
+            data={
+                "path": str(path.relative_to(policy.root)),
+                "entries": sorted(entries[:100], key=lambda item: item["name"]),
+                "truncated": len(entries) > 100,
+            },
         )
 
-    @reg.register("read_file", "Read a text file (max 50KB)", risk="high", requires_confirm=True)
-    def read_file(params: Dict[str, Any]) -> ToolResult:
-        path = params.get("path", "").strip()
-        if not path:
-            return ToolResult(ok=False, message="No file path provided")
-        p = Path(path).expanduser().resolve()
-
-        allowed = any(str(p).startswith(str(Path(d).expanduser().resolve())) for d in ALLOWED_READ_DIRS)
-        if not allowed:
-            return ToolResult(ok=False, message="Access denied: outside allowed directories")
-
+    @reg.register(
+        "read_file", "读取工作区文本（最多 50 KB）", risk="high", requires_confirm=True
+    )
+    def read_file(params):
+        policy = get_policy()
+        path = policy.file_path(params.get("path", ""))
+        with path.open("rb") as source:
+            raw = source.read(MAX_FILE_BYTES + 1)
+        truncated = len(raw) > MAX_FILE_BYTES
         try:
-            content = p.read_text(encoding="utf-8")[:MAX_READ_BYTES]
-            return ToolResult(
-                ok=True,
-                message=f"Read {len(content)} chars from {p.name}",
-                data={"path": str(p), "content": content, "truncated": len(content) >= MAX_READ_BYTES},
-            )
+            decoder = codecs.getincrementaldecoder("utf-8")()
+            content = decoder.decode(raw[:MAX_FILE_BYTES], final=not truncated)
         except UnicodeDecodeError:
-            return ToolResult(ok=False, message="Cannot read: file is not UTF-8 text")
-        except Exception as exc:
-            return ToolResult(ok=False, message=str(exc))
+            return ToolResult(ok=False, message="该文件不是 UTF-8 文本。")
+        return ToolResult(
+            message="已读取工作区文本",
+            data={
+                "path": str(path.relative_to(policy.root)),
+                "content": content,
+                "truncated": truncated,
+            },
+        )
 
-    @reg.register("write_file", "Write text to a file", risk="high", requires_confirm=True)
-    def write_file(params: Dict[str, Any]) -> ToolResult:
-        path = params.get("path", "").strip()
-        content = params.get("content", "")
-        if not path:
-            return ToolResult(ok=False, message="No file path provided")
-        p = Path(path).expanduser().resolve()
-
-        allowed = any(str(p).startswith(str(Path(d).expanduser().resolve())) for d in ALLOWED_READ_DIRS)
-        if not allowed:
-            return ToolResult(ok=False, message="Access denied: outside allowed directories")
-
+    @reg.register(
+        "write_file",
+        "在工作区新建文本，不覆盖已有文件",
+        risk="high",
+        requires_confirm=True,
+    )
+    def write_file(params):
+        policy = get_policy()
+        path = policy.file_path(params.get("path", ""), create=True)
+        raw = params.get("content", "").encode("utf-8")
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".companion-", suffix=".tmp", dir=path.parent
+        )
         try:
-            p.write_text(content, encoding="utf-8")
-            return ToolResult(ok=True, message=f"Wrote {len(content)} chars to {p.name}")
-        except Exception as exc:
-            return ToolResult(ok=False, message=str(exc))
+            with os.fdopen(descriptor, "wb") as target:
+                target.write(raw)
+                target.flush()
+                os.fsync(target.fileno())
+            # Atomic create: an existing target is never replaced.
+            os.link(temporary, path)
+        finally:
+            os.unlink(temporary)
+        return ToolResult(
+            message="已在工作区新建文本",
+            data={"path": str(path.relative_to(policy.root)), "bytes": len(raw)},
+        )
 
 
 register_filesystem_handlers()

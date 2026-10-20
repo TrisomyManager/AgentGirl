@@ -11,12 +11,16 @@ from urllib.parse import urlparse
 
 import httpx
 import structlog
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from starlette import status
+from starlette.requests import HTTPConnection
 
 from shared_contracts.models import VoiceSynthesisRequest, VoiceTranscriptionResult
+from shared_contracts.protocols import SpeechRecognizer
+from shared_runtime.access import current_principal
 from shared_runtime.voice_runtime_config import get_runtime_voice_config
-from voice_layer.asr import ASRClient
+from voice_layer.asr_runtime import close_voice_resources, new_recognizer
+from voice_layer.media_access import register_voice_asset
 from voice_layer.providers.realtime import get_realtime_status, init_registry, is_registry_initialized
 from voice_layer.realtime import realtime_handler
 from voice_layer.resolver import UnknownProviderError
@@ -28,14 +32,11 @@ logger = structlog.get_logger("voice_layer.api")
 router = APIRouter(prefix="/voice", tags=["voice"])
 
 # Shared clients (lifespan-managed in main.py)
-asr_client: ASRClient | None = None
 tts_client: TTSClient | None = None
 
 
-def _get_asr() -> ASRClient:
-    if asr_client is None:
-        raise RuntimeError("ASR client not initialized")
-    return asr_client
+def _get_asr(connection: HTTPConnection) -> SpeechRecognizer:
+    return new_recognizer(connection)
 
 
 def _get_tts() -> TTSClient:
@@ -50,6 +51,7 @@ def _err_body(code: str, message: str) -> dict[str, str]:
 
 @router.post("/transcribe", response_model=VoiceTranscriptionResult)
 async def transcribe_audio(
+    request: Request,
     audio: UploadFile = File(..., description="Audio blob to transcribe"),
     language: str = Form(default="zh-CN"),
 ) -> VoiceTranscriptionResult:
@@ -64,8 +66,10 @@ async def transcribe_audio(
         size=len(audio_data),
         language=language,
     )
+    asr = None
     try:
-        return await _get_asr().transcribe(
+        asr = _get_asr(request)
+        return await asr.transcribe(
             audio_data,
             language=language,
             upload_filename=fn,
@@ -76,6 +80,7 @@ async def transcribe_audio(
             status.HTTP_400_BAD_REQUEST,
             detail=_err_body(exc.code, str(exc)),
         ) from exc
+
     except httpx.HTTPStatusError as exc:
         body = ""
         with contextlib.suppress(Exception):
@@ -88,10 +93,19 @@ async def transcribe_audio(
             ),
         ) from exc
 
+    finally:
+        if asr is not None:
+            await close_voice_resources(asr)
+
 
 @router.post("/synthesize")
 async def synthesize_voice(request: VoiceSynthesisRequest) -> dict:
     """Synthesize speech from text and return audio URL + duration."""
+    from voice_layer.text_policy import check_text
+
+    checked = await check_text(request.text, source="output")
+    if checked.blocked:
+        raise HTTPException(400, detail=_err_body("content_blocked", checked.text))
     t0 = time.perf_counter()
     rt = get_runtime_voice_config()
     provider = (rt.get("tts_provider") or "").strip()
@@ -175,6 +189,8 @@ async def synthesize_voice(request: VoiceSynthesisRequest) -> dict:
         ) from exc
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
+    principal = current_principal.get()
+    await register_voice_asset(result["audio_url"], principal.user_id if principal else None)
     logger.info(
         "api.synthesize.ok",
         provider=provider,
@@ -187,7 +203,6 @@ async def synthesize_voice(request: VoiceSynthesisRequest) -> dict:
         "audio_url": result["audio_url"],
         "voice_url": result["audio_url"],
         "duration_ms": result["duration_ms"],
-        "local_path": result["local_path"],
     }
 
 
@@ -214,8 +229,10 @@ async def voice_stream(websocket: WebSocket) -> None:
 
     buffer = bytearray()
     chunk_count = 0
+    asr = None
 
     try:
+        asr = _get_asr(websocket)
         while True:
             message = await websocket.receive()
 
@@ -225,14 +242,16 @@ async def voice_stream(websocket: WebSocket) -> None:
                 chunk_count += 1
 
                 if len(buffer) > 80_000:
-                    partial = await _try_partial_transcribe(bytes(buffer))
+                    partial = await _try_partial_transcribe(asr, bytes(buffer))
                     if partial:
-                        await websocket.send_json({
-                            "type": "partial",
-                            "text": partial.text,
-                            "emotion": partial.detected_emotion.value,
-                            "confidence": partial.confidence,
-                        })
+                        await websocket.send_json(
+                            {
+                                "type": "partial",
+                                "text": partial.text,
+                                "emotion": partial.detected_emotion.value,
+                                "confidence": partial.confidence,
+                            }
+                        )
                     overlap = int(len(buffer) * 0.2)
                     buffer = buffer[-overlap:]
 
@@ -240,14 +259,16 @@ async def voice_stream(websocket: WebSocket) -> None:
                 control = message["text"]
                 logger.info("api.stream.control", control=control)
                 if control == "finalize":
-                    final = await _get_asr().transcribe(bytes(buffer))
-                    await websocket.send_json({
-                        "type": "final",
-                        "text": final.text,
-                        "emotion": final.detected_emotion.value,
-                        "confidence": final.confidence,
-                        "duration_ms": final.duration_ms,
-                    })
+                    final = await asr.transcribe(bytes(buffer))
+                    await websocket.send_json(
+                        {
+                            "type": "final",
+                            "text": final.text,
+                            "emotion": final.detected_emotion.value,
+                            "confidence": final.confidence,
+                            "duration_ms": final.duration_ms,
+                        }
+                    )
                     buffer.clear()
                     chunk_count = 0
                 elif control == "ping":
@@ -258,6 +279,9 @@ async def voice_stream(websocket: WebSocket) -> None:
     except Exception as exc:
         logger.error("api.stream.error", error=str(exc))
         await websocket.close(code=1011)
+    finally:
+        if asr is not None:
+            await close_voice_resources(asr)
 
 
 @router.websocket("/realtime")
@@ -266,10 +290,10 @@ async def voice_realtime(websocket: WebSocket) -> None:
     await realtime_handler(websocket)
 
 
-async def _try_partial_transcribe(audio_data: bytes) -> VoiceTranscriptionResult | None:
+async def _try_partial_transcribe(asr: SpeechRecognizer, audio_data: bytes) -> VoiceTranscriptionResult | None:
     """Attempt partial transcription; return None on failure."""
     try:
-        return await _get_asr().transcribe(audio_data)
+        return await asr.transcribe(audio_data)
     except Exception as exc:
         logger.warning("api.stream.partial_failed", error=str(exc))
         return None

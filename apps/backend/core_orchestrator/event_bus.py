@@ -11,6 +11,7 @@ import redis.asyncio as aioredis
 import structlog
 
 from shared_runtime.config import get_settings
+from shared_runtime.log_safety import connection_target
 from shared_contracts.events import BaseEvent
 from shared_runtime.lite_mode import InMemoryEventBus
 
@@ -46,7 +47,7 @@ class EventBus:
             decode_responses=True,
         )
         self._pubsub = self._redis.pubsub()
-        logger.info("event_bus_connected", redis_url=self.redis_url)
+        logger.info("event_bus_connected", target=connection_target(self.redis_url))
 
     async def disconnect(self) -> None:
         self._stop_event.set()
@@ -71,7 +72,7 @@ class EventBus:
         try:
             return await self._redis.ping()
         except Exception as exc:
-            logger.warning("event_bus_ping_failed", error=str(exc))
+            logger.warning("event_bus_ping_failed", error=type(exc).__name__)
             return False
 
     # -- channel naming -------------------------------------------------------

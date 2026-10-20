@@ -36,6 +36,13 @@ from shared_contracts.models import Platform, TurnContext, UserProfile
 get_settings.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def offline_generation(monkeypatch):
+    from shared_runtime.llm_client import LLMClient
+
+    monkeypatch.setattr(LLMClient, "has_configured_provider", lambda self: False)
+
+
 @pytest.mark.asyncio
 async def test_chunk_text_stream_preserves_content() -> None:
     chunks: List[str] = []
@@ -70,13 +77,24 @@ def _sample_turn_context(message: str = "你好呀") -> TurnContext:
 
 
 @pytest.mark.asyncio
-async def test_stream_assistant_response_emits_meta_token_done() -> None:
+async def test_stream_assistant_response_emits_meta_token_done(monkeypatch) -> None:
     """End-to-end smoke test of the streaming pipeline in monolithic mode.
 
     Without a configured LLM provider the rule-based fallback kicks in, but
     chunk_text_stream still slices the reply into many token frames so we
     can assert the wire-level event order.
     """
+    from main import create_app
+    from core_orchestrator.http_client import close_all
+    from shared_runtime.database import init_database_schema
+    from shared_runtime.llm_client import LLMClient
+    from user_profile import get_default_store
+
+    get_default_store()
+    create_app()
+    await close_all()
+    await init_database_schema()
+    monkeypatch.setattr(LLMClient, "has_configured_provider", lambda self: False)
     tc = _sample_turn_context("你好呀")
     events = []
     async for event in stream_assistant_response(tc):
@@ -89,9 +107,7 @@ async def test_stream_assistant_response_emits_meta_token_done() -> None:
     assert event_types[-1] == "done", f"expected done last, got {event_types[-3:]}"
     assert event_types.count("token") >= 1, "no token events emitted"
 
-    full_text = "".join(
-        e.get("text", "") for e in events if e.get("event") == "token"
-    )
+    full_text = "".join(e.get("text", "") for e in events if e.get("event") == "token")
     assert full_text.strip(), "tokens concatenated to empty string"
 
     done_evt = events[-1]
@@ -100,13 +116,14 @@ async def test_stream_assistant_response_emits_meta_token_done() -> None:
     assert state.get("assistant_message") == full_text, (
         "assistant_message in final state must equal concatenated tokens"
     )
+    await close_all()
 
 
 def _build_test_client() -> TestClient:
     # Import here so the env vars set above are picked up by main.py
     from main import app
 
-    return TestClient(app)
+    return TestClient(app, client=("127.0.0.1", 50000))
 
 
 def test_turn_stream_endpoint_returns_event_stream() -> None:
@@ -139,7 +156,7 @@ def test_turn_stream_endpoint_returns_event_stream() -> None:
     # All data: lines must parse as JSON.
     for line in text.splitlines():
         if line.startswith("data:"):
-            data_part = line[len("data:"):].strip()
+            data_part = line[len("data:") :].strip()
             if not data_part:
                 continue
             json.loads(data_part)

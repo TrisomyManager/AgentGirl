@@ -1,7 +1,7 @@
 """Global configuration loaded from environment variables.
 
 P1-D 物理搬迁完成 (V2.1): 原 ``shared.config`` 的物理实现现在位于本文件;
-``shared.config`` 反向 re-export 兼容老 import. 业务侧应优先
+旧 ``shared.config`` 入口在 V2.22 已移除. 业务侧使用
 ``from shared_runtime import Settings, get_settings``.
 
 注意: ``.env`` 位于后端根目录 ``apps/backend/.env``; 本模块用绝对路径解析以避免
@@ -13,6 +13,8 @@ from pathlib import Path
 
 from pydantic import ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings
+
+from . import model_presets as presets
 
 # apps/backend/.env — absolute path so uvicorn cwd does not affect lite_mode / keys.
 # 本文件位于 apps/backend/shared_runtime/config.py, 父父级即 apps/backend/.
@@ -83,23 +85,39 @@ class Settings(BaseSettings):
     openai_base_url: str | None = Field(default=None)
     anthropic_api_key: str | None = Field(default=None)
     anthropic_base_url: str | None = Field(default=None)
-    default_llm_model: str = Field(default="gpt-4o")
-    reasoning_llm_model: str = Field(default="o3-mini")
+    ark_api_key: str | None = Field(default=None)
+    ark_base_url: str = Field(default=presets.ARK_BASE_URL)
+    default_llm_model: str = Field(default=presets.CHAT_MODEL)
+    reasoning_llm_model: str = Field(default=presets.REASONING_MODEL)
+    reaction_use_llm: bool = Field(default=True)
+    reaction_model: str | None = Field(default=None)
+    reaction_timeout_seconds: float = Field(default=3.0, ge=0.1, le=30.0)
+    intent_router_use_llm: bool = Field(default=True)
+    intent_router_timeout_seconds: float = Field(default=3.0, ge=0.1, le=30.0)
+    embedding_api_key: str | None = Field(default=None)
+    embedding_base_url: str | None = Field(default=None)
+    embedding_model: str = Field(default=presets.EMBEDDING_MODEL)
+    embedding_dim: int = Field(default=presets.EMBEDDING_DIM, ge=1)
 
     # ------------------------------------------------------------------
     # Voice (cloud API)
     # ------------------------------------------------------------------
     whisper_api_key: str | None = Field(default=None)
     whisper_base_url: str | None = Field(default=None)
-    tts_provider: str = Field(default="fish_audio")  # fish_audio | chattts | openai
+    tts_provider: str = Field(default="volcengine")
     tts_api_key: str | None = Field(default=None)
     tts_base_url: str | None = Field(default=None)
-    default_voice_id: str = Field(default="zh-CN-XiaoxiaoNeural")
+    tts_model: str = Field(default=presets.TTS_RESOURCE)
+    asr_model: str = Field(default=presets.ASR_RESOURCE)
+    default_voice_id: str = Field(default=presets.TTS_VOICE)
 
     # ------------------------------------------------------------------
     # Volcengine realtime voice (火山引擎端到端实时语音)
     # ------------------------------------------------------------------
-    realtime_voice_provider: str = Field(default="cloud")  # local | cloud | volc_realtime
+    realtime_voice_provider: str = Field(default="volc_realtime")  # local | cloud | volc_realtime
+    volc_api_key: str | None = Field(default=None)
+    volc_model: str = Field(default=presets.REALTIME_MODEL)
+    volc_voice_id: str = Field(default=presets.REALTIME_VOICE)
     volc_app_id: str | None = Field(default=None)
     volc_access_token: str | None = Field(default=None)
     volc_resource_id: str = Field(default="volc.speech.dialog")
@@ -108,7 +126,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Action / 2D generation
     # ------------------------------------------------------------------
-    action_provider: str = Field(default="tongyi")  # tongyi | custom
+    action_provider: str = Field(default="local")  # local placeholder | custom frame service
     action_api_key: str | None = Field(default=None)
     action_base_url: str | None = Field(default=None)
     avatar_2d_reference_url: str | None = Field(default=None)
@@ -123,10 +141,17 @@ class Settings(BaseSettings):
     # Feature flags
     # ------------------------------------------------------------------
     enable_voice: bool = Field(default=True)
+    enable_streaming_tts: bool = Field(default=True)
+    streaming_tts_max_concurrency: int = Field(default=2, ge=1, le=4)
+    streaming_tts_min_sentence_chars: int = Field(default=8, ge=1, le=80)
+    streaming_tts_max_sentence_chars: int = Field(default=100, ge=80, le=500)
+    streaming_tts_segment_timeout_seconds: float = Field(default=30, ge=1, le=120)
     enable_action_2d: bool = Field(default=True)
     enable_memory_pipeline: bool = Field(default=True)
     enable_device_coordination: bool = Field(default=True)
     enable_knowledge_graph: bool = Field(default=True)
+    enable_local_memory_graph: bool = Field(default=True)
+    """User-scoped relational memory graph, available without Neo4j in Lite Mode."""
 
     # ------------------------------------------------------------------
     # Working memory (per-session prompt context)
@@ -136,12 +161,19 @@ class Settings(BaseSettings):
 
     working_memory_llm_digest: bool = Field(default=False)
     """When True and an LLM key is configured, add a one-line ``session_digest`` for the prompt."""
+    working_memory_compression_use_llm: bool = Field(default=True)
+    working_memory_compression_batch_turns: int = Field(default=3, ge=1, le=20)
 
     working_memory_summary_model: str | None = Field(default=None)
     """Optional model override for working-memory LLM calls (defaults to ``default_llm_model``)."""
 
     working_memory_summary_ttl_seconds: float = Field(default=45.0, ge=5.0, le=600.0)
     """Skip repeat LLM calls for the same session when transcript fingerprint unchanged within TTL."""
+    memory_maintenance_enabled: bool = Field(default=True)
+    memory_maintenance_interval_seconds: float = Field(default=3600.0, ge=60.0, le=86400.0)
+    memory_dream_use_llm: bool = Field(default=True)
+    memory_dream_backfill_days: int = Field(default=7, ge=1, le=90)
+    memory_timezone: str = Field(default="Asia/Shanghai")
 
     # ------------------------------------------------------------------
     # Proactive care (V2.5 — 主动关怀)
@@ -182,7 +214,10 @@ class Settings(BaseSettings):
     # CORS
     # ------------------------------------------------------------------
     cors_origins: str = Field(
-        default="http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:3000,http://127.0.0.1:3000"
+        default=(
+            "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,"
+            "http://127.0.0.1:5174,http://localhost:3000,http://127.0.0.1:3000,app://companion"
+        )
     )
     """Comma-separated list of allowed CORS origins. Set to '*' to allow all (not recommended for production)."""
 
@@ -191,6 +226,14 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     lite_mode: bool = Field(default=False)
     """When True, replaces Redis/Postgres/Neo4j with in-memory/SQLite fallbacks."""
+    lite_database_url: str | None = Field(default=None)
+    """Optional SQLite URL; defaults to apps/backend/companion_lite.db regardless of cwd."""
+
+    mcp_config_file: str | None = Field(default=None)
+    plugins_dir: str | None = Field(default=None)
+    plugins_config_file: str | None = Field(default=None)
+    plugin_install_enabled: bool = Field(default=False)
+    access_config_file: str | None = Field(default=None)
 
     device_command_ttl_seconds: int = Field(
         default=300,

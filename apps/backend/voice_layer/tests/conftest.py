@@ -30,3 +30,10 @@ def _reset_voice_runtime_state() -> None:
     yield
     clear_runtime_voice_config()
     reset_realtime_registry()
+
+
+@pytest.fixture(autouse=True)
+def standalone_voice_context(monkeypatch):
+    monkeypatch.setattr("voice_layer.conversation_context._loader", None)
+    monkeypatch.setattr("voice_layer.text_policy._review", None)
+    monkeypatch.setattr("voice_layer.text_policy._stream", None)

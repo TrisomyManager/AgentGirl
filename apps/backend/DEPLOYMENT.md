@@ -69,13 +69,15 @@ notepad .env                   # Windows
 
 **必须修改的配置项：**
 ```ini
-COMPANION_OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+COMPANION_ARK_API_KEY=your-ark-api-key
+COMPANION_ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+COMPANION_DEFAULT_LLM_MODEL=doubao-seed-2-0-mini-260428
 # 如果使用 Anthropic：
 # COMPANION_ANTHROPIC_API_KEY=sk-ant-xxxxxxxx
 
 # 语音与动作 API（可选，不填则对应功能返回错误）
 COMPANION_TTS_API_KEY=your-tts-key
-COMPANION_WHISPER_API_KEY=your-whisper-key
+COMPANION_VOLC_API_KEY=your-doubao-speech-api-key
 COMPANION_ACTION_API_KEY=your-action-key
 ```
 
@@ -233,10 +235,11 @@ ws.onmessage = (event) => {
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
 | `COMPANION_LITE_MODE` | `false` | **核心开关**：`true` 启用本地无 Docker 模式 |
-| `COMPANION_OPENAI_API_KEY` | — | OpenAI API Key |
+| `COMPANION_ARK_API_KEY` | — | 火山方舟 API Key |
+| `COMPANION_VOLC_API_KEY` | — | 豆包语音 API Key |
 | `COMPANION_ANTHROPIC_API_KEY` | — | Anthropic API Key |
-| `COMPANION_DEFAULT_LLM_MODEL` | `gpt-4o` | 默认对话模型 |
-| `COMPANION_TTS_PROVIDER` | `fish_audio` | TTS 供应商 |
+| `COMPANION_DEFAULT_LLM_MODEL` | `doubao-seed-2-0-mini-260428` | 默认对话模型 |
+| `COMPANION_TTS_PROVIDER` | `volcengine` | TTS 供应商 |
 | `COMPANION_TTS_API_KEY` | — | TTS API Key |
 | `COMPANION_WHISPER_API_KEY` | — | ASR (Whisper) API Key |
 | `COMPANION_ACTION_API_KEY` | — | 2D 动作生成 API Key |
@@ -261,3 +264,5 @@ A: 可以。Windows 用户可安装 [Redis for Windows](https://github.com/tpora
 
 **Q: 如何打包给其他人使用？**
 A: 本地包只需要 `shared/` + `core_orchestrator/` + `persona_engine/` + `memory_system/` + `voice_layer/` + `action_layer/` + `pyproject.toml` + `.env.lite` + `scripts/run_local.*`。接收方安装 Python 依赖后即可运行，无需 Docker。
+
+火山引擎模型/音色和服务开通步骤见 [VOLCENGINE.md](VOLCENGINE.md)。

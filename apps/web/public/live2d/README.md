@@ -1,5 +1,16 @@
 # Live2D 模型目录
 
+## 随应用提供的资源
+
+`shizuku/` 已包含模型本体、6 张贴图、表情、物理/姿态、动作与音效；全部从本地加载。
+示例模型的动作自带日语音效，应用在 Live2D 初始化时关闭动作音效，语音统一由聊天/通话播放器处理。
+请将此目录整体纳入构建，不能只保留 `shizuku.model.json`。缺失的静态文件在 Vite 开发环境中可能返回页面 HTML，继而造成 `Invalid moc data` 或贴图加载失败。
+
+- 资源来源：[pixi-live2d-display 的 Shizuku 示例](https://github.com/guansss/pixi-live2d-display/tree/31317b37d5e22955a44d5b11f37f421e94a11269/test/assets/shizuku)。仅引入该模型引用的资源，未导入外部项目源码。
+- 上游版本：`31317b37d5e22955a44d5b11f37f421e94a11269`；`asset-manifest.json` 记录资源大小与 SHA-256。
+- 版权归 Live2D 示例素材权利人所有。上游说明这些示例模型依照 [Live2D Free Material License](https://www.live2d.com/eula/live2d-free-material-license-agreement_en.html) 重新分发，模型素材不随本项目代码许可证重新授权。
+- 在 `apps/web` 运行 `npm test` 会检查配置引用的所有资源及模型/贴图文件签名。
+
 ## 测试模型获取
 
 ### 官方免费样本模型

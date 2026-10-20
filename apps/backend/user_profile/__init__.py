@@ -6,9 +6,9 @@
 - 业务侧通过 ``UserProfileStore`` 读写, 第三方宿主可替换底层存储
 
 P1-B 升级要点:
-- 新增 ``SQLiteUserProfileStore`` —— 复用 ``shared.database`` 引擎 (Lite 模式 SQLite, 生产 PG)
+- 新增 ``SQLiteUserProfileStore`` —— 复用 ``shared_runtime.database`` 引擎 (Lite 模式 SQLite, 生产 PG)
 - 新增 ``get_default_store()`` —— 进程级单例, orchestrator 主链路调用
-- ORM 模型 ``UserProfileORM`` 注册到 ``shared.database.Base``, 自动随 init_database_schema 建表
+- ORM 模型 ``UserProfileORM`` 注册到 ``shared_runtime.database.Base``, 自动随 init_database_schema 建表
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ class InMemoryUserProfileStore:
 
 
 # ---------------------------------------------------------------------------
-# SQLite (shared.database) backed store
+# SQLite (shared_runtime.database) backed store
 # ---------------------------------------------------------------------------
 
 
@@ -89,7 +89,7 @@ def _build_orm():
     """
     from sqlalchemy import Column, DateTime, String, Text, func
 
-    from shared.database import Base
+    from shared_runtime.database import Base
 
     class UserProfileORM(Base):  # type: ignore[misc, valid-type]
         __tablename__ = "user_profiles"
@@ -107,9 +107,9 @@ def _build_orm():
 
 
 class SQLiteUserProfileStore:
-    """基于 ``shared.database`` 的持久化实现 (Lite 模式 SQLite, 生产 PG).
+    """基于 ``shared_runtime.database`` 的持久化实现 (Lite 模式 SQLite, 生产 PG).
 
-    通过 ``shared.database.init_database_schema()`` 自动建表 — 模块只需在
+    通过 ``shared_runtime.database.init_database_schema()`` 自动建表 — 模块只需在
     被 import 时把 ORM 注册进 ``Base.metadata``.
     """
 
@@ -128,7 +128,7 @@ class SQLiteUserProfileStore:
         )
 
     async def get(self, user_id: str) -> Optional[UserProfileSnapshot]:
-        from shared.database import AsyncSessionLocal
+        from shared_runtime.database import AsyncSessionLocal
 
         async with AsyncSessionLocal() as session:
             row = await session.get(self._orm, user_id)
@@ -137,7 +137,7 @@ class SQLiteUserProfileStore:
             return self._to_snapshot(row)
 
     async def upsert(self, snapshot: UserProfileSnapshot) -> None:
-        from shared.database import AsyncSessionLocal
+        from shared_runtime.database import AsyncSessionLocal
 
         async with AsyncSessionLocal() as session:
             row = await session.get(self._orm, snapshot.user_id)
@@ -152,7 +152,7 @@ class SQLiteUserProfileStore:
             await session.commit()
 
     async def merge_preferences(self, user_id: str, **prefs: Any) -> UserProfileSnapshot:
-        from shared.database import AsyncSessionLocal
+        from shared_runtime.database import AsyncSessionLocal
 
         async with AsyncSessionLocal() as session:
             row = await session.get(self._orm, user_id)
@@ -184,7 +184,7 @@ _default_store: Optional[UserProfileStore] = None
 def get_default_store() -> UserProfileStore:
     """Return process-level default store.
 
-    Selects ``SQLiteUserProfileStore`` when ``shared.database`` is available;
+    Selects ``SQLiteUserProfileStore`` when ``shared_runtime.database`` is available;
     falls back to ``InMemoryUserProfileStore`` for pure-Python environments
     (e.g. third-party hosts without sqlalchemy).
     """

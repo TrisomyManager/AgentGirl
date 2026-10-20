@@ -8,12 +8,12 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
 
-from shared_runtime.config import get_settings
 from shared_contracts.models import Platform
+from shared_runtime.config import get_settings
 
 from .event_consumer import GatewayEventConsumer
+from .platforms import AppWebSocketAdapter, BasePlatformAdapter
 from .session_manager import SessionManager
-from .platforms import BasePlatformAdapter, AppWebSocketAdapter
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/gateway", tags=["gateway"])
@@ -97,6 +97,25 @@ class ReceiveRequest(BaseModel):
 # Routes
 # ---------------------------------------------------------------------------
 
+@router.get("/platforms/{user_id}/receipts")
+async def platform_receipts(user_id: str, request: Request) -> Dict[str, Any]:
+    """Current owner's durable receipts, without secrets or a resend action."""
+    import json
+
+    from sqlalchemy import select
+
+    from .store import InboxORM, InboxStore
+
+    runtime = getattr(request.app.state, "platform_runtime", None)
+    store = runtime.store if runtime else InboxStore()
+    async with store.sessions() as session:
+        rows = (await session.scalars(select(InboxORM).where(InboxORM.user_id == user_id)
+                                     .order_by(InboxORM.updated_at.desc()).limit(50))).all()
+        return {"receipts": [{"id": row.id, "status": row.status, "reason": row.reason,
+                              "session_id": row.session_id, "created_at": row.created_at,
+                              "updated_at": row.updated_at, "sent_message_ids": json.loads(row.sent_ids_json)}
+                             for row in rows]}
+
 @router.post("/send")
 async def send_message(
     req: SendRequest,
@@ -112,6 +131,8 @@ async def send_message(
         media=req.media,
         reply_to_message_id=req.reply_to_message_id,
     )
+    if msg_id is None:
+        raise HTTPException(502, "平台尚未确认投递结果，请先检查平台记录，避免重复发送。")
     logger.info("api.send", user_id=req.user_id, platform=req.platform.value, message_id=msg_id)
     return {"success": True, "message_id": msg_id}
 

@@ -1,7 +1,7 @@
 """Lite-mode fallbacks for local development without Docker.
 
 P1-D 物理搬迁完成 (V2.1): 原 ``shared.lite_mode`` 的物理实现现在位于本文件;
-``shared.lite_mode`` 反向 re-export 兼容老 import.
+旧 ``shared.lite_mode`` 入口在 V2.22 已移除.
 
 Replaces Redis, PostgreSQL, and Neo4j with in-memory / SQLite equivalents.
 Activated via ``COMPANION_LITE_MODE=true``.

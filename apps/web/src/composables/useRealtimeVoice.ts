@@ -21,8 +21,12 @@
  *   turn_done, interrupted, error, pong
  */
 
-import { computed, onScopeDispose, ref } from 'vue';
-import { COMPANION_DEFAULT_USER_ID, COMPANION_SESSION_STORAGE_KEY } from './useChat';
+import { computed, getCurrentScope, onScopeDispose, ref } from 'vue';
+import { COMPANION_SESSION_STORAGE_KEY } from './useChat';
+import { currentUserId, sessionProtocols, userStorageKey } from './accessSession';
+import { rms, type AvatarTimeline } from '../../../../packages/avatar-runtime/src';
+import { avatarClock } from './useAvatarPresentation';
+import { AUDIO_PROTOCOL, decodeAudioFrame, encodeAudioFrame } from '../../../../packages/audio-transport/src';
 
 function buildRealtimeWsUrl(): string {
   const apiBase =
@@ -31,10 +35,11 @@ function buildRealtimeWsUrl(): string {
   const wsRoot = apiBase.replace(/^http/, 'ws');
   const baseForUrl = wsRoot.endsWith('/') ? wsRoot : `${wsRoot}/`;
   const u = new URL('voice/realtime', baseForUrl);
+  u.searchParams.set('audio_protocol', AUDIO_PROTOCOL);
   try {
-    u.searchParams.set('user_id', COMPANION_DEFAULT_USER_ID);
+    u.searchParams.set('user_id', currentUserId());
     const sid =
-      typeof localStorage !== 'undefined' ? localStorage.getItem(COMPANION_SESSION_STORAGE_KEY) : null;
+      typeof localStorage !== 'undefined' ? localStorage.getItem(userStorageKey(COMPANION_SESSION_STORAGE_KEY)) : null;
     if (sid) u.searchParams.set('session_id', sid);
   } catch {
     /* ignore storage / URL issues */
@@ -44,6 +49,14 @@ function buildRealtimeWsUrl(): string {
 
 const TARGET_PCM_RATE = 16000;
 const PCM_CHUNK_SAMPLES = 2048;
+const MAX_AUDIO_FRAME_BYTES = 2 * 1024 * 1024;
+const MAX_PENDING_DECODES = 16;
+const MAX_PLAYBACK_SECONDS = 30;
+
+function validSampleRate(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 8000 && value <= 192000
+    ? value : 22050;
+}
 
 /** Downsample mono float32 to 16 kHz (nearest-neighbour); server ASR expects 16 kHz PCM. */
 function downsampleFloat32To16k(input: Float32Array, inputRate: number): Float32Array {
@@ -94,6 +107,7 @@ export function useRealtimeVoice() {
   const partialUser = ref('');
 
   let ws: WebSocket | null = null;
+  let audioProtocol = 'raw', inputSequence = 0, outputSequence = 0, activeStream = 0, lastStream = 0;
   let micStream: MediaStream | null = null;
   let audioCtx: AudioContext | null = null;
   let workletNode: AudioWorkletNode | null = null;
@@ -104,9 +118,23 @@ export function useRealtimeVoice() {
   let playSampleRate = 22050;
   let nextPlayTime = 0;
   let activePlaybackSources: AudioBufferSourceNode[] = [];
+  let presentationBuffers: { source: AudioBufferSourceNode; buffer: AudioBuffer; start: number; timeline?: AvatarTimeline }[] = [];
+  let pendingTimeline: AvatarTimeline | undefined;
+  let avatarToken: number | null = null, avatarRaf = 0, avatarKey = '', avatarStart = 0;
   let thinkingTimer: ReturnType<typeof setTimeout> | null = null;
   const THINKING_TIMEOUT_MS = 20_000; // 20s — back to listening if no response
   let wsCloseIntentional = false;
+  let playbackEpoch = 0;
+  let callGeneration = 0;
+  let cleanupPromise: Promise<void> | null = null;
+  let decodeQueue: Promise<void> = Promise.resolve();
+  let pendingDecodes = 0;
+  let pcmCarry: number | null = null;
+  let acceptsAudio = false;
+  let waitingInterruptAck = false;
+  let audioFinished = false;
+  let jitterDelay = 0.04;
+  let lastArrival = 0;
 
   const isActive = computed(() => state.value !== 'idle' && state.value !== 'error');
 
@@ -115,26 +143,45 @@ export function useRealtimeVoice() {
   // ------------------------------------------------------------------
 
   async function startCall(): Promise<void> {
+    if (cleanupPromise) await cleanupPromise;
     if (state.value !== 'idle' && state.value !== 'error') return;
     errorMsg.value = null;
     transcript.value = [];
     partialAssistant.value = '';
     partialUser.value = '';
     state.value = 'connecting';
+    const generation = ++callGeneration;
+    waitingInterruptAck = false;
     try {
       await openWs();
-      await openMic();
+      if (generation !== callGeneration) return;
+      if (!await openMic(generation) || generation !== callGeneration) return;
       state.value = 'listening';
     } catch (err) {
-      errorMsg.value = (err as Error).message || String(err);
-      state.value = 'error';
-      await stopCall();
+      if (generation !== callGeneration) return;
+      await failCall((err as Error).message || String(err));
     }
   }
 
   async function stopCall(): Promise<void> {
+    if (cleanupPromise) return cleanupPromise;
+    cleanupPromise = closeCallResources();
+    try { await cleanupPromise; }
+    finally { cleanupPromise = null; }
+  }
+
+  async function failCall(message: string): Promise<void> {
+    const closing = stopCall(), generation = callGeneration;
+    errorMsg.value = message; state.value = 'error';
+    await closing;
+    if (generation === callGeneration) { errorMsg.value = message; state.value = 'error'; }
+  }
+
+  async function closeCallResources(): Promise<void> {
+    callGeneration++;
+    waitingInterruptAck = false;
     try {
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         wsCloseIntentional = true;
         ws.close();
       }
@@ -187,22 +234,26 @@ export function useRealtimeVoice() {
 
   async function openWs(): Promise<void> {
     return new Promise((resolve, reject) => {
+      audioProtocol = 'raw'; inputSequence = 0; outputSequence = 0; activeStream = 0; lastStream = 0;
+      wsCloseIntentional = false;
       const wsUrl = buildRealtimeWsUrl();
-      const sock = new WebSocket(wsUrl);
+      const protocols = sessionProtocols();
+      const sock = protocols ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl);
       sock.binaryType = 'arraybuffer';
       let opened = false;
+      let negotiated = false;
       const timer = setTimeout(() => {
         sock.close();
         reject(new Error('WebSocket connect timeout（5s），请确认后端在运行）'));
       }, 5000);
 
       sock.onopen = () => {
-        clearTimeout(timer);
+        if (ws !== sock) { sock.close(); reject(new Error('通话已取消')); return; }
         opened = true;
         let sessionId: string | undefined;
         try {
           sessionId =
-            (typeof localStorage !== 'undefined' && localStorage.getItem(COMPANION_SESSION_STORAGE_KEY)) ||
+            (typeof localStorage !== 'undefined' && localStorage.getItem(userStorageKey(COMPANION_SESSION_STORAGE_KEY))) ||
             undefined;
         } catch {
           sessionId = undefined;
@@ -210,15 +261,14 @@ export function useRealtimeVoice() {
         sock.send(
           JSON.stringify({
             type: 'start',
-            user_id: COMPANION_DEFAULT_USER_ID,
+            user_id: currentUserId(),
             ...(sessionId ? { session_id: sessionId } : {}),
           }),
         );
-        resolve();
       };
       sock.onerror = () => {
         clearTimeout(timer);
-        if (!opened) {
+        if (!negotiated) {
           reject(
             new Error(
               `无法连接实时语音 WebSocket：${wsUrl}。请确认已启动后端（如 uvicorn）且 VITE_API_BASE_URL 与页面同源或可访问。`
@@ -228,11 +278,12 @@ export function useRealtimeVoice() {
       };
       sock.onclose = (ev) => {
         clearTimeout(timer);
+        if (ws !== sock) { if (!negotiated) reject(new Error('通话已取消')); return; }
         if (wsCloseIntentional) {
           wsCloseIntentional = false;
           return;
         }
-        if (!opened) {
+        if (!negotiated) {
           reject(
             new Error(
               (ev.reason && String(ev.reason)) ||
@@ -246,21 +297,60 @@ export function useRealtimeVoice() {
           state.value === 'thinking' ||
           state.value === 'speaking'
         ) {
-          errorMsg.value =
+          const message =
             (ev.reason && String(ev.reason)) ||
             (ev.code !== 1000 ? `通话连接断开 (code ${ev.code})` : '通话连接已结束');
-          state.value = 'error';
+          void failCall(message);
         }
       };
       sock.onmessage = (ev) => {
+        if (ws !== sock) return;
         if (typeof ev.data === 'string') {
+          if (new TextEncoder().encode(ev.data).byteLength > 65536) { protocolFailure(); return; }
+          try {
+            const control = JSON.parse(ev.data);
+            if (!negotiated && (control.type === 'transport_ready' || control.type === 'ready')) {
+              const selected = control.type === 'ready' ? 'raw' : control.audio_protocol;
+              if (selected !== 'raw' && selected !== AUDIO_PROTOCOL) throw new Error('Unsupported audio protocol');
+              audioProtocol = selected; negotiated = true; clearTimeout(timer); resolve();
+            } else if (!negotiated && control.type === 'error') {
+              clearTimeout(timer); reject(new Error('语音服务暂时不可用，请检查配置后重试。'));
+            }
+          } catch { protocolFailure(); return; }
           handleControl(ev.data);
         } else {
-          handleAudioChunk(ev.data as ArrayBuffer);
+          if (!negotiated) { protocolFailure(); return; }
+          if (audioProtocol === AUDIO_PROTOCOL) {
+            try {
+              const frame = decodeAudioFrame(ev.data as ArrayBuffer);
+              if (frame.sequence !== outputSequence++) throw new Error('Audio sequence mismatch');
+              if (activeStream && frame.streamId === activeStream) handleAudioChunk(frame.payload);
+            } catch { protocolFailure(); }
+          } else handleAudioChunk(ev.data as ArrayBuffer);
         }
       };
       ws = sock;
     });
+  }
+
+  function protocolFailure() {
+    ws?.close(1002);
+    void failCall('语音传输格式或顺序不正确，请重新连接。');
+  }
+
+  function selectAudioStream(message: any): boolean {
+    if (audioProtocol !== AUDIO_PROTOCOL) return true;
+    const id = message.audio_stream_id;
+    if (!Number.isInteger(id) || id <= lastStream || id > 0xffffffff) { protocolFailure(); return false; }
+    activeStream = lastStream = id;
+    return true;
+  }
+
+  function sendPcm(payload: ArrayBufferLike) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const data = payload instanceof ArrayBuffer ? payload : new Uint8Array(payload).slice().buffer;
+    try { ws.send(audioProtocol === AUDIO_PROTOCOL ? encodeAudioFrame(data, 0, inputSequence++) : data); }
+    catch { protocolFailure(); }
   }
 
   function clearThinkingTimer() {
@@ -316,8 +406,13 @@ export function useRealtimeVoice() {
         break;
 
       case 'assistant_sentence_start':
+        if (waitingInterruptAck) break;
+        if (!selectAudioStream(msg)) break;
+        acceptsAudio = true;
+        pendingTimeline = msg.avatar_timeline || undefined;
+        audioFinished = false;
         clearThinkingTimer();
-        playSampleRate = msg.sample_rate || 22050;
+        playSampleRate = validSampleRate(msg.sample_rate);
         currentSampleRate.value = playSampleRate;
         currentAudioFormat.value = msg.audio_format || 'pcm';
         currentRealtimeProvider.value = msg.provider || '';
@@ -326,6 +421,10 @@ export function useRealtimeVoice() {
         break;
 
       case 'assistant_audio_done':
+        if (msg.final) { audioFinished = true; finishPlaybackIfDrained(); }
+        break;
+      case 'assistant_text_done':
+        commitAssistantText();
         break;
 
       // ---- Legacy events (v1) ----
@@ -364,8 +463,12 @@ export function useRealtimeVoice() {
         break;
 
       case 'tts_start':
+        if (waitingInterruptAck) break;
+        if (!selectAudioStream(msg)) break;
+        acceptsAudio = true;
+        audioFinished = false;
         clearThinkingTimer();
-        playSampleRate = msg.sample_rate || 22050;
+        playSampleRate = validSampleRate(msg.sample_rate);
         currentSampleRate.value = playSampleRate;
         currentAudioFormat.value = msg.audio_format || 'pcm';
         currentRealtimeProvider.value = msg.provider || '';
@@ -378,13 +481,16 @@ export function useRealtimeVoice() {
 
       case 'turn_done':
         clearThinkingTimer();
-        state.value = userSpeaking.value ? 'listening' : 'listening';
+        commitAssistantText();
+        audioFinished = true;
+        finishPlaybackIfDrained();
         break;
 
       // ---- Shared events ----
       case 'interrupted':
         clearThinkingTimer();
         abortPlayback();
+        waitingInterruptAck = false;
         state.value = 'listening';
         break;
 
@@ -394,8 +500,9 @@ export function useRealtimeVoice() {
           (typeof msg.msg === 'string' && msg.msg.trim()) ||
           (typeof msg.message === 'string' && msg.message.trim()) ||
           (typeof msg.error === 'string' && msg.error.trim());
-        errorMsg.value = m || JSON.stringify(msg);
-        state.value = 'error';
+        if (msg.recoverable) {
+          errorMsg.value = m || '语音处理出现问题，请重试。'; abortPlayback(); state.value = 'listening';
+        } else void failCall(m || '语音处理出现问题，请重试。');
         break;
       }
 
@@ -405,6 +512,11 @@ export function useRealtimeVoice() {
   }
 
   function handleAudioChunk(buf: ArrayBuffer) {
+    if (!acceptsAudio || waitingInterruptAck) return;
+    if (buf.byteLength > MAX_AUDIO_FRAME_BYTES) {
+      stopOverloadedPlayback();
+      return;
+    }
     if (!playCtx) ensurePlayContext();
     if (!playCtx) return;
 
@@ -418,7 +530,14 @@ export function useRealtimeVoice() {
 
   function playPcmChunk(buf: ArrayBuffer) {
     if (!playCtx) return;
-    const int16 = new Int16Array(buf);
+    const bytes = new Uint8Array(buf);
+    const merged = new Uint8Array(bytes.length + (pcmCarry === null ? 0 : 1));
+    if (pcmCarry !== null) merged[0] = pcmCarry;
+    merged.set(bytes, pcmCarry === null ? 0 : 1);
+    const even = merged.length - merged.length % 2;
+    pcmCarry = even < merged.length ? merged[even] : null;
+    if (!even) return;
+    const int16 = new Int16Array(merged.buffer, 0, even / 2);
     const float32 = new Float32Array(int16.length);
     for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 0x8000;
     const audioBuffer = playCtx.createBuffer(1, float32.length, playSampleRate);
@@ -428,29 +547,107 @@ export function useRealtimeVoice() {
 
   function playCompressedChunk(buf: ArrayBuffer) {
     if (!playCtx) return;
-    playCtx.decodeAudioData(buf.slice(0)).then(
-      (audioBuffer) => {
-        scheduleBuffer(audioBuffer);
-      },
-      (err) => {
-        errorMsg.value = `音频解码失败 (${currentAudioFormat.value}): ${err?.message || err}`;
-      }
+    if (pendingDecodes >= MAX_PENDING_DECODES) {
+      stopOverloadedPlayback();
+      return;
+    }
+    const epoch = playbackEpoch;
+    const timeline = pendingTimeline;
+    const context = playCtx;
+    pendingDecodes++;
+    const decoded = context.decodeAudioData(buf.slice(0)).then(
+      buffer => ({ buffer, error: null }), error => ({ buffer: null, error }),
     );
+    decodeQueue = decodeQueue.then(async () => {
+      const result = await decoded;
+      if (epoch !== playbackEpoch || context !== playCtx) return;
+      pendingDecodes--;
+      if (result.buffer) scheduleBuffer(result.buffer, timeline);
+      else errorMsg.value = '音频解码失败，请重试。';
+      finishPlaybackIfDrained();
+    });
   }
 
-  function scheduleBuffer(audioBuffer: AudioBuffer) {
+  function commitAssistantText() {
+    if (!partialAssistant.value) return;
+    transcript.value.push({ id: `a-${Date.now()}`, role: 'assistant', text: partialAssistant.value });
+    partialAssistant.value = '';
+  }
+
+  function finishPlaybackIfDrained() {
+    if (audioFinished && !activePlaybackSources.length && !pendingDecodes) {
+      acceptsAudio = false;
+      pcmCarry = null;
+      stopAvatar();
+      if (state.value !== 'idle' && state.value !== 'error') state.value = 'listening';
+    }
+  }
+
+  function scheduleBuffer(audioBuffer: AudioBuffer, timeline = pendingTimeline) {
     if (!playCtx) return;
+    if (Math.max(0, nextPlayTime - playCtx.currentTime) + audioBuffer.duration > MAX_PLAYBACK_SECONDS) {
+      stopOverloadedPlayback();
+      return;
+    }
     const src = playCtx.createBufferSource();
     src.buffer = audioBuffer;
     src.connect(playCtx.destination);
     const now = playCtx.currentTime;
-    if (nextPlayTime < now) nextPlayTime = now + 0.02;
+    const arrival = performance.now() / 1000;
+    if (nextPlayTime < now) {
+      const gap = lastArrival ? Math.max(0, arrival - lastArrival) : 0.04;
+      jitterDelay = Math.min(0.25, Math.max(0.04, jitterDelay * .8 + gap * .2));
+      nextPlayTime = now + jitterDelay;
+    }
+    lastArrival = arrival;
     src.start(nextPlayTime);
+    presentationBuffers.push({ source: src, buffer: audioBuffer, start: nextPlayTime, timeline });
+    if (!avatarRaf) avatarRaf = requestAnimationFrame(updateAvatar);
     src.onended = () => {
       activePlaybackSources = activePlaybackSources.filter((s) => s !== src);
+      presentationBuffers = presentationBuffers.filter(item => item.source !== src);
+      finishPlaybackIfDrained();
     };
     activePlaybackSources.push(src);
     nextPlayTime += audioBuffer.duration;
+  }
+
+  function updateAvatar() {
+    avatarRaf = 0;
+    if (!playCtx) return;
+    const now = playCtx.currentTime;
+    const item = presentationBuffers.find(item => item.start <= now && now < item.start + item.buffer.duration);
+    if (item) {
+      const key = item.timeline ? `${item.timeline.turn_id}:${item.timeline.segment_seq}` : 'native-audio';
+      if (avatarToken === null || key !== avatarKey) {
+        if (avatarToken !== null) avatarClock.stop(avatarToken);
+        avatarToken = avatarClock.begin(item.timeline);
+        avatarKey = key;
+        avatarStart = item.start;
+      }
+      const data = item.buffer.getChannelData(0);
+      const offset = Math.floor((now - item.start) * item.buffer.sampleRate);
+      const samples = data.subarray(offset, Math.min(data.length, offset + 512));
+      avatarClock.sample(avatarToken, (now - avatarStart) * 1000, rms(samples));
+    } else if (avatarToken !== null) {
+      avatarClock.sample(avatarToken, Math.max(0, (now - avatarStart) * 1000), 0, false);
+    }
+    if (activePlaybackSources.length || acceptsAudio) avatarRaf = requestAnimationFrame(updateAvatar);
+  }
+
+  function stopAvatar() {
+    cancelAnimationFrame(avatarRaf);
+    avatarRaf = 0;
+    if (avatarToken !== null) avatarClock.stop(avatarToken);
+    avatarToken = null;
+    avatarKey = '';
+    presentationBuffers = [];
+  }
+
+  function stopOverloadedPlayback() {
+    abortPlayback();
+    errorMsg.value = '语音积压过多，已停止播放；你可以继续说话。';
+    state.value = 'listening';
   }
 
   function ensurePlayContext() {
@@ -464,6 +661,16 @@ export function useRealtimeVoice() {
   }
 
   function abortPlayback() {
+    activeStream = 0;
+    stopAvatar();
+    pendingTimeline = undefined;
+    playbackEpoch++;
+    decodeQueue = Promise.resolve();
+    pendingDecodes = 0;
+    pcmCarry = null;
+    acceptsAudio = false;
+    audioFinished = false;
+    lastArrival = 0;
     for (const src of activePlaybackSources) {
       try {
         src.stop();
@@ -477,8 +684,8 @@ export function useRealtimeVoice() {
   // Mic capture + VAD
   // ------------------------------------------------------------------
 
-  async function openMic(): Promise<void> {
-    micStream = await navigator.mediaDevices.getUserMedia({
+  async function openMic(generation: number): Promise<boolean> {
+    const acquiredStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
         echoCancellation: true,
@@ -487,17 +694,24 @@ export function useRealtimeVoice() {
       },
     });
 
+    if (generation !== callGeneration) {
+      acquiredStream.getTracks().forEach(track => track.stop());
+      return false;
+    }
+    micStream = acquiredStream;
     const Ctx: typeof AudioContext =
       (window as any).AudioContext || (window as any).webkitAudioContext;
     // Use device default rate; resample to 16 kHz before sending (server ASR expects 16 kHz).
-    audioCtx = new Ctx();
-    await audioCtx.resume();
+    const captureContext = new Ctx();
+    audioCtx = captureContext;
+    await captureContext.resume();
+    if (generation !== callGeneration) { await captureContext.close(); return false; }
 
-    const inputRate = audioCtx.sampleRate;
-    const micSrc = audioCtx.createMediaStreamSource(micStream);
-    const silentOut = audioCtx.createGain();
+    const inputRate = captureContext.sampleRate;
+    const micSrc = captureContext.createMediaStreamSource(micStream);
+    const silentOut = captureContext.createGain();
     silentOut.gain.value = 0;
-    silentOut.connect(audioCtx.destination);
+    silentOut.connect(captureContext.destination);
 
     let pcm16kCarry = new Float32Array(0);
 
@@ -511,7 +725,7 @@ export function useRealtimeVoice() {
         pos += PCM_CHUNK_SAMPLES;
         const i16 = float32ToInt16Pcm(slice);
         if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(i16.buffer.slice(i16.byteOffset, i16.byteOffset + i16.byteLength));
+          sendPcm(i16.buffer.slice(i16.byteOffset, i16.byteOffset + i16.byteLength));
         }
       }
       pcm16kCarry = merged.subarray(pos);
@@ -530,9 +744,10 @@ export function useRealtimeVoice() {
     let nativeCarry = new Float32Array(0);
 
     try {
-      if (!audioCtx.audioWorklet) throw new Error('AudioWorklet API missing');
-      await audioCtx.audioWorklet.addModule('/pcm-recorder-worklet.js');
-      workletNode = new AudioWorkletNode(audioCtx, 'pcm-recorder');
+      if (!captureContext.audioWorklet) throw new Error('AudioWorklet API missing');
+      await captureContext.audioWorklet.addModule('/pcm-recorder-worklet.js');
+      if (generation !== callGeneration) return false;
+      workletNode = new AudioWorkletNode(captureContext, 'pcm-recorder');
       workletNode.port.onmessage = (e: MessageEvent) => {
         if (!userSpeaking.value) return;
         const int16 = new Int16Array(e.data as ArrayBuffer);
@@ -553,7 +768,7 @@ export function useRealtimeVoice() {
     } catch (workletErr) {
       console.warn('[useRealtimeVoice] AudioWorklet failed, using ScriptProcessor', workletErr);
       const bufferSize = 4096;
-      pcmScriptProcessor = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+      pcmScriptProcessor = captureContext.createScriptProcessor(bufferSize, 1, 1);
       pcmScriptProcessor.onaudioprocess = (e: AudioProcessingEvent) => {
         if (!userSpeaking.value) return;
         const input = e.inputBuffer.getChannelData(0);
@@ -575,20 +790,23 @@ export function useRealtimeVoice() {
     // --- VAD: reuse mic stream + same AudioContext; force ScriptProcessor (more reliable than nested Worklets) ---
     const { MicVAD } = await import('@ricky0123/vad-web');
     const streamRef = micStream;
-    micVad = await MicVAD.new({
+    const detector = await MicVAD.new({
       model: 'v5',
-      baseAssetPath: '/',
-      onnxWASMBasePath: 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/',
+      baseAssetPath: new URL(import.meta.env.BASE_URL, window.location.href).href,
+      onnxWASMBasePath: new URL(`${import.meta.env.BASE_URL}ort/`, window.location.href).href,
+      ortConfig: (ort: { env: { wasm: { numThreads?: number } } }) => { ort.env.wasm.numThreads = 1; },
       getStream: async () => streamRef as MediaStream,
-      audioContext: audioCtx,
+      audioContext: captureContext,
       processorType: 'ScriptProcessor',
       startOnLoad: false,
       onSpeechStart: () => {
+        errorMsg.value = null;
         userSpeaking.value = true;
         nativeCarry = new Float32Array(0);
         pcm16kCarry = new Float32Array(0);
         if (state.value === 'speaking' || state.value === 'thinking') {
           abortPlayback();
+          waitingInterruptAck = true;
           if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'interrupt' }));
           }
@@ -615,10 +833,14 @@ export function useRealtimeVoice() {
       negativeSpeechThreshold: 0.55,
       minSpeechMs: 400,
     } as any);
-    await micVad.start();
+    if (generation !== callGeneration) { detector.pause(); detector.destroy(); return false; }
+    micVad = detector;
+    await detector.start();
+    if (generation !== callGeneration) { detector.pause(); detector.destroy(); return false; }
+    return true;
   }
 
-  onScopeDispose(() => {
+  if (getCurrentScope()) onScopeDispose(() => {
     void stopCall();
   });
 

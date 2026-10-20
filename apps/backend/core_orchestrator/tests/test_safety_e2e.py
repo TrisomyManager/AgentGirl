@@ -11,8 +11,26 @@ from core_orchestrator.state_machine import (
     build_graph,
     build_initial_state,
 )
+from safety_guard import default_guard, safe_fallback_reply
+
+
+@pytest.fixture(autouse=True)
+async def offline_host(monkeypatch):
+    from main import create_app
+    from shared_runtime.config import get_settings
+    from shared_runtime.database import init_database_schema
+    from core_orchestrator import state_machine
+
+    create_app()
+    await init_database_schema()
+    monkeypatch.setattr(get_settings(), 'enable_memory_pipeline', False)
+
+    async def skip_recall(state):
+        return state
+
+    # These tests exercise graph safety ordering; memory retrieval has its own integration suite.
+    monkeypatch.setattr(state_machine, 'node_recall_memory', skip_recall)
 from shared_contracts.models import Platform, TurnContext, UserProfile
-from safety_guard import safe_fallback_reply
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +84,7 @@ async def test_input_block_short_circuits_llm(blocked_input_context: TurnContext
     assistant_msg = final_state.get("assistant_message") or ""
     assert assistant_msg, "assistant_message must not be empty after input block"
 
-    fallback = safe_fallback_reply("input_blocked")
+    fallback = safe_fallback_reply(default_guard.check_input(blocked_input_context.user_message))
     assert assistant_msg == fallback, f"Expected safe fallback, got: {assistant_msg!r}"
 
     assert final_state.get("intent") == "chat"
@@ -94,7 +112,7 @@ async def test_output_block_replaces_unsafe_content(clean_input_context: TurnCon
     assert assistant_msg, "assistant_message must not be empty"
 
     assert assistant_msg != blocked_output, (
-        f"Blocked output must be replaced, but found same content"
+        "Blocked output must be replaced, but found same content"
     )
 
     fallback = safe_fallback_reply("output_blocked")

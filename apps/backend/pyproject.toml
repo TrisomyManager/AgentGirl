@@ -14,6 +14,8 @@ dependencies = [
     "redis>=5.0,<6",
     "asyncpg>=0.29,<1",
     "sqlalchemy>=2.0,<3",
+    "aiosqlite>=0.20,<1",
+    "tzdata>=2025.1",
     "neo4j>=5.0,<6",
     "langgraph>=0.2.0,<1",
     "langchain-core>=0.3.0,<1",
@@ -34,6 +36,9 @@ dependencies = [
     "python-dotenv>=1.2.1,<2",
     "dashscope>=1.20.0,<2",
     "websockets>=13.0,<14",
+    "jsonschema>=4.23,<5",
+    "mcp>=1.30,<2",
+    "pyyaml>=6.0,<7",
 ]
 
 [project.optional-dependencies]
@@ -41,19 +46,23 @@ dev = ["pytest>=8.0,<9", "pytest-asyncio>=0.24.0,<1", "ruff>=0.7.0,<1", "mypy>=1
 arch = ["import-linter>=2.0,<3"]
 # Local realtime ASR (COMPANION_REALTIME_VOICE_PROVIDER=local); pulls CTranslate2 binaries — optional.
 voice-local = ["faster-whisper>=1.0.0,<2"]
+platforms = ["cryptography>=50.0.2,<51", "discord.py>=2.7.1,<2.8"]
+
+[tool.setuptools]
+include-package-data = false
 
 [tool.setuptools.packages.find]
 where = ["."]
+exclude = ["*.tests", "*.tests.*"]
 include = [
-    "shared*",
     "shared_contracts*",
     "shared_runtime*",
     "core_orchestrator*",
     "persona_engine*",
     "memory_system*",
     "voice_layer*",
-    "action_layer*",
     "action_executor*",
+    "avatar_runtime*",
     "device_coordination*",
     "gateway_adapter*",
     "safety_guard*",
@@ -64,6 +73,10 @@ include = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+
+[tool.setuptools.package-data]
+persona_engine = ["data/*.yaml", "data/personas/*.yaml"]
+action_executor = ["catalog/*/plugin.json", "catalog/*/plugin.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "N", "UP", "B", "C4", "SIM"]

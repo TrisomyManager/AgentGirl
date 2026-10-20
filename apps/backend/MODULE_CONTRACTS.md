@@ -473,7 +473,7 @@ Historical upstream source trees (`hermes-agent/`, `airi-analysis/`) have been r
 
 ## 11. avatar_runtime / digital human presentation contract
 
-`avatar_runtime` is a proposed presentation module, not an active core brain module. Its contract exists so future digital-human work stays inside a clear boundary.
+`avatar_runtime` is an active, renderer-independent timeline assembly module (2026-10-20). It imports only `shared_contracts`; the standalone TypeScript playback clock lives in `packages/avatar-runtime`. The reference host sends `avatar_timeline` alongside full/segmented audio and realtime sentence events. It uses actual playback time and waveform RMS, not inferred phoneme timing. See `docs/avatar-audio-synchronization.md`.
 
 ### Responsibility
 
@@ -521,7 +521,8 @@ Recommended event names:
 `avatar_runtime` may import:
 
 - `shared_contracts`
-- `shared_runtime`
+
+The current pure assembler also forbids `shared_runtime`; any future infrastructure port must remain host-injected.
 
 `avatar_runtime` must not import internal implementation from:
 

@@ -10,12 +10,16 @@
         :voice="voice"
         @open-settings="settingsVisible = true"
         @open-status="capabilityStatusVisible = true"
-        @open-call="callVisible = true"
+        @open-call="!privacyBusy && (callVisible = true)"
         @open-memory="memoryVisible = true"
       />
 
       <div v-if="serverAvailable === false" class="banner banner-offline">
         <span>⚠️ 离线模式，服务器暂未连接，部分能力会降级。</span>
+      </div>
+      <div v-if="privacyBusy" class="banner banner-offline" role="status">
+        <span>数据清理已暂停当前会话，请在设置中重试或重新开始。</span>
+        <button type="button" @click="settingsVisible = true">打开设置</button>
       </div>
 
       <div v-if="error" class="banner banner-error">
@@ -48,7 +52,7 @@
               <div v-if="isTyping && !hasStreamingContent" class="typing-row">
                 <div class="msg-avatar">
                   <img
-                    src="https://placehold.co/36x36/e94560/FFF?text=暖"
+                    :src="`${baseUrl}xiaonuan-avatar.svg`"
                     alt="小暖"
                   />
                 </div>
@@ -65,20 +69,20 @@
             <span class="tool-status-icon" aria-hidden="true">🔄</span>
             <span class="tool-status-text">{{ toolStatus.currentToolLabel.value }}中…</span>
           </div>
-          <LlmStatusBar />
+          <LlmStatusBar v-if="canManage" />
           <div class="chat-input-row">
             <button
               class="capability-entry-btn"
               title="小暖可以帮你"
-              @click="capabilityVisible = true"
+              @click="!privacyBusy && (capabilityVisible = true)"
             >
               ✨
             </button>
             <ChatInput
-              :is-loading="isLoading"
+              :is-loading="isLoading || privacyBusy"
               :voice="voice"
               :fill-text="capabilityFillText"
-              @send="sendMessage"
+              @send="sendIfReady"
               @filled="capabilityFillText = ''"
             />
           </div>
@@ -87,6 +91,7 @@
     </main>
 
     <SettingsDrawer
+      :user-id="userId"
       :visible="settingsVisible"
       :user-name="userName"
       :session-id="sessionId"
@@ -94,6 +99,8 @@
       @close="settingsVisible = false"
       @update:user-name="updateUserName"
       @clear="clearHistory"
+      @privacy-busy="pauseForPrivacy"
+      @privacy-cleared="finishPrivacyClear"
     />
 
     <ProjectStatusPanel
@@ -133,7 +140,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import TopBar from './components/TopBar.vue';
 import ChatMessage from './components/ChatMessage.vue';
 import ChatInput from './components/ChatInput.vue';
@@ -148,7 +155,10 @@ import CapabilityStatus from './components/CapabilityStatus.vue';
 import ReminderToast from './components/ReminderToast.vue';
 import { useChat } from './composables/useChat';
 import { useProactivePush } from './composables/useProactivePush';
+import { accessState, canManage, clearUserCachedData } from './composables/accessSession';
 import type { ToolExecutionState } from './composables/useToolStatus';
+import type { SendMessageOptions } from './composables/useChat';
+const baseUrl = import.meta.env.BASE_URL;
 
 const {
   messages,
@@ -168,10 +178,33 @@ const {
   clearHistory,
   clearError,
   checkServer,
+  refreshEmotion,
   handleAssistantVoicePlayback,
   toolStatus,
   injectAssistantMessage,
+  stopCurrentWork,
 } = useChat();
+const privacyBusy = ref(false);
+function sendIfReady(text: string, options?: SendMessageOptions) {
+  if (!privacyBusy.value) return sendMessage(text, options);
+}
+function pauseForPrivacy(value: boolean) {
+  privacyBusy.value = value;
+  if (value) { stopCurrentWork(); callVisible.value = false; memoryVisible.value = false; capabilityVisible.value = false; }
+}
+function finishPrivacyClear() {
+  clearHistory();
+  clearUserCachedData(userId);
+  localStorage.setItem(`companion_data_erased:${userId}`, String(Date.now()));
+}
+function onDataErased(event: StorageEvent) {
+  if (event.key !== `companion_data_erased:${userId}`) return;
+  pauseForPrivacy(true); clearHistory();
+  clearUserCachedData(userId);
+  window.location.reload();
+}
+onMounted(() => window.addEventListener('storage', onDataErased));
+onUnmounted(() => window.removeEventListener('storage', onDataErased));
 
 // Subscribe to /actions/push (SSE) so reminder_fired events surface as a
 // floating toast in the corner, and proactive_message events inject an
@@ -180,6 +213,7 @@ const {
 // replay historical messages.
 const { lastReminder, dismissLastReminder } = useProactivePush(userId, {
   onProactiveMessage: (payload) => {
+    if (privacyBusy.value) return;
     injectAssistantMessage(payload.message, { emotion: payload.emotion ?? undefined });
   },
 });
@@ -203,7 +237,7 @@ const hasStreamingContent = computed(() => {
   return false;
 });
 
-const settingsVisible = ref(false);
+const settingsVisible = ref(accessState.privacyPending);
 const statusVisible = ref(false);
 const callVisible = ref(false);
 const memoryVisible = ref(false);
@@ -226,6 +260,7 @@ watch(isTyping, scrollToBottom);
 
 onMounted(() => {
   checkServer();
+  void refreshEmotion();
   scrollToBottom();
 });
 </script>

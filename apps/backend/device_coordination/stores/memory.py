@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .base import DeviceAuditStore, DeviceCommandStore
+from shared_runtime.user_lifecycle import assert_user_context
 
 _TERMINAL = frozenset({"succeeded", "failed", "denied", "timeout", "cancelled"})
 
@@ -19,9 +20,14 @@ class MemoryDeviceCommandStore(DeviceCommandStore):
 
     async def create(self, command: Dict[str, Any]) -> Dict[str, Any]:
         async with self._lock:
+            assert_user_context()
             cid = command["command_id"]
             self._data[cid] = dict(command)
             return dict(self._data[cid])
+
+    async def delete_user(self, user_id: str) -> None:
+        async with self._lock:
+            self._data = {key: row for key, row in self._data.items() if row.get("user_id") != user_id}
 
     async def get(self, command_id: str) -> Optional[Dict[str, Any]]:
         async with self._lock:
@@ -30,6 +36,7 @@ class MemoryDeviceCommandStore(DeviceCommandStore):
 
     async def update(self, command_id: str, patch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         async with self._lock:
+            assert_user_context()
             row = self._data.get(command_id)
             if row is None:
                 return None
@@ -45,6 +52,16 @@ class MemoryDeviceCommandStore(DeviceCommandStore):
         rows.sort(key=lambda c: c.get("created_at") or "", reverse=True)
         return rows[:limit]
 
+    async def transition(self, command_id, expected, patch):
+        async with self._lock:
+            assert_user_context()
+            row = self._data.get(command_id)
+            if row is None or row.get("status") not in expected:
+                return None
+            updated = {**row, **patch, "updated_at": datetime.utcnow().isoformat()}
+            self._data[command_id] = updated
+            return dict(updated)
+
     async def list_non_terminal(self) -> List[Dict[str, Any]]:
         async with self._lock:
             return [dict(c) for c in self._data.values() if c.get("status") not in _TERMINAL]
@@ -55,8 +72,7 @@ class MemoryDeviceCommandStore(DeviceCommandStore):
             candidates = [
                 dict(c)
                 for c in self._data.values()
-                if c.get("device_id") == device_id
-                and c.get("status") == "delivered"
+                if c.get("device_id") == device_id and c.get("status") == "delivered"
             ]
         if not candidates:
             return None
@@ -99,10 +115,15 @@ class MemoryDeviceAuditStore(DeviceAuditStore):
         if "timestamp" not in row:
             row["timestamp"] = datetime.utcnow().isoformat()
         async with self._lock:
+            assert_user_context()
             self._entries.append(row)
             if len(self._entries) > self._max:
                 self._entries = self._entries[-self._max :]
         return dict(row)
+
+    async def delete_user(self, user_id: str) -> None:
+        async with self._lock:
+            self._entries = [row for row in self._entries if row.get("user_id") != user_id]
 
     async def list_for_scope(
         self,

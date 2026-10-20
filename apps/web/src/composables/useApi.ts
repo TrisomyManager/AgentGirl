@@ -1,4 +1,6 @@
 import { ref } from 'vue';
+import { apiFetch as fetch } from './accessSession';
+import type { AvatarTimeline } from '../../../../packages/avatar-runtime/src';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim().replace(/\/$/, '') || 'http://127.0.0.1:8000';
 const ORCHESTRATOR_URL = API_BASE_URL;
@@ -62,6 +64,9 @@ export interface TurnRequest {
   platform: string;
   has_voice?: boolean;
   request_voice_reply?: boolean;
+  supports_segmented_voice?: boolean;
+  has_image?: boolean;
+  image_urls?: string[];
   voice_duration_ms?: number;
 }
 
@@ -70,6 +75,14 @@ export interface TurnResponse {
   session_id: string;
   user_id: string;
   assistant_message: string;
+  specialist?: 'chat' | 'task' | 'memory' | 'device';
+  task?: TaskRun | null;
+  expression_emoji?: string | null;
+  reply_suppressed?: boolean;
+  content_filtered?: boolean;
+  talk_value?: number;
+  reply_reason?: string | null;
+  error?: string | null;
   emotion?: {
     primary: string;
     intensity?: number;
@@ -80,6 +93,9 @@ export interface TurnResponse {
   voice_duration_ms?: number;
   /** Populated when TTS was attempted but failed; text reply is still valid. */
   voice_error?: string;
+  voice_mode?: 'segmented' | null;
+  voice_segments?: VoiceSegment[];
+  avatar_timeline?: AvatarTimeline | null;
   action_sequence?: {
     sequence_id: string;
     turn_id: string;
@@ -95,6 +111,38 @@ export interface TurnResponse {
     tts_audio_url?: string;
   };
   timestamp?: string;
+}
+
+export interface VoiceSegment {
+  avatar_timeline?: AvatarTimeline;
+  turn_id: string;
+  seq: number;
+  text: string;
+  audio_url: string;
+  duration_ms?: number | null;
+  emotion?: TurnResponse['emotion'];
+}
+
+export interface MemoryGraphNode {
+  id: string;
+  kind: 'memory' | 'entity' | 'keyword';
+  label: string;
+  memory_id?: string;
+  content?: string;
+  content_truncated?: boolean;
+  category?: string;
+  status?: 'active' | 'dormant';
+  importance?: number;
+  created_at?: string | null;
+  entity_type?: string;
+}
+
+export interface MemoryGraphData {
+  nodes: MemoryGraphNode[];
+  edges: { source: string; target: string; kind: 'mentions' | 'relation'; label: string; memory_ids: string[] }[];
+  truncated: boolean;
+  memory_count: number;
+  source: 'sql_index';
 }
 
 export interface TranscribeResponse {
@@ -168,6 +216,35 @@ export interface UserStateItem {
   cancelled_at?: string;
 }
 
+export interface TaskRun {
+  id: string;
+  user_id: string;
+  session_id: string;
+  request: string;
+  status: string;
+  message: string;
+  created_at: string;
+  steps: { position: number; tool_name: string; status: string; result: { message?: string } }[];
+}
+
+export interface CarePreferences {
+  enabled: boolean;
+  idle_checkin: boolean;
+  morning_greeting: boolean;
+  evening_greeting: boolean;
+  memory_followup: boolean;
+  timezone: string;
+  dnd_start_hour: number;
+  dnd_end_hour: number;
+  cooldown_minutes: number;
+  max_per_day: number;
+}
+
+export interface ConversationPreferences {
+  natural_reply_enabled: boolean;
+  acknowledgement_reply_probability: number;
+}
+
 export interface UserStateResponse {
   user_id: string;
   reminders: {
@@ -175,8 +252,8 @@ export interface UserStateResponse {
     recent: UserStateItem[];
   };
   tasks: {
-    open: UserStateItem[];
-    completed_recent: UserStateItem[];
+    open: TaskRun[];
+    completed_recent: TaskRun[];
   };
   proactive: {
     rules: {
@@ -190,6 +267,23 @@ export interface UserStateResponse {
 }
 
 export function useApi() {
+  async function getTasks(userId: string): Promise<TaskRun[]> {
+    const response = await fetch(`${ORCHESTRATOR_URL}/actions/tasks?user_id=${encodeURIComponent(userId)}`);
+    if (!response.ok) throw new Error('读取任务失败，请稍后重试。');
+    return (await response.json()).tasks;
+  }
+
+  async function cancelTask(taskId: string, userId: string): Promise<void> {
+    const response = await fetch(`${ORCHESTRATOR_URL}/actions/tasks/${encodeURIComponent(taskId)}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error('取消任务失败，请刷新后重试。');
+  }
+
+  async function resumeTask(taskId: string, userId: string, clarification: string): Promise<void> {
+    const response = await fetch(`${ORCHESTRATOR_URL}/actions/tasks/${encodeURIComponent(taskId)}/resume`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: userId, clarification }),
+    });
+    if (!response.ok) throw new Error('暂时无法继续任务，请刷新后重试。');
+  }
   const isLoading = ref(false);
   const error = ref<string | null>(null);
   const serverAvailable = ref<boolean | null>(null);
@@ -257,15 +351,20 @@ export function useApi() {
       intent_confidence?: number | null;
       emotion?: TurnResponse['emotion'];
       memory_entries_count?: number;
+      reply_suppressed?: boolean;
     }) => void;
     onToken?: (text: string) => void;
     onToolStatus?: (payload: ToolStatusPayload) => void;
+    onVoiceSegment?: (segment: VoiceSegment) => void;
+    onVoiceSegmentError?: (event: { seq: number; error: string }) => void;
+    onVoiceDone?: (event: { segments: number; successful_segments: number }) => void;
     onError?: (msg: string) => void;
   }
 
   async function streamTurn(
     req: TurnRequest,
     handlers: StreamHandlers = {},
+    signal?: AbortSignal,
   ): Promise<TurnResponse | null> {
     isLoading.value = true;
     error.value = null;
@@ -277,6 +376,7 @@ export function useApi() {
           Accept: 'text/event-stream',
         },
         body: JSON.stringify(req),
+        signal,
       });
       if (!resp.ok || !resp.body) {
         const text = await resp.text().catch(() => '');
@@ -297,6 +397,15 @@ export function useApi() {
           parsed = { text: dataLine };
         }
         switch (eventName) {
+          case 'voice_segment':
+            handlers.onVoiceSegment?.(parsed as VoiceSegment);
+            break;
+          case 'voice_segment_error':
+            handlers.onVoiceSegmentError?.(parsed);
+            break;
+          case 'voice_done':
+            handlers.onVoiceDone?.(parsed);
+            break;
           case 'meta':
             handlers.onMeta?.(parsed);
             break;
@@ -348,6 +457,7 @@ export function useApi() {
 
       return finalPayload;
     } catch (err) {
+      if (signal?.aborted) return null;
       const msg = err instanceof Error ? err.message : String(err);
       error.value = msg;
       if (msg.includes('fetch') || msg.includes('NetworkError')) {
@@ -623,6 +733,10 @@ export function useApi() {
     tts_base_url: string;
     tts_model: string;
     tts_voice_id: string;
+    realtime_voice_provider: string;
+    volc_api_key_set: boolean;
+    volc_model: string;
+    volc_voice_id: string;
   } | null> {
     try {
       const resp = await fetch(`${ORCHESTRATOR_URL}/orchestrator/settings/voice`);
@@ -634,6 +748,7 @@ export function useApi() {
   }
 
   async function saveVoiceConfig(cfg: {
+    reset?: boolean;
     asr_api_key: string;
     asr_base_url: string;
     asr_model: string;
@@ -642,6 +757,10 @@ export function useApi() {
     tts_base_url: string;
     tts_model: string;
     tts_voice_id: string;
+    realtime_voice_provider?: string;
+    volc_api_key?: string;
+    volc_model?: string;
+    volc_voice_id?: string;
   }): Promise<boolean> {
     try {
       const resp = await fetch(`${ORCHESTRATOR_URL}/orchestrator/settings/voice`, {
@@ -656,6 +775,16 @@ export function useApi() {
   }
 
   // ── Memory API ──
+  async function getMemoryGraph(userId: string, query = '', includeDormant = false, includeKeywords = false, signal?: AbortSignal): Promise<MemoryGraphData | null> {
+    try {
+      const params = new URLSearchParams({ query, include_dormant: String(includeDormant), include_keywords: String(includeKeywords) });
+      const resp = await fetch(`${ORCHESTRATOR_URL}/memory/user/${encodeURIComponent(userId)}/graph?${params}`, { signal });
+      return resp.ok ? await resp.json() : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function listMemories(userId: string, limit = 50, offset = 0, category?: string): Promise<any[] | null> {
     try {
       const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
@@ -678,12 +807,12 @@ export function useApi() {
     }
   }
 
-  async function recallMemory(userId: string, query: string, topK = 5): Promise<any | null> {
+  async function recallMemory(userId: string, query: string, topK = 5, includeDormant = false): Promise<any | null> {
     try {
       const resp = await fetch(`${ORCHESTRATOR_URL}/memory/recall`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: userId, query, top_k: topK, include_graph: false }),
+        body: JSON.stringify({ user_id: userId, query, top_k: topK, include_graph: true, include_dormant: includeDormant }),
       });
       if (!resp.ok) return null;
       return await resp.json();
@@ -701,13 +830,38 @@ export function useApi() {
     }
   }
 
-  async function deleteAllMemories(userId: string): Promise<boolean> {
+  async function deleteAllMemories(userId: string): Promise<'completed' | 'pending' | false> {
     try {
       const resp = await fetch(`${ORCHESTRATOR_URL}/memory/user/${encodeURIComponent(userId)}/all`, { method: 'DELETE' });
-      return resp.ok;
+      if (!resp.ok) return false;
+      const result = await resp.json();
+      return result.external_graph === 'pending' ? 'pending' : 'completed';
     } catch {
       return false;
     }
+  }
+
+  async function restoreMemory(userId: string, memoryId: string): Promise<boolean> {
+    try {
+      const resp = await fetch(`${ORCHESTRATOR_URL}/memory/user/${encodeURIComponent(userId)}/restore/${encodeURIComponent(memoryId)}`, { method: 'POST' });
+      return resp.ok;
+    } catch { return false; }
+  }
+
+  async function consolidateMemories(userId: string): Promise<any | null> {
+    try {
+      const resp = await fetch(`${ORCHESTRATOR_URL}/memory/user/${encodeURIComponent(userId)}/consolidate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      return resp.ok ? await resp.json() : null;
+    } catch { return null; }
+  }
+
+  async function listDailySummaries(userId: string): Promise<any[] | null> {
+    try {
+      const resp = await fetch(`${ORCHESTRATOR_URL}/memory/user/${encodeURIComponent(userId)}/daily_summaries`);
+      return resp.ok ? await resp.json() : null;
+    } catch { return null; }
   }
 
   // ── Action executor / reminders ──
@@ -777,11 +931,58 @@ export function useApi() {
     error.value = null;
   }
 
+  async function getCarePreferences(userId: string): Promise<CarePreferences> {
+    const resp = await fetch(`${ORCHESTRATOR_URL}/actions/proactive/preferences/${encodeURIComponent(userId)}`);
+    if (!resp.ok) throw new Error('加载主动陪伴设置失败');
+    return await resp.json();
+  }
+
+  async function saveCarePreferences(userId: string, preferences: CarePreferences): Promise<CarePreferences> {
+    const resp = await fetch(`${ORCHESTRATOR_URL}/actions/proactive/preferences/${encodeURIComponent(userId)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(preferences),
+    });
+    if (!resp.ok) throw new Error(resp.status === 422 ? '请检查时区、时间和频率设置' : '保存失败，请稍后重试');
+    return await resp.json();
+  }
+
+  async function getConversationPreferences(userId: string): Promise<ConversationPreferences> {
+    const resp = await fetch(`${ORCHESTRATOR_URL}/persona/conversation_preferences/${encodeURIComponent(userId)}`);
+    if (!resp.ok) throw new Error('加载聊天节奏设置失败');
+    return resp.json();
+  }
+
+  async function saveConversationPreferences(userId: string, preferences: ConversationPreferences): Promise<ConversationPreferences> {
+    const resp = await fetch(`${ORCHESTRATOR_URL}/persona/conversation_preferences/${encodeURIComponent(userId)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(preferences),
+    });
+    if (!resp.ok) throw new Error('保存聊天节奏设置失败，请稍后重试');
+    return resp.json();
+  }
+
+  async function getPersonaEmotion(userId: string): Promise<string | null> {
+    try {
+      const resp = await fetch(`${ORCHESTRATOR_URL}/persona/get_profile`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: userId }),
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      return typeof data.emotion?.primary === 'string' ? data.emotion.primary : null;
+    } catch {
+      return null;
+    }
+  }
+
   return {
+    getTasks,
+    cancelTask,
+    resumeTask,
     isLoading,
     error,
     serverAvailable,
     checkServer,
+    getPersonaEmotion,
+    getConversationPreferences,
+    saveConversationPreferences,
     sendTurn,
     streamTurn,
     transcribeVoice,
@@ -793,15 +994,21 @@ export function useApi() {
     saveVoiceConfig,
     testVoiceConfig,
     listMemories,
+    getMemoryGraph,
     getMemorySummary,
     recallMemory,
     deleteMemory,
     deleteAllMemories,
+    restoreMemory,
+    consolidateMemories,
+    listDailySummaries,
     listReminders,
     cancelReminder,
     listActions,
     getCapabilities,
     getUserState,
+    getCarePreferences,
+    saveCarePreferences,
     clearError,
   };
 }

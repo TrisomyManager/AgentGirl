@@ -40,7 +40,7 @@ async def main() -> None:
     )
     from persona_engine.tone_generator import ToneGenerator
     from safety_guard import default_guard
-    from shared.models import RelationshipMetrics
+    from shared_contracts.models import RelationshipMetrics
     from shared_contracts import EmotionState, EmotionTag
     from user_profile import InMemoryUserProfileStore, UserProfileSnapshot
 
@@ -113,7 +113,7 @@ async def main() -> None:
 
     _section("DONE · 6 modules composed without core_orchestrator")
     print("  modules used: shared_contracts + persona_engine + safety_guard")
-    print("                + user_profile + onboarding (+ shared.models for RelationshipMetrics)")
+    print("                + user_profile + onboarding (+ shared_contracts.models for RelationshipMetrics)")
 
 
 if __name__ == "__main__":

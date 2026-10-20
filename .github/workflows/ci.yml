@@ -1,0 +1,147 @@
+name: Tests and container smoke
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/backend
+    env:
+      COMPANION_LITE_MODE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv && uv pip install -e '.[dev,arch,platforms]'
+      - name: Enforce independent module and contract boundaries
+        run: .venv/bin/lint-imports --no-cache
+      - name: Offline Lite regression including worker cleanup
+        run: .venv/bin/python -m pytest -q --ignore=voice_layer/tests/test_voice.py --ignore=memory_system/tests/test_memory.py -W error::pytest.PytestUnhandledThreadExceptionWarning
+      - name: Build distributable wheel with runtime persona assets
+        run: uv build --wheel --out-dir dist
+      - name: Desktop tool scope and private bridge regression
+        run: .venv/bin/python -m pytest -q ../pc-client/tools/tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-wheel
+          path: apps/backend/dist/*.whl
+          if-no-files-found: error
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: companion_admin
+          POSTGRES_PASSWORD: ci-disposable-password
+          POSTGRES_DB: companion_test_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U companion_admin -d companion_test_ci"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      neo4j:
+        image: neo4j:5.26-community
+        env:
+          NEO4J_AUTH: neo4j/ci-disposable-password
+          NEO4J_server_memory_heap_initial__size: 256m
+          NEO4J_server_memory_heap_max__size: 512m
+          NEO4J_server_memory_pagecache_size: 256m
+        ports: ["7687:7687"]
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p ci-disposable-password 'RETURN 1'"
+          --health-interval 5s --health-timeout 10s --health-retries 30
+    env:
+      COMPANION_TEST_POSTGRES_URL: postgresql://companion_app:ci-disposable-password@127.0.0.1:5432/companion_test_ci
+      COMPANION_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+      COMPANION_TEST_NEO4J_URI: bolt://127.0.0.1:7687
+      COMPANION_TEST_NEO4J_PASSWORD: ci-disposable-password
+      COMPANION_TEST_NEO4J_ISOLATED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv apps/backend/.venv && uv pip install --python apps/backend/.venv/bin/python -e 'apps/backend[dev,platforms]'
+      - name: Provision disposable extension and non-superuser application owner
+        run: |
+          apps/backend/.venv/bin/python - <<'PY'
+          import asyncio
+          import asyncpg
+          async def provision():
+              connection = await asyncpg.connect('postgresql://companion_admin:ci-disposable-password@127.0.0.1:5432/companion_test_ci')
+              try:
+                  await connection.execute("CREATE ROLE companion_app LOGIN PASSWORD 'ci-disposable-password'")
+                  await connection.execute('ALTER DATABASE companion_test_ci OWNER TO companion_app')
+                  await connection.execute('CREATE EXTENSION vector')
+              finally:
+                  await connection.close()
+          asyncio.run(provision())
+          PY
+      - name: Actual host restart, ownership, vector and privacy integration
+        run: apps/backend/.venv/bin/python integration/scripts/smoke_postgres.py
+      - name: Lossless legacy migration and failure rollback
+        run: apps/backend/.venv/bin/python integration/scripts/smoke_postgres_migration.py
+      - name: Actual graph ownership, reviewed migration, erasure and restart recovery
+        run: apps/backend/.venv/bin/python integration/scripts/smoke_neo4j.py
+      - name: Immutable memory evidence, fading and single-delete recovery
+        run: apps/backend/.venv/bin/python integration/scripts/smoke_graph_evidence.py
+  clients:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [web, pc-client]
+    defaults:
+      run:
+        working-directory: apps/${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/${{ matrix.app }}/package-lock.json
+      - run: npm ci
+      - run: npm audit --audit-level=moderate
+      - run: npm test
+      - run: npm run build
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [backend, postgres, clients]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: apps/backend
+          load: true
+          tags: companion-ai:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Authenticated container restart and persistence smoke
+        run: python integration/scripts/smoke_container.py --image companion-ai:ci

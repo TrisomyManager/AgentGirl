@@ -8,6 +8,12 @@
             <button class="close-btn" @click="closePanel">✕</button>
           </div>
 
+          <div class="view-tabs" role="tablist" aria-label="记忆查看方式">
+            <button role="tab" :aria-selected="viewMode === 'list'" @click="viewMode = 'list'">记忆列表</button>
+            <button role="tab" :aria-selected="viewMode === 'graph'" @click="viewMode = 'graph'">记忆网络</button>
+          </div>
+          <MemoryGraph v-if="viewMode === 'graph'" :user-id="userId" :revision="graphRevision" />
+          <template v-else>
           <!-- Summary stats -->
           <div class="stats-row">
             <div class="stat">
@@ -54,27 +60,37 @@
             <button class="search-btn" @click="runSearch" :disabled="searching">
               {{ searching ? '搜索中...' : '搜索' }}
             </button>
-            <button v-if="searchResults.length" class="clear-btn" @click="clearSearch">清除</button>
+            <button v-if="searchActive" class="clear-btn" @click="clearSearch">清除</button>
           </div>
+          <label class="memory-search-option"><input v-model="includeDormant" type="checkbox" /> 也查找淡化的记忆</label>
+          <p v-if="notice" class="memory-notice" role="status">{{ notice }}</p>
+
+          <section v-if="dailySummaries.length" class="daily-summary">
+            <h3>最近的对话回顾 <span>{{ dailySummaries[0].day }}</span></h3>
+            <p>{{ dailySummaries[0].summary }}</p>
+            <small v-if="dailySummaries[0].method === 'extractive'">对话摘录</small>
+          </section>
 
           <!-- Memory list -->
           <div class="list">
             <div v-if="loading" class="empty">⏳ 加载中...</div>
             <div v-else-if="!displayList.length" class="empty">
-              {{ searchResults.length ? '未找到相关记忆' : '尚未生成任何记忆 — 多聊一些就有了' }}
+              {{ searchActive ? '未找到相关记忆' : '尚未生成任何记忆 — 多聊一些就有了' }}
             </div>
             <div
               v-for="mem in displayList"
               :key="mem.entry_id || mem.id"
               class="card"
-              :class="`cat-${mem.category}`"
+              :class="[`cat-${mem.category}`, { dormant: mem.memory_status === 'dormant' }]"
             >
               <div class="card-header">
                 <span class="cat-tag" :class="`cat-${mem.category}`">{{ catLabel(mem.category) }}</span>
+                <span v-if="mem.memory_status === 'dormant'" class="dormant-label">已淡化</span>
                 <div class="imp-bar">
-                  <div class="imp-fill" :style="{ width: (mem.importance * 100) + '%' }"></div>
+                  <div class="imp-fill" :style="{ width: ((mem.effective_importance ?? mem.importance) * 100) + '%' }"></div>
                 </div>
-                <span class="imp-text">{{ Math.round(mem.importance * 100) }}%</span>
+                <span class="imp-text" title="当前记忆清晰度">{{ Math.round((mem.effective_importance ?? mem.importance) * 100) }}%</span>
+                <button v-if="mem.memory_status === 'dormant'" class="restore-btn" @click="onRestore(mem)" :disabled="restoring === mem.entry_id">重新记住</button>
                 <button class="del-btn" @click="onDelete(mem)" title="删除">🗑️</button>
               </div>
               <div class="card-body">{{ mem.content }}</div>
@@ -86,10 +102,12 @@
               </div>
             </div>
           </div>
+          </template>
 
           <!-- Footer actions -->
           <div class="footer">
             <button class="refresh-btn" @click="refresh">🔄 刷新</button>
+            <button class="refresh-btn" @click="consolidateToday" :disabled="consolidating">{{ consolidating ? '正在整理…' : '整理今天的记忆' }}</button>
             <button class="danger-btn" @click="onClearAll">🗑️ 清空全部</button>
           </div>
         </div>
@@ -101,11 +119,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useApi } from '../composables/useApi';
+import MemoryGraph from './MemoryGraph.vue';
 
 const props = defineProps<{ visible: boolean; userId: string }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
-const { listMemories, getMemorySummary, recallMemory, deleteMemory, deleteAllMemories } = useApi();
+const { listMemories, getMemorySummary, recallMemory, deleteMemory, deleteAllMemories, restoreMemory, consolidateMemories, listDailySummaries } = useApi();
 
 const memories = ref<any[]>([]);
 const summary = ref<any | null>(null);
@@ -114,6 +133,16 @@ const searching = ref(false);
 const searchQuery = ref('');
 const searchResults = ref<any[]>([]);
 const activeCategory = ref('');
+const searchActive = ref(false);
+const includeDormant = ref(false);
+const consolidating = ref(false);
+const restoring = ref<string | null>(null);
+const dailySummaries = ref<any[]>([]);
+const notice = ref('');
+const graphCleanupPending = ref(false);
+const viewMode = ref<'list' | 'graph'>('list');
+const graphRevision = ref(0);
+let viewRequest = 0;
 
 const CATEGORY_LABELS: Record<string, string> = {
   fact: '事实',
@@ -133,7 +162,7 @@ const availableCategories = computed(() => {
 });
 
 const displayList = computed(() => {
-  if (searchResults.value.length) return searchResults.value;
+  if (searchActive.value) return searchResults.value;
   if (activeCategory.value) {
     return memories.value.filter((m) => m.category === activeCategory.value);
   }
@@ -172,15 +201,25 @@ function fmtDate(s: string | null): string {
 
 async function refresh() {
   if (!props.userId) return;
+  graphRevision.value++;
+  const request = ++viewRequest;
   loading.value = true;
   searchResults.value = [];
   searchQuery.value = '';
-  const [list, sum] = await Promise.all([
+  searchActive.value = false;
+  const [list, sum, daily] = await Promise.all([
     listMemories(props.userId, 100, 0, activeCategory.value || undefined),
     getMemorySummary(props.userId),
+    listDailySummaries(props.userId),
   ]);
+  if (request !== viewRequest) return;
   memories.value = list || [];
   summary.value = sum;
+  dailySummaries.value = daily || [];
+  if (list === null) notice.value = '记忆加载失败，请稍后刷新';
+  else if (sum?.external_graph_cleanup_pending) notice.value = '记忆变更已保存，外部关联信息仍待清理，请稍后刷新';
+  else if (graphCleanupPending.value) notice.value = '外部关联信息已清理';
+  graphCleanupPending.value = Boolean(sum?.external_graph_cleanup_pending);
   loading.value = false;
 }
 
@@ -192,38 +231,92 @@ async function setCategory(cat: string) {
 async function runSearch() {
   if (!searchQuery.value.trim()) {
     searchResults.value = [];
+    searchActive.value = false;
     return;
   }
   searching.value = true;
-  const result = await recallMemory(props.userId, searchQuery.value, 10);
+  const request = ++viewRequest;
+  const result = await recallMemory(props.userId, searchQuery.value, 10, includeDormant.value);
+  if (request !== viewRequest) return;
   searching.value = false;
+  searchActive.value = true;
+  notice.value = result === null ? '搜索失败，请稍后重试' : '';
   searchResults.value = result?.entries || [];
 }
 
 function clearSearch() {
+  viewRequest++;
+  searching.value = false;
   searchQuery.value = '';
   searchResults.value = [];
+  searchActive.value = false;
+}
+
+async function onRestore(mem: any) {
+  const id = mem.entry_id || mem.id;
+  if (restoring.value) return;
+  restoring.value = id;
+  const ok = await restoreMemory(props.userId, id);
+  restoring.value = null;
+  if (ok) {
+    notice.value = '已重新记住';
+    await refresh();
+  } else notice.value = '恢复失败，请稍后重试';
+}
+
+async function consolidateToday() {
+  if (consolidating.value) return;
+  consolidating.value = true;
+  const request = viewRequest;
+  const result = await consolidateMemories(props.userId);
+  if (request !== viewRequest) { consolidating.value = false; return; }
+  consolidating.value = false;
+  if (!result) { notice.value = '整理失败，请稍后重试'; return; }
+  if (result.status === 'stale') { notice.value = '对话内容有更新，请重新整理'; return; }
+  if (result.status === 'busy') { notice.value = '记忆正在整理中，请稍后刷新'; return; }
+  notice.value = result.status === 'empty' ? '今天还没有可整理的对话' : result.status === 'unchanged' ? '今天的记忆已经整理过了' : '今日回顾已保存';
+  dailySummaries.value = await listDailySummaries(props.userId) || [];
 }
 
 async function onDelete(mem: any) {
   const id = mem.entry_id || mem.id;
   if (!id) return;
   if (!confirm('确定删除这条记忆？')) return;
+  const request = ++viewRequest;
   const ok = await deleteMemory(id);
+  if (request !== viewRequest) return;
   if (ok) {
     memories.value = memories.value.filter((m) => (m.entry_id || m.id) !== id);
     searchResults.value = searchResults.value.filter((m) => (m.entry_id || m.id) !== id);
-    summary.value = await getMemorySummary(props.userId);
+    const updated = await getMemorySummary(props.userId);
+    if (request !== viewRequest) return;
+    summary.value = updated;
+    graphCleanupPending.value = Boolean(updated?.external_graph_cleanup_pending);
+    if (updated?.external_graph_cleanup_pending) notice.value = '记忆已删除，外部关联信息仍待清理';
   }
 }
 
 async function onClearAll() {
-  if (!confirm('确定清空所有记忆？此操作不可恢复！')) return;
+  if (!confirm('确定清空记忆库和对话回顾？个人设置会保留，此操作不可恢复。')) return;
+  viewMode.value = 'list';
+  graphRevision.value++;
+  const request = ++viewRequest;
+  searching.value = false;
+  loading.value = false;
   const ok = await deleteAllMemories(props.userId);
+  if (request !== viewRequest) return;
   if (ok) {
     memories.value = [];
     searchResults.value = [];
-    summary.value = await getMemorySummary(props.userId);
+    searchActive.value = false;
+    dailySummaries.value = [];
+    const updated = await getMemorySummary(props.userId);
+    if (request !== viewRequest) return;
+    summary.value = updated;
+    graphCleanupPending.value = updated?.external_graph_cleanup_pending ?? (ok === 'pending');
+    notice.value = graphCleanupPending.value ? '记忆库已清空，外部关联信息仍待清理，请稍后刷新' : '记忆库和对话回顾已清空';
+  } else {
+    notice.value = '清空失败，请稍后重试';
   }
 }
 
@@ -232,14 +325,24 @@ function closePanel() {
 }
 
 watch(
-  () => props.visible,
-  (v) => {
+  () => [props.visible, props.userId] as const,
+  ([v]) => {
+    viewRequest++;
+    memories.value = []; summary.value = null; dailySummaries.value = [];
+    searchResults.value = []; searchQuery.value = ''; activeCategory.value = '';
+    searchActive.value = false; searching.value = false; notice.value = '';
+    graphCleanupPending.value = false;
+    viewMode.value = 'list';
     if (v) refresh();
-  }
+  },
+  { immediate: true }
 );
 </script>
 
 <style scoped>
+.view-tabs { display: flex; padding: 0 20px 14px; gap: 8px; }
+.view-tabs button { padding: 8px 14px; border: 1px solid #6a5e87; border-radius: 8px; color: #e9e1f3; background: #29233e; cursor: pointer; }
+.view-tabs button[aria-selected="true"] { background: #664a85; border-color: #c2a2e5; }
 .overlay {
   position: fixed;
   inset: 0;
@@ -484,4 +587,15 @@ watch(
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.25s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+.memory-search-option { display: flex; align-items: center; gap: 7px; padding: 0 22px 10px; font-size: 12px; color: #a6afbf; }
+.memory-notice { margin: 0; padding: 4px 22px 10px; color: #c8cddd; font-size: 13px; }
+.daily-summary { margin: 0 22px 14px; padding: 12px 15px; border: 1px solid rgba(148, 163, 184, .18); border-radius: 10px; background: rgba(148, 163, 184, .06); color: #d4d8e6; color-scheme: dark; max-height: 160px; overflow: auto; }
+.daily-summary h3 { font-size: 13px; margin: 0 0 8px; }
+.daily-summary h3 span { font-weight: 400; color: #94a3b8; margin-left: 8px; }
+.daily-summary p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.7; margin: 0; }
+.daily-summary small, .dormant-label { font-size: 11px; color: #94a3b8; }
+.card.dormant { border-style: dashed; }
+.restore-btn { color: #c4b5fd; border: 1px solid rgba(196, 181, 253, .3); border-radius: 6px; background: transparent; padding: 4px 8px; cursor: pointer; white-space: nowrap; }
+.restore-btn:disabled { opacity: .5; cursor: wait; }
+.footer { flex-wrap: wrap; }
 </style>

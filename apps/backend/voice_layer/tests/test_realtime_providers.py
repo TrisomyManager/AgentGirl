@@ -29,7 +29,6 @@ from voice_layer.providers.realtime.volc_realtime import (
     VolcRealtimeProvider,
     _build_audio_payload,
     _build_event_payload,
-    _build_finish_session,
     _make_header,
     _parse_response,
     _redact_headers,
@@ -57,8 +56,7 @@ def _build_test_frame(
 ) -> bytes:
     """Build a test binary frame matching the Volc wire format.
 
-    When ``flags`` includes ``HAS_EVENT_ID`` the event_id is prepended
-    to the payload body; otherwise only the body bytes follow the size.
+    Event and connection/session IDs precede the payload size.
     """
     header = bytes([
         0x11,
@@ -66,9 +64,14 @@ def _build_test_frame(
         (serialization << 4) | compression,
         0x00,
     ])
-    payload = struct.pack(">I", event_id) + body if flags & HAS_EVENT_ID else body
-    size = struct.pack(">I", len(payload))
-    return header + size + payload
+    optional = b""
+    if flags & HAS_EVENT_ID:
+        optional = struct.pack(">I", event_id)
+        # The official protocol puts connection/session IDs before payload size.
+        identifier = b"test-session"
+        if event_id >= 100 or event_id in (50, 51, 52):
+            optional += struct.pack(">I", len(identifier)) + identifier
+    return header + optional + struct.pack(">I", len(body)) + body
 
 
 # ======================================================================
@@ -80,13 +83,13 @@ class TestVoiceProfile:
         profile = get_voice_profile()
         assert profile.voice_profile_id == "default"
         assert profile.provider_voices["local"] == "piper_huayan"
-        assert profile.provider_voices["volc_realtime"] == "zh_female_tianmei"
+        assert profile.provider_voices["volc_realtime"] == "zh_female_xiaohe_jupiter_bigtts"
 
     def test_huayan_profile(self):
         profile = get_voice_profile("huayan")
         assert profile.voice_profile_id == "huayan"
         assert profile.display_name == "花颜"
-        assert profile.provider_voices["volc_realtime"] == "zh_female_tianmei"
+        assert profile.provider_voices["volc_realtime"] == "zh_female_xiaohe_jupiter_bigtts"
 
     def test_unknown_profile_falls_back_to_default(self):
         profile = get_voice_profile("nonexistent")
@@ -98,7 +101,7 @@ class TestVoiceProfile:
 
     def test_resolve_voice_volc(self):
         voice_id = resolve_voice("volc_realtime")
-        assert voice_id == "zh_female_tianmei"
+        assert voice_id == "zh_female_xiaohe_jupiter_bigtts"
 
     def test_resolve_voice_unknown_provider_returns_empty(self):
         voice_id = resolve_voice("nonexistent_provider")
@@ -131,6 +134,9 @@ class TestProviderRegistry:
              patch("shared_runtime.config.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
                 realtime_voice_provider="local",
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id=None,
                 volc_access_token=None,
             )
@@ -149,6 +155,9 @@ class TestProviderRegistry:
     def test_volc_provider_capabilities(self):
         with patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id="test_app",
                 volc_access_token="test_token",
                 volc_resource_id="volc.speech.dialog",
@@ -165,6 +174,9 @@ class TestProviderRegistry:
     def test_session_config_includes_audio_format(self):
         with patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id="test_app",
                 volc_access_token="test_token",
                 volc_resource_id="volc.speech.dialog",
@@ -174,12 +186,15 @@ class TestProviderRegistry:
                 app_id="test_app",
                 access_token="test_token",
             )
-            assert provider._audio_format == "pcm"
+            assert provider._audio_format == "pcm_s16le"
             assert provider._audio_sample_rate == 24000
 
     def test_volc_provider_without_credentials(self):
         with patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id=None,
                 volc_access_token=None,
                 volc_resource_id="volc.speech.dialog",
@@ -201,6 +216,9 @@ class TestRealtimeStatus:
              patch("shared_runtime.config.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
                 realtime_voice_provider="local",
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id=None,
                 volc_access_token=None,
             )
@@ -216,6 +234,9 @@ class TestRealtimeStatus:
              patch("shared_runtime.config.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
                 realtime_voice_provider="volc_realtime",
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id="app123",
                 volc_access_token="tok456",
                 volc_resource_id="volc.speech.dialog",
@@ -233,6 +254,9 @@ class TestRealtimeStatus:
              patch("shared_runtime.config.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
                 realtime_voice_provider="volc_realtime",
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id=None,
                 volc_access_token=None,
                 volc_resource_id="volc.speech.dialog",
@@ -240,7 +264,7 @@ class TestRealtimeStatus:
             )
             init_registry()
             status = get_realtime_status()
-            assert status["current_provider"] == "local"
+            assert status["current_provider"] == "volc_realtime"
             assert status["configured_provider"] == "volc_realtime"
             assert status["fallback_reason"] == "missing_credentials"
 
@@ -275,8 +299,9 @@ class TestVolcBinaryProtocol:
         payload = _build_event_payload(1, data)
         header = payload[:4]
         assert header[0] == 0x11
-        size = int.from_bytes(payload[4:8], "big")
-        assert size == len(payload[8:])
+        assert int.from_bytes(payload[4:8], "big") == 1
+        size = int.from_bytes(payload[8:12], "big")
+        assert size == len(payload[12:])
 
     @pytest.mark.asyncio
     async def test_build_audio_payload(self):
@@ -417,6 +442,9 @@ class TestWebsocketConnection:
         with patch("voice_layer.providers.realtime.volc_realtime.websockets.connect") as mock_connect, \
              patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id="test_app",
                 volc_access_token="test_token",
                 volc_resource_id="volc.speech.dialog",
@@ -440,7 +468,8 @@ class TestWebsocketConnection:
                 "websockets.connect must use additional_headers (15.0+)"
             assert "extra_headers" not in call_kwargs, \
                 "websockets.connect must NOT use extra_headers (removed in 15.0)"
-            assert call_kwargs["additional_headers"]["X-Api-App-Key"] == "test_app"
+            assert call_kwargs["additional_headers"]["X-Api-App-ID"] == "test_app"
+            assert call_kwargs["additional_headers"]["X-Api-App-Key"] == "PlgvMymc7f3tQnJ6"
             assert call_kwargs["additional_headers"]["X-Api-Access-Key"] == "test_token"
 
     @pytest.mark.asyncio
@@ -449,6 +478,9 @@ class TestWebsocketConnection:
         with patch("voice_layer.providers.realtime.volc_realtime.websockets.connect") as mock_connect, \
              patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id=None,
                 volc_access_token=None,
                 volc_resource_id="volc.speech.dialog",
@@ -479,6 +511,9 @@ class TestInterrupt:
         """interrupt → ws.send receives EVENT_FINISH_SESSION and frontend gets interrupted."""
         with patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id="test_app",
                 volc_access_token="test_token",
                 volc_resource_id="volc.speech.dialog",
@@ -494,8 +529,8 @@ class TestInterrupt:
 
             mock_ws.send.assert_called_once()
             sent_frame = mock_ws.send.call_args[0][0]
-            expected = _build_finish_session()
-            assert sent_frame == expected, "interrupt must send EVENT_FINISH_SESSION cancel frame"
+            expected = _build_event_payload(515, {}, provider._session_id)
+            assert sent_frame == expected, "interrupt must keep the session open with ClientInterrupt"
 
             assert interrupt_event.is_set(), "interrupt must set interrupt_event"
 
@@ -506,12 +541,15 @@ class TestInterrupt:
 # Audio config dual-write tests
 # ======================================================================
 
-class TestAudioConfigDualWrite:
+class TestAudioConfig:
     @pytest.mark.asyncio
-    async def test_session_config_writes_both_channel_and_channels(self):
-        """_send_start_session writes both channel and channels fields."""
+    async def test_session_config_uses_documented_pcm_format(self):
+        """PCM is explicitly int16; only the documented channel field is sent."""
         with patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id="test_app",
                 volc_access_token="test_token",
                 volc_resource_id="volc.speech.dialog",
@@ -533,7 +571,10 @@ class TestAudioConfigDualWrite:
             audio_config = tts_config.get("audio_config", {})
 
             assert audio_config.get("channel") == 1, "channel (singular) must be written"
-            assert audio_config.get("channels") == 1, "channels (plural) must be written"
+            assert "channels" not in audio_config
+            assert audio_config["format"] == "pcm_s16le"
+            assert parsed["dialog"]["extra"]["model"] == "1.2.1.1"
+            assert parsed["tts"]["speaker"] == "zh_female_xiaohe_jupiter_bigtts"
 
 
 # ======================================================================
@@ -547,6 +588,9 @@ class TestTTSRobustness:
         import base64
         with patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id="test_app",
                 volc_access_token="test_token",
                 volc_resource_id="volc.speech.dialog",
@@ -569,6 +613,9 @@ class TestTTSRobustness:
         import base64
         with patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id="test_app",
                 volc_access_token="test_token",
                 volc_resource_id="volc.speech.dialog",
@@ -591,6 +638,9 @@ class TestTTSRobustness:
         import base64
         with patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id="test_app",
                 volc_access_token="test_token",
                 volc_resource_id="volc.speech.dialog",
@@ -613,6 +663,9 @@ class TestTTSRobustness:
         with patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings, \
              patch("voice_layer.providers.realtime.volc_realtime.logger.warning") as mock_warn:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id="test_app",
                 volc_access_token="test_token",
                 volc_resource_id="volc.speech.dialog",
@@ -638,6 +691,9 @@ class TestTTSRobustness:
 
         with patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id="test_app",
                 volc_access_token="test_token",
                 volc_resource_id="volc.speech.dialog",
@@ -669,6 +725,9 @@ class TestTTSRobustness:
 
         with patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id="test_app",
                 volc_access_token="test_token",
                 volc_resource_id="volc.speech.dialog",
@@ -694,6 +753,9 @@ class TestTTSRobustness:
         """By default (VOLC_TTS_STRIP_SENTENCE_ID not set), raw is passed unchanged."""
         with patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id="test_app",
                 volc_access_token="test_token",
                 volc_resource_id="volc.speech.dialog",
@@ -714,6 +776,36 @@ class TestTTSRobustness:
 # Credential safety tests
 # ======================================================================
 
+@pytest.mark.parametrize("start_event", [None, {}, {"text": "一句回复"}])
+async def test_native_announces_real_audio_even_without_sentence_text(start_event):
+    from voice_layer.conversation_context import VoiceConversationContext
+
+    provider = VolcRealtimeProvider()
+    provider._conversation_context = VoiceConversationContext("prompt", avatar_timeline={
+        "version": 1, "turn_id": "startup", "segment_seq": 0, "duration_ms": None,
+        "clock": "audio_playback", "mouth_source": "audio_rms", "cues": [],
+    })
+    ordered = []
+
+    async def frames():
+        if start_event is not None:
+            yield _build_test_frame(350, gzip.compress(json.dumps(start_event).encode()))
+        for _ in range(2):
+            yield _build_test_frame(352, gzip.compress(b'{"audio":"AAAA"}'))
+
+    async def event(value):
+        ordered.append(value)
+
+    async def audio(value):
+        ordered.append(value)
+
+    await provider._receive_loop(frames(), event, audio, asyncio.Event())
+    assert ordered[0]["type"] == "assistant_sentence_start"
+    assert ordered[0]["sample_rate"] == provider._audio_sample_rate
+    assert ordered[0]["avatar_timeline"]["turn_id"] != "startup"
+    assert ordered[0]["avatar_timeline"]["segment_seq"] == 0
+    assert ordered[1:] == [b"\0\0\0", b"\0\0\0"]
+
 class TestCredentialSafety:
     def test_local_provider_no_credentials_required(self):
         provider = LocalRealtimeProvider()
@@ -722,6 +814,9 @@ class TestCredentialSafety:
     def test_volc_provider_does_not_expose_credentials_in_name(self):
         with patch("voice_layer.providers.realtime.volc_realtime.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
+                volc_api_key=None,
+                volc_model="1.2.1.1",
+                volc_voice_id="zh_female_xiaohe_jupiter_bigtts",
                 volc_app_id="very_secret_app_id",
                 volc_access_token="very_secret_token",
                 volc_resource_id="volc.speech.dialog",
@@ -761,3 +856,45 @@ class TestCredentialSafety:
         result = resolve_voice("volc_realtime")
         assert "token" not in result.lower()
         assert "key" not in result.lower()
+@pytest.mark.asyncio
+async def test_volc_interruption_discards_all_old_output_until_the_next_user_transcript_finishes():
+    provider = VolcRealtimeProvider()
+    interrupted = asyncio.Event()
+    interrupted.set()
+    sent, audio = [], []
+    async def frames():
+        for event, data in [(350, {"text": "旧语音"}), (352, {"audio": "AAAA"}),
+                            (550, {"content": "旧文本"}), (359, {}), (451, {"text": "新问题"}),
+                            (459, {}), (350, {"text": "新语音"}), (550, {"content": "新文本"}), (559, {})]:
+            yield _build_test_frame(event, gzip.compress(json.dumps(data).encode()))
+    async def send_json(value):
+        sent.append(value)
+    async def send_bytes(value):
+        audio.append(value)
+    await provider._receive_loop(frames(), send_json, send_bytes, interrupted)
+    assert not audio
+    assert not any("旧" in str(event) for event in sent)
+    assert any(event.get("text") == "新语音" for event in sent)
+    assert any(event["type"] == "assistant_text_done" for event in sent)
+
+
+@pytest.mark.asyncio
+async def test_volc_session_cancellation_drains_both_duplex_tasks(monkeypatch):
+    from unittest.mock import AsyncMock
+    entered = [asyncio.Event(), asyncio.Event()]
+    closed = []
+    async def loop(index, *args):
+        entered[index].set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.append(index)
+    provider = VolcRealtimeProvider()
+    monkeypatch.setattr(provider, "_receive_loop", lambda *args: loop(0, *args))
+    monkeypatch.setattr(provider, "_send_loop", lambda *args: loop(1, *args))
+    task = asyncio.create_task(provider._run_session_loops(None, AsyncMock(), AsyncMock(), AsyncMock(), asyncio.Event()))
+    await asyncio.gather(*(event.wait() for event in entered))
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert sorted(closed) == [0, 1]

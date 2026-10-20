@@ -414,7 +414,7 @@ async def _push_to_device(device_id: str, message: Dict[str, Any]) -> bool:
 async def device_websocket(
     websocket: WebSocket,
     device_id: str,
-    token: str = Query(...),
+    token: str | None = Query(default=None),
     gateway: DeviceGatewayService = Depends(get_gateway),
 ):
     """Real-time push channel for device commands.
@@ -423,7 +423,9 @@ async def device_websocket(
     """
     # Authenticate
     try:
-        await gateway._ensure_device_auth(device_id, token)
+        protocols = websocket.scope.get("subprotocols", [])
+        protocol_token = protocols[1] if len(protocols) == 2 and protocols[0] == "companion.device" else None
+        await gateway.require_device_token(device_id, websocket.scope.get("companion.device_token") or protocol_token or token)
     except PermissionError:
         await websocket.close(code=4001, reason="Invalid device credentials")
         return

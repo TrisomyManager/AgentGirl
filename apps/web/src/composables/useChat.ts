@@ -1,7 +1,10 @@
-import { computed, ref } from 'vue';
-import { useApi, type TranscribeVoiceResult, type TurnResponse } from './useApi';
+import { computed, getCurrentScope, onScopeDispose, ref, watch } from 'vue';
+import { currentUserId, userStorageKey } from './accessSession';
+import { useApi, type TranscribeVoiceResult, type TurnResponse, type VoiceSegment } from './useApi';
 import { useVoice } from './useVoice';
 import { useToolStatus } from './useToolStatus';
+import { createSegmentedPlayback } from './segmentedPlayback';
+import type { AvatarTimeline } from '../../../../packages/avatar-runtime/src';
 
 type AsrFailureCode = Extract<TranscribeVoiceResult, { ok: false }>['code'];
 
@@ -16,6 +19,10 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
   emotion?: string;
+  expressionEmoji?: string;
+  quietlyAcknowledged?: boolean;
+  imageUrls?: string[];
+  imageCount?: number;
   /** Local blob URL for user-recorded audio (session-only). */
   audioUrl?: string;
   durationMs?: number;
@@ -23,6 +30,8 @@ export interface ChatMessage {
   transcriptStatus?: TranscriptStatus;
   /** Assistant TTS URL from backend (relative or absolute). */
   voiceUrl?: string;
+  voiceSegments?: VoiceSegment[];
+  avatarTimeline?: AvatarTimeline;
   /** Duration of assistant TTS audio from backend (ms). */
   voiceDurationMs?: number;
   /** Assistant-side voice lifecycle (TTS + playback). */
@@ -41,14 +50,15 @@ export interface ChatMessage {
 
 export type AssistantVoicePlaybackEvent = {
   id: string;
-  phase: 'start' | 'end' | 'error';
+  phase: 'start' | 'end' | 'error' | 'stop';
   error?: string;
 };
 
-interface SendMessageOptions {
+export interface SendMessageOptions {
   hasVoiceInput?: boolean;
   requestVoiceReply?: boolean;
   voiceDurationMs?: number;
+  imageUrls?: string[];
 }
 
 const STORAGE_KEY = 'companion_chat_history';
@@ -89,11 +99,19 @@ function normalizeStoredMessage(raw: Record<string, unknown>): ChatMessage {
     content: typeof raw.content === 'string' ? raw.content : '',
     timestamp: typeof raw.timestamp === 'number' ? raw.timestamp : Date.now(),
     emotion: typeof raw.emotion === 'string' ? raw.emotion : undefined,
+    expressionEmoji: typeof raw.expressionEmoji === 'string' ? raw.expressionEmoji : undefined,
+    quietlyAcknowledged: raw.quietlyAcknowledged === true,
+    imageCount: typeof raw.imageCount === 'number' ? Math.min(3, Math.max(0, raw.imageCount)) : undefined,
     audioUrl,
     durationMs: typeof raw.durationMs === 'number' ? raw.durationMs : undefined,
     transcript: typeof raw.transcript === 'string' ? raw.transcript : undefined,
     transcriptStatus: finalStatus,
     voiceUrl: typeof raw.voiceUrl === 'string' ? raw.voiceUrl : undefined,
+    avatarTimeline: raw.avatarTimeline as AvatarTimeline | undefined,
+    voiceSegments: Array.isArray(raw.voiceSegments) ? raw.voiceSegments.filter(
+      (segment): segment is VoiceSegment => !!segment && typeof segment === 'object' &&
+        typeof segment.audio_url === 'string' && Number.isInteger(segment.seq),
+    ).slice(0, 256) : undefined,
     voiceDurationMs: typeof raw.voiceDurationMs === 'number' ? raw.voiceDurationMs : undefined,
     voiceSynthesisError:
       typeof raw.voiceSynthesisError === 'string' ? raw.voiceSynthesisError : undefined,
@@ -124,9 +142,9 @@ function normalizeLoadedVoiceStatus(
   return undefined;
 }
 
-function loadHistory(): ChatMessage[] {
+function loadHistory(storageKey = STORAGE_KEY): ChatMessage[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey);
     if (raw) {
       const parsed = JSON.parse(raw) as unknown;
       if (!Array.isArray(parsed)) return [];
@@ -141,6 +159,7 @@ function loadHistory(): ChatMessage[] {
 function sanitizeForStorage(messages: ChatMessage[]): ChatMessage[] {
   return messages.map((m) => {
     const c = { ...m };
+    delete c.imageUrls; // Images remain in this session only; never fill browser history with private originals.
     if (c.audioUrl?.startsWith('blob:')) {
       delete c.audioUrl;
     }
@@ -152,9 +171,9 @@ function sanitizeForStorage(messages: ChatMessage[]): ChatMessage[] {
   });
 }
 
-function saveHistory(messages: ChatMessage[]) {
+function saveHistory(messages: ChatMessage[], storageKey = STORAGE_KEY) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitizeForStorage(messages)));
+    localStorage.setItem(storageKey, JSON.stringify(sanitizeForStorage(messages)));
   } catch {
     // ignore storage errors
   }
@@ -183,13 +202,17 @@ function bannerTextForAsrFailure(r: Extract<TranscribeVoiceResult, { ok: false }
 }
 
 export function useChat() {
-  const messages = ref<ChatMessage[]>(loadHistory());
+  let workVersion = 0;
+  const userId = currentUserId();
+  const historyKey = userStorageKey(STORAGE_KEY);
+  const sessionKey = userStorageKey(STORAGE_SESSION_KEY);
+  const nameKey = userStorageKey(STORAGE_USER_KEY);
+  const messages = ref<ChatMessage[]>(loadHistory(historyKey));
   const isTyping = ref(false);
-  const currentEmotion = ref('neutral');
+  const currentEmotion = ref([...messages.value].reverse().find(message => message.role === 'assistant' && message.emotion)?.emotion || 'neutral');
   const currentAction = ref('');
-  const sessionId = ref(localStorage.getItem(STORAGE_SESSION_KEY) || generateSessionId());
-  const userName = ref(localStorage.getItem(STORAGE_USER_KEY) || '用户');
-  const userId = COMPANION_DEFAULT_USER_ID;
+  const sessionId = ref(localStorage.getItem(sessionKey) || generateSessionId());
+  const userName = ref(localStorage.getItem(nameKey) || '用户');
 
   const {
     isLoading,
@@ -199,12 +222,43 @@ export function useChat() {
     transcribeVoice,
     clearError,
     checkServer,
+    getPersonaEmotion,
   } = useApi();
   const voice = useVoice();
   const toolStatus = useToolStatus();
+  let turnAbort: AbortController | null = null;
+  let segmentMessageId = '';
+  let playingTimeline: AvatarTimeline | undefined;
+  const segmentedPlayback = createSegmentedPlayback({
+    play: url => voice.playAudio(url, { avatarTimeline: playingTimeline }),
+    stop: () => voice.stopAudio(), allowed: () => voice.autoPlayEnabled.value,
+    onStart: seq => {
+      updateMessage(segmentMessageId, { voiceStatus: 'playing' });
+      const segment = messages.value.find(message => message.id === segmentMessageId)?.voiceSegments?.find(item => item.seq === seq);
+      playingTimeline = segment?.avatar_timeline;
+    },
+    onEnd: () => updateMessage(segmentMessageId, { voiceStatus: 'ready' }),
+    onError: message => updateMessage(segmentMessageId, { ttsErrorMessage: message }),
+  });
+  watch(voice.autoPlayEnabled, enabled => {
+    if (!enabled) {
+      segmentedPlayback.stop();
+      if (segmentMessageId) updateMessage(segmentMessageId, { voiceStatus: 'ready' });
+    }
+  });
 
-  if (!localStorage.getItem(STORAGE_SESSION_KEY)) {
-    localStorage.setItem(STORAGE_SESSION_KEY, sessionId.value);
+  async function refreshEmotion() {
+    const originalSession = sessionId.value;
+    const originalLength = messages.value.length;
+    const previous = currentEmotion.value;
+    const persisted = await getPersonaEmotion(userId);
+    if (persisted && !isTyping.value && sessionId.value === originalSession && messages.value.length === originalLength && currentEmotion.value === previous) {
+      currentEmotion.value = persisted;
+    }
+  }
+
+  if (!localStorage.getItem(sessionKey)) {
+    localStorage.setItem(sessionKey, sessionId.value);
   }
 
   const emotionLabelMap: Record<string, string> = {
@@ -247,7 +301,7 @@ export function useChat() {
 
   function addMessage(msg: ChatMessage) {
     messages.value.push(msg);
-    saveHistory(messages.value);
+    saveHistory(messages.value, historyKey);
   }
 
   /** Inject an assistant message into the chat (used for proactive messages). */
@@ -266,21 +320,33 @@ export function useChat() {
 
   function updateUserName(name: string) {
     userName.value = name || '用户';
-    localStorage.setItem(STORAGE_USER_KEY, userName.value);
+    localStorage.setItem(nameKey, userName.value);
   }
 
   function clearHistory() {
+    stopCurrentWork();
+    isTyping.value = false;
     for (const m of messages.value) {
       if (m.audioUrl?.startsWith('blob:')) {
         URL.revokeObjectURL(m.audioUrl);
       }
     }
     messages.value = [];
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(historyKey);
     sessionId.value = generateSessionId();
-    localStorage.setItem(STORAGE_SESSION_KEY, sessionId.value);
+    localStorage.setItem(sessionKey, sessionId.value);
     currentEmotion.value = 'neutral';
     currentAction.value = '';
+  }
+
+  function stopCurrentWork() {
+    workVersion += 1;
+    turnAbort?.abort();
+    segmentedPlayback.stop();
+    voice.stopAudio();
+    voice.discardRecording();
+    isTyping.value = false;
+    if (_appendSaveTimer) { clearTimeout(_appendSaveTimer); _appendSaveTimer = null; }
   }
 
   function findMessageIndex(id: string): number {
@@ -293,7 +359,7 @@ export function useChat() {
     const next = messages.value.slice();
     next[idx] = { ...next[idx], ...patch };
     messages.value = next;
-    saveHistory(messages.value);
+    saveHistory(messages.value, historyKey);
   }
 
   let _appendSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -307,14 +373,19 @@ export function useChat() {
     messages.value = next;
     if (_appendSaveTimer) clearTimeout(_appendSaveTimer);
     _appendSaveTimer = setTimeout(() => {
-      saveHistory(messages.value);
+      saveHistory(messages.value, historyKey);
       _appendSaveTimer = null;
     }, 200);
   }
 
   async function runStreamedTurn(userMessage: string, options: SendMessageOptions = {}): Promise<void> {
+    turnAbort?.abort();
+    const controller = new AbortController();
+    turnAbort = controller;
+    segmentedPlayback.stop();
     toolStatus.resetForNewTurn();
     const wantsVoiceReply = options.requestVoiceReply ?? voice.autoPlayEnabled.value;
+    const userMessageId = [...messages.value].reverse().find(message => message.role === 'user')?.id;
     const turnReq = {
       session_id: sessionId.value,
       user: {
@@ -325,6 +396,9 @@ export function useChat() {
       platform: 'app',
       has_voice: options.hasVoiceInput ?? false,
       request_voice_reply: wantsVoiceReply,
+      supports_segmented_voice: true,
+      has_image: !!options.imageUrls?.length,
+      image_urls: options.imageUrls,
       voice_duration_ms:
         options.voiceDurationMs !== undefined ? Math.round(options.voiceDurationMs) : undefined,
     };
@@ -341,33 +415,58 @@ export function useChat() {
       voiceStatus: wantsVoiceReply ? 'pending' : undefined,
     });
 
+    segmentMessageId = assistantId;
+    segmentedPlayback.start();
+
     isTyping.value = true;
     const resp = await streamTurn(turnReq, {
       onToken: (text) => {
+        if (controller.signal.aborted) return;
         appendToMessage(assistantId, text);
       },
       onMeta: (meta) => {
+        if (controller.signal.aborted) return;
         if (meta?.emotion?.primary) {
           currentEmotion.value = meta.emotion.primary;
         }
       },
       onToolStatus: (payload) => {
+        if (controller.signal.aborted) return;
         if (payload.status === 'pending') {
           toolStatus.startTool(payload.tool_name, payload.message);
         } else {
           toolStatus.endTool(payload.status === 'success', payload.message);
         }
       },
+      onVoiceSegment: segment => {
+        if (controller.signal.aborted) return;
+        const prior = messages.value.find(message => message.id === assistantId)?.voiceSegments || [];
+        if (!prior.some(item => item.seq === segment.seq)) {
+          updateMessage(assistantId, { voiceSegments: [...prior, segment].sort((a, b) => a.seq - b.seq) });
+          segmentedPlayback.put(segment.seq, segment.audio_url);
+        }
+      },
+      onVoiceSegmentError: event => {
+        if (controller.signal.aborted) return;
+        updateMessage(assistantId, { voiceSynthesisError: event.error });
+        segmentedPlayback.put(event.seq, null);
+      },
+      onVoiceDone: event => { if (!controller.signal.aborted) segmentedPlayback.finish(event.segments); },
       onError: () => {
+        if (controller.signal.aborted) return;
         /* error ref set in useApi */
         toolStatus.endTool(false, '流式传输出错');
       },
-    });
+    }, controller.signal);
+    if (controller.signal.aborted || turnAbort !== controller) return;
     isTyping.value = false;
 
     if (resp) {
-      finalizeStreamedMessage(assistantId, resp);
-      toolStatus.endTool(true);
+      finalizeStreamedMessage(assistantId, resp, userMessageId);
+      if (toolStatus.isExecuting.value) {
+        const taskFailed = resp.task && !['completed', 'awaiting_input'].includes(resp.task.status);
+        toolStatus.endTool(!taskFailed, taskFailed ? resp.task!.message : undefined);
+      }
     } else {
       toolStatus.endTool(false, '连接中断');
       const idx = findMessageIndex(assistantId);
@@ -391,9 +490,16 @@ export function useChat() {
     }
   }
 
-  function finalizeStreamedMessage(assistantId: string, resp: TurnResponse) {
+  function finalizeStreamedMessage(assistantId: string, resp: TurnResponse, userMessageId?: string) {
     if (resp.emotion?.primary) {
       currentEmotion.value = resp.emotion.primary;
+    }
+
+    if (resp.reply_suppressed && !resp.error) {
+      messages.value = messages.value.filter(message => message.id !== assistantId);
+      if (userMessageId) updateMessage(userMessageId, { quietlyAcknowledged: true });
+      saveHistory(messages.value, historyKey);
+      return;
     }
 
     if (resp.action_sequence?.frames?.length) {
@@ -414,8 +520,10 @@ export function useChat() {
 
     const voicePatch: Partial<ChatMessage> = {
       content: finalContent,
+      avatarTimeline: resp.avatar_timeline || undefined,
       isTyping: false,
       emotion: resp.emotion?.primary,
+      expressionEmoji: resp.expression_emoji || undefined,
       ttsErrorMessage: undefined,
       expectVoiceReply: false,
       actionText: resp.action_sequence?.frames?.[0]?.action_type
@@ -433,7 +541,14 @@ export function useChat() {
         ? rawSynthErr.trim()
         : '';
 
-    if (voiceUrl) {
+    if (resp.voice_mode === 'segmented') {
+      const segments = resp.voice_segments || messages.value[idx]?.voiceSegments || [];
+      voicePatch.voiceSegments = segments;
+      voicePatch.voiceUrl = undefined;
+      voicePatch.voiceDurationMs = resp.voice_duration_ms;
+      voicePatch.voiceSynthesisError = backendSynthErr || undefined;
+      voicePatch.voiceStatus = segments.length ? (voice.isPlaying.value ? 'playing' : 'ready') : 'failed';
+    } else if (voiceUrl) {
       voicePatch.voiceUrl = voiceUrl;
       voicePatch.voiceDurationMs =
         resp.voice_duration_ms !== undefined && resp.voice_duration_ms !== null
@@ -462,7 +577,7 @@ export function useChat() {
       void (async () => {
         updateMessage(assistantId, { voiceStatus: 'playing', ttsErrorMessage: undefined });
         try {
-          await voice.playAudio(voiceUrl);
+          await voice.playAudio(voiceUrl, { avatarTimeline: resp.avatar_timeline || undefined });
           updateMessage(assistantId, { voiceStatus: 'ready' });
         } catch (e) {
           const detail =
@@ -481,7 +596,13 @@ export function useChat() {
   }
 
   function handleAssistantVoicePlayback(ev: AssistantVoicePlaybackEvent) {
+    if (ev.phase === 'stop') {
+      segmentedPlayback.stop();
+      updateMessage(ev.id, { voiceStatus: 'ready' });
+      return;
+    }
     if (ev.phase === 'start') {
+      segmentedPlayback.stop();
       updateMessage(ev.id, { voiceStatus: 'playing', ttsErrorMessage: undefined });
       return;
     }
@@ -496,17 +617,23 @@ export function useChat() {
   }
 
   async function sendMessage(content: string, options: SendMessageOptions = {}) {
-    const trimmed = content.trim();
+    const trimmed = content.trim() || (options.imageUrls?.length ? '请看看这些图片。' : '');
     if (!trimmed) {
       return;
     }
 
     clearError();
+    // Bound retained previews while keeping a visible attachment receipt in older messages.
+    for (const message of messages.value.filter(message => message.imageUrls?.length).slice(0, -2)) {
+      delete message.imageUrls;
+    }
     addMessage({
       id: generateId(),
       role: 'user',
       type: 'text',
       content: trimmed,
+      imageUrls: options.imageUrls?.length ? [...options.imageUrls] : undefined,
+      imageCount: options.imageUrls?.length || undefined,
       timestamp: Date.now(),
     });
 
@@ -514,6 +641,7 @@ export function useChat() {
   }
 
   async function handleVoiceRecordingStopped(blob: Blob, durationMs: number) {
+    const version = workVersion;
     const audioUrl = URL.createObjectURL(blob);
     const voiceId = generateId();
     clearError();
@@ -530,6 +658,7 @@ export function useChat() {
     });
 
     const asr = await transcribeVoice(blob, { reportGlobalError: false });
+    if (version !== workVersion) return;
 
     if (!asr.ok) {
       const code = asr.code;
@@ -558,6 +687,11 @@ export function useChat() {
     await handleVoiceRecordingStopped(blob, durationMs);
   };
 
+  if (getCurrentScope()) onScopeDispose(() => {
+    stopCurrentWork();
+    for (const message of messages.value) if (message.audioUrl?.startsWith('blob:')) URL.revokeObjectURL(message.audioUrl);
+  });
+
   return {
     messages,
     isTyping,
@@ -574,8 +708,10 @@ export function useChat() {
     sendMessage,
     updateUserName,
     clearHistory,
+    stopCurrentWork,
     clearError,
     checkServer,
+    refreshEmotion,
     handleAssistantVoicePlayback,
     toolStatus,
     injectAssistantMessage,

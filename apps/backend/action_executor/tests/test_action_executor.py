@@ -437,67 +437,29 @@ def test_extract_reminder_body_strips_prefix_and_delay() -> None:
 
 @pytest.mark.asyncio
 async def test_query_memory_returns_formatted_result(monkeypatch: pytest.MonkeyPatch) -> None:
-    """query_memory should recall long-term memories and format them warmly."""
+    """A host-supplied port drives memory tools without loading a memory module."""
+    from action_executor.memory_port import get_memory_reader, set_memory_reader
 
-    _fake_entries = [
-        MagicMock(content="喜欢喝绿茶", importance=0.8),
-        MagicMock(content="周末喜欢看电影", importance=0.6),
-    ]
+    calls = []
+    class Reader:
+        async def recall(self, **kwargs):
+            calls.append(kwargs)
+            return [{"content": "喜欢喝绿茶", "importance": .8}, {"content": "周末喜欢看电影", "importance": .6}]
+        async def list_recent(self, **kwargs):
+            return []
+        async def working(self, **kwargs):
+            assert kwargs == {"user_id": "u-1", "session_id": "sess-1"}
+            return {"session_id": "sess-1", "turns": [{}], "user_name": "小明", "dominant_topic": "生活"}
 
-    async def _fake_recall(  # noqa: ANN001, ANN202
-        *,
-        session,
-        user_id,
-        query,
-        session_id=None,
-        top_k=5,
-        include_graph=True,
-        category=None,
-        min_importance=None,
-    ):
-        class _FakeResult:
-            entries = _fake_entries
-
-        return _FakeResult()
-
-    async def _fake_list_memories(*, session, user_id, limit, offset=0, category=None):  # noqa: ANN001, ANN202
-        return _fake_entries
-
-    # Patch the source modules where handlers import from.
-    monkeypatch.setattr("memory_system.recall.recall_memory", _fake_recall)
-    monkeypatch.setattr("memory_system.vector_store.list_user_memories", _fake_list_memories)
-
-    # Mock working memory (snapshot must implement ``to_dict()`` like WorkingMemoryState).
-    class _FakeWMState:
-        def to_dict(self) -> dict:
-            return {
-                "session_id": "sess-1",
-                "turns": [{}],
-                "user_name": "小明",
-                "dominant_topic": "生活",
-                "session_digest": "聊得很开心",
-                "last_user_emotion": "happy",
-            }
-
-    _fake_wm = MagicMock()
-    _fake_wm.snapshot = AsyncMock(return_value=_FakeWMState())
-    monkeypatch.setattr("memory_system.working.get_working_memory", lambda: _fake_wm)
-
-    # Mock AsyncSessionLocal as a context manager.
-    class _FakeSessionCtx:
-        async def __aenter__(self):
-            return MagicMock()
-
-        async def __aexit__(self, *args):
-            return None
-
-    monkeypatch.setattr("shared_runtime.database.AsyncSessionLocal", _FakeSessionCtx)
-
-    result = await query_memory({"user_id": "u-1", "query": "爱好", "session_id": "sess-1"})
-
+    previous = get_memory_reader()
+    set_memory_reader(Reader())
+    try:
+        result = await query_memory({"user_id": "u-1", "query": "爱好", "session_id": "sess-1"})
+    finally:
+        set_memory_reader(previous)
+    assert calls == [{"user_id": "u-1", "query": "爱好", "session_id": "sess-1"}]
     assert result.ok, result.message
-    assert "喜欢喝绿茶" in result.message
-    assert "周末喜欢看电影" in result.message
+    assert "喜欢喝绿茶" in result.message and "周末喜欢看电影" in result.message
     assert result.data["long_term_count"] == 2
     assert result.data["working_memory"]["user_name"] == "小明"
 

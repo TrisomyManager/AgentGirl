@@ -8,6 +8,7 @@ import httpx
 import structlog
 
 from .base import BasePlatformAdapter
+from .http_delivery import request_json, valid_text
 
 logger = structlog.get_logger(__name__)
 
@@ -29,24 +30,29 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to_message_id: Optional[str] = None,
     ) -> Optional[str]:
         url = f"{self._base_url}/sendMessage"
+        if not self._token or not valid_text(content, 4096):
+            return None
         payload: Dict[str, Any] = {
             "chat_id": user_id,
             "text": content,
-            "parse_mode": "HTML",
+            "link_preview_options": {"is_disabled": True},
         }
         if reply_to_message_id:
-            payload["reply_to_message_id"] = int(reply_to_message_id)
-        try:
-            resp = await self._client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("ok"):
-                msg_id = str(data["result"]["message_id"])
-                self._logger.info("telegram.sent", user_id=user_id, message_id=msg_id)
-                return msg_id
-            self._logger.warning("telegram.api_error", user_id=user_id, description=data.get("description"))
-        except Exception:
-            self._logger.exception("telegram.send_failed", user_id=user_id)
+            try:
+                identifier = int(reply_to_message_id)
+            except (ValueError, TypeError):
+                return None
+            if identifier <= 0:
+                return None
+            payload["reply_parameters"] = {"message_id": identifier}
+        response = await request_json(self._client, "POST", url, json=payload)
+        data = response.data or {}
+        result = data.get("result")
+        if data.get("ok") is True and isinstance(result, dict):
+            identifier = result.get("message_id")
+            if isinstance(identifier, int) and not isinstance(identifier, bool) and identifier > 0:
+                return str(identifier)
+        self._logger.warning("telegram.delivery_unconfirmed", outcome=response.outcome, status=response.status)
         return None
 
     async def broadcast(self, user_id: str, content: str) -> None:
@@ -54,8 +60,7 @@ class TelegramAdapter(BasePlatformAdapter):
         await self.send_message(user_id, content)
 
     async def health_check(self) -> bool:
-        try:
-            resp = await self._client.get(f"{self._base_url}/getMe")
-            return resp.status_code == 200 and resp.json().get("ok")
-        except Exception:
+        if not self._token:
             return False
+        response = await request_json(self._client, "GET", f"{self._base_url}/getMe")
+        return (response.data or {}).get("ok") is True

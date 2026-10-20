@@ -90,14 +90,14 @@ class TestResolveVoice:
     def test_xiaonuan_volc_realtime_vs_dashscope(self):
         volc = resolve_voice("volc_realtime", "xiaonuan")
         dash = resolve_voice("dashscope", "xiaonuan")
-        assert volc == "zh_female_tianmei"
+        assert volc == "zh_female_xiaohe_jupiter_bigtts"
         assert dash == "longxiaochun"
         assert volc != dash
 
     def test_aria_volc_realtime_vs_openai(self):
         volc = resolve_voice("volc_realtime", "aria")
         openai = resolve_voice("openai", "aria")
-        assert volc == "en_female_makabaka"
+        assert volc == "en_female_dacey_uranus_bigtts"
         assert openai == "nova"
         assert volc != openai
 
@@ -234,14 +234,14 @@ class TestSameResolverForTtsAndRealtime:
         """Simulate what VolcRealtimeProvider does for volc_realtime."""
         profile_id = resolve_profile_id("zh-CN-XiaoxiaoNeural")  # same input as TTS
         voice = resolve_voice("volc_realtime", profile_id, strict=True)
-        assert voice == "zh_female_tianmei"
+        assert voice == "zh_female_xiaohe_jupiter_bigtts"
 
     def test_xiaonuan_both_paths_same_profile_different_voices(self):
         """Same role_id 'xiaonuan' resolves to different voices per provider."""
         tts_voice = resolve_voice("dashscope", "xiaonuan")
         realtime_voice = resolve_voice("volc_realtime", "xiaonuan")
         assert tts_voice == "longxiaochun"
-        assert realtime_voice == "zh_female_tianmei"
+        assert realtime_voice == "zh_female_xiaohe_jupiter_bigtts"
         assert tts_voice != realtime_voice
 
 

@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import structlog
 
@@ -54,6 +55,36 @@ def update_runtime_voice_config(**kwargs: Any) -> None:
 
 def get_runtime_voice_config() -> dict[str, Any]:
     return dict(_runtime_voice_config)
+
+
+def get_effective_voice_config() -> dict[str, Any]:
+    """Resolve the same environment/runtime configuration for UI and clients."""
+    from .config import get_settings
+    from .model_presets import SPEECH_BASE_URL
+
+    settings = get_settings()
+    defaults = {
+        "asr_api_key": settings.whisper_api_key or settings.volc_api_key or "",
+        "asr_base_url": settings.whisper_base_url or SPEECH_BASE_URL,
+        "asr_model": settings.asr_model,
+        "tts_provider": settings.tts_provider,
+        "tts_api_key": settings.tts_api_key or settings.volc_api_key or "",
+        "tts_base_url": settings.tts_base_url or SPEECH_BASE_URL,
+        "tts_model": settings.tts_model,
+        "tts_voice_id": settings.default_voice_id,
+        "realtime_voice_provider": settings.realtime_voice_provider,
+        "volc_api_key": settings.volc_api_key or "",
+        "volc_model": settings.volc_model,
+        "volc_voice_id": settings.volc_voice_id,
+    }
+    rt = _runtime_voice_config
+    if rt.get("tts_provider") and rt["tts_provider"] != settings.tts_provider:
+        defaults["tts_api_key"] = ""
+    for kind in ("asr", "tts"):
+        base_key = f"{kind}_base_url"
+        if rt.get(base_key) and urlparse(rt[base_key]).netloc != urlparse(defaults[base_key]).netloc:
+            defaults[f"{kind}_api_key"] = ""
+    return {**defaults, **rt}
 
 
 def clear_runtime_voice_config() -> None:

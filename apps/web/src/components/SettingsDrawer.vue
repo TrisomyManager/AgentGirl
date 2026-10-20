@@ -6,12 +6,21 @@
     <transition name="slide">
       <div v-if="visible" class="settings-drawer">
         <div class="drawer-header">
-          <h3>设置</h3>
+          <h3>{{ canManage ? '设置与管理' : '设置' }}</h3>
           <button class="close-btn" @click="$emit('close')">✕</button>
         </div>
 
-        <div class="drawer-body">
+        <nav class="settings-tabs" aria-label="设置分类">
+          <button v-for="tab in tabs" :key="tab.id" type="button" :aria-pressed="activeTab === tab.id"
+            @click="activeTab = tab.id">{{ tab.label }}</button>
+        </nav>
+        <div class="drawer-body" :key="activeTab">
+          <p v-if="configLoading" role="status">正在加载配置…</p>
+          <p v-if="configError" role="alert">{{ configError }}
+            <button type="button" @click="activeTab === 'model' ? loadLlmConfig() : loadVoiceConfig()">重新加载配置</button>
+          </p>
 
+          <template v-if="activeTab === 'personal'">
           <!-- 用户昵称 -->
           <div class="setting-item">
             <label>用户昵称</label>
@@ -33,14 +42,24 @@
             </div>
           </div>
 
+          <ConversationSettings :user-id="userId" />
+          <div v-if="accessState.mode === 'key'" class="setting-item">
+            <label>当前账号</label>
+            <span>{{ userId }}</span>
+            <button type="button" class="danger-btn" @click="logoutAccess">退出账号</button>
+          </div>
+
           <!-- LLM 配置 -->
-          <div class="setting-section">
+          </template>
+          <div v-if="canManage && activeTab === 'model'" class="setting-section">
+            <fieldset class="config-fields" :disabled="!modelLoaded || saving || testingLlm">
             <div class="section-title">LLM 配置</div>
 
             <div class="setting-item">
               <label>Provider</label>
-              <select v-model="llm.provider" class="select-input">
+              <select v-model="llm.provider" class="select-input" @change="applyLlmPreset">
                 <option value="">-- 选择服务商 --</option>
+                <option value="volcengine">火山引擎 · 火山方舟（豆包）</option>
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic (Claude)</option>
                 <option value="openai_compatible">OpenAI 兼容接口（Kimi / DeepSeek 等）</option>
@@ -53,7 +72,7 @@
                 <input
                   v-model="llm.api_key"
                   :type="showKey ? 'text' : 'password'"
-                  placeholder="sk-..."
+                  placeholder="填写你的 API Key"
                   autocomplete="off"
                   spellcheck="false"
                 />
@@ -80,6 +99,10 @@
                 :placeholder="modelPlaceholder"
                 :class="{ 'input-error': llm.provider === 'openai_compatible' && !llm.model }"
               />
+              <div v-if="llm.provider === 'volcengine'" class="model-hint">
+                默认豆包 Seed 2.0 Mini；可填写已开通的模型 ID 或 ep- 开头的推理接入点 ID。<br>
+                记忆检索使用豆包 Embedding，同用方舟 API Key；请同时开通向量模型。
+              </div>
               <div v-if="llm.provider === 'openai_compatible'" class="model-hint">
                 DashScope: <code>qwen-turbo</code> / <code>qwen-plus</code> / <code>qwen-max</code><br>
                 DeepSeek: <code>deepseek-chat</code> &nbsp; Kimi: <code>moonshot-v1-8k</code>
@@ -128,8 +151,8 @@
                   <strong>常见排查:</strong>
                   <ul>
                     <li>检查 API Key 是否正确（注意首尾空格）</li>
-                    <li>Base URL 是否填错协议或路径（如 DashScope 兼容接口需 <code>https://dashscope.aliyuncs.com/compatible-mode/v1</code>）</li>
-                    <li>模型名称是否拼对（如 <code>qwen-turbo</code>、<code>deepseek-chat</code>）</li>
+                    <li>火山方舟地址应为 <code>https://ark.cn-beijing.volces.com/api/v3</code></li>
+                    <li>模型 ID 是否正确，是否已开通该模型的调用权限</li>
                     <li>是否被防火墙/代理拦截，或需要梯子</li>
                   </ul>
                 </div>
@@ -144,10 +167,12 @@
                 {{ llm.api_key_set ? '已配置 API Key，使用真实 LLM 回复' : '未配置 API Key，使用规则回复' }}
               </div>
             </div>
+          </fieldset>
           </div>
 
           <!-- 语音配置 -->
-          <div class="setting-section voice-section">
+          <div v-if="canManage && activeTab === 'voice'" class="setting-section voice-section">
+            <fieldset class="config-fields" :disabled="!voiceLoaded || savingVoice || testingVoice">
             <div class="section-title">🎙️ 语音配置</div>
 
             <!-- ASR 子区块 -->
@@ -158,7 +183,8 @@
                 <label>预设</label>
                 <select v-model="asrPreset" class="select-input" @change="applyAsrPreset">
                   <option value="">-- 自定义 --</option>
-                  <option value="dashscope">阿里云 DashScope Paraformer（国内 推荐）</option>
+                  <option value="volcengine">火山引擎 · 豆包录音识别极速版</option>
+                  <option value="dashscope">阿里云 DashScope Paraformer</option>
                   <option value="siliconflow">硅基流动 SiliconFlow（国内）</option>
                   <option value="groq">Groq（海外 免费 速度快）</option>
                   <option value="openai">OpenAI 官方</option>
@@ -171,7 +197,7 @@
                   <input
                     v-model="voice.asr_api_key"
                     :type="showAsrKey ? 'text' : 'password'"
-                    placeholder="sk-..."
+                    placeholder="填写你的 API Key"
                     autocomplete="off"
                     spellcheck="false"
                   />
@@ -201,6 +227,8 @@
                   :placeholder="asrModelPlaceholder"
                 />
                 <div class="model-hint">
+                  火山引擎: <code>volc.seedasr.sauc.duration</code>（流式识别 2.0 资源 ID）<br>
+                  使用豆包语音 API Key，与方舟 API Key 分开填写。<br>
                   阿里云: <code>paraformer-realtime-v2</code><br>
                   硅基流动: <code>FunAudioLLM/SenseVoiceSmall</code><br>
                   Groq: <code>whisper-large-v3</code> &nbsp; OpenAI: <code>whisper-1</code>
@@ -216,6 +244,7 @@
                 <label>Provider</label>
                 <select v-model="voice.tts_provider" class="select-input" @change="applyTtsPreset">
                   <option value="">-- 不启用 TTS --</option>
+                  <option value="volcengine">火山引擎 · 豆包语音合成 2.0</option>
                   <option value="xiaomi_mimo">小米 MiMo TTS v2.5（国内）</option>
                   <option value="dashscope">阿里云 DashScope CosyVoice（国内 推荐）</option>
                   <option value="siliconflow">硅基流动 SiliconFlow（国内）</option>
@@ -231,7 +260,7 @@
                   <input
                     v-model="voice.tts_api_key"
                     :type="showTtsKey ? 'text' : 'password'"
-                    placeholder="sk-..."
+                    placeholder="填写你的 API Key"
                     autocomplete="off"
                     spellcheck="false"
                   />
@@ -266,7 +295,11 @@
                   type="text"
                   :placeholder="ttsVoicePlaceholder"
                 />
-                <div class="model-hint" v-if="voice.tts_provider === 'xiaomi_mimo'">
+                <div class="model-hint" v-if="voice.tts_provider === 'volcengine'">
+                  默认小何：<code>zh_female_xiaohe_uranus_bigtts</code>。模型栏填写资源 ID <code>seed-tts-2.0</code>。<br>
+                  使用豆包语音 API Key；请开通语音合成 2.0 服务及对应音色。
+                </div>
+                <div class="model-hint" v-else-if="voice.tts_provider === 'xiaomi_mimo'">
                   可选: <code>default_zh</code> / <code>mimo_default</code> / <code>default_en</code><br>
                   <code>Mia</code> / <code>Chloe</code> / <code>Milo</code> / <code>Dean</code>
                 </div>
@@ -280,6 +313,37 @@
                   可选: <code>alloy</code> / <code>echo</code> / <code>nova</code> / <code>shimmer</code>
                 </div>
               </div>
+            </div>
+
+            <div class="sub-section">
+              <div class="sub-title">实时通话</div>
+              <div class="setting-item">
+                <label>通话模型</label>
+                <select v-model="voice.realtime_voice_provider" class="select-input">
+                  <option value="volc_realtime">火山引擎 · 豆包端到端实时语音</option>
+                  <option value="cloud">语音识别 + 聊天模型 + 语音合成</option>
+                  <option value="local">本地语音（需安装本地模型）</option>
+                </select>
+              </div>
+              <template v-if="voice.realtime_voice_provider === 'volc_realtime'">
+                <div class="setting-item">
+                  <label>豆包语音 API Key</label>
+                  <input v-model="voice.volc_api_key" type="password" autocomplete="off" placeholder="填写豆包语音控制台的 API Key" />
+                  <div class="model-hint">{{ voice.volc_api_key_set ? '已设置，留空保留。' : '填写后保存即可用于实时通话。' }}与方舟聊天 Key 分开；需开通端到端实时语音服务。</div>
+                </div>
+                <div class="setting-item">
+                  <label>实时语音版本</label>
+                  <select v-model="voice.volc_model" class="select-input">
+                    <option value="1.2.1.1">O2.0 · 自然对话（默认）</option>
+                    <option value="2.2.0.0">SC2.0 · 角色扮演（需对应克隆音色）</option>
+                  </select>
+                </div>
+                <div class="setting-item">
+                  <label>实时通话音色</label>
+                  <input v-model="voice.volc_voice_id" placeholder="zh_female_xiaohe_jupiter_bigtts" />
+                  <div class="model-hint">O2.0 默认小何；SC2.0 请填写已开通的 saturn_ 或 S_ 音色 ID。</div>
+                </div>
+              </template>
             </div>
 
             <div class="llm-actions">
@@ -334,9 +398,10 @@
                     <li v-if="voice.tts_provider === 'xiaomi_mimo'">Base URL 应为 <code>https://api.xiaomimimo.com/v1</code></li>
                     <li v-if="voice.tts_provider === 'xiaomi_mimo'">模型名: <code>mimo-v2.5-tts</code>；音色: <code>default_zh</code> / <code>mimo_default</code></li>
                     <li v-if="voice.tts_provider === 'xiaomi_mimo'">API Key 需在 <a href="https://platform.xiaomimimo.com" target="_blank">platform.xiaomimimo.com</a> 获取</li>
-                    <li v-if="voice.tts_provider !== 'xiaomi_mimo'">DashScope TTS 的 Base URL 应为 <code>https://dashscope.aliyuncs.com/api/v1</code>（不是 compatible-mode）</li>
-                    <li v-if="voice.tts_provider !== 'xiaomi_mimo'">模型名建议: <code>cosyvoice-v3-flash</code> / <code>cosyvoice-v2</code> / <code>cosyvoice-v1</code></li>
-                    <li v-if="voice.tts_provider !== 'xiaomi_mimo'">音色 ID 应为 <code>longxiaochun</code> / <code>longwan</code> / <code>longyumi</code> 等</li>
+                    <li v-if="voice.tts_provider === 'dashscope'">DashScope TTS 的 Base URL 应为 <code>https://dashscope.aliyuncs.com/api/v1</code>（不是 compatible-mode）</li>
+                    <li v-if="voice.tts_provider === 'dashscope'">模型名建议: <code>cosyvoice-v3-flash</code> / <code>cosyvoice-v2</code> / <code>cosyvoice-v1</code></li>
+                    <li v-if="voice.tts_provider === 'dashscope'">音色 ID 应为 <code>longxiaochun</code> / <code>longwan</code> / <code>longyumi</code> 等</li>
+                    <li v-if="voice.tts_provider === 'volcengine'">使用豆包语音 API Key，并开通 <code>seed-tts-2.0</code>；地址填写 <code>https://openspeech.bytedance.com</code></li>
                     <li>API Key 是否开通了语音合成模型权限</li>
                   </ul>
                 </div>
@@ -355,11 +420,14 @@
                 TTS: {{ voice.tts_api_key_set ? `已配置 (${voice.tts_provider})` : '未配置' }}
               </div>
             </div>
+          </fieldset>
           </div>
 
           <!-- Realtime Voice 调试信息 -->
-          <div class="setting-section debug-section">
-            <div class="section-title">🔍 Realtime Voice 调试</div>
+          <AdminPanel v-if="canManage && (activeTab === 'overview' || activeTab === 'extensions')" :section="activeTab" />
+          <CareSettings v-if="activeTab === 'care'" :user-id="userId" />
+          <div v-if="canManage && activeTab === 'overview'" class="setting-section debug-section">
+            <details><summary class="section-title">语音诊断</summary>
 
             <div class="setting-item">
               <label>Realtime Provider</label>
@@ -386,9 +454,11 @@
             <div class="debug-hint">
               这些值由 <code>assistant_sentence_start</code> / <code>tts_start</code> 事件协商得出。若播放无声，请对比服务端实际格式。
             </div>
+            </details>
           </div>
 
           <!-- 会话 ID -->
+          <template v-if="activeTab === 'personal'">
           <div class="setting-item">
             <label>会话 ID</label>
             <div class="session-id-display">
@@ -400,13 +470,15 @@
           <!-- 危险操作 -->
           <div class="setting-item danger-zone">
             <label>危险操作</label>
-            <button class="danger-btn" @click="confirmClear">🗑️ 清空对话记录</button>
+            <button class="danger-btn" @click="confirmClear">清空本机聊天显示</button>
           </div>
+          <PrivacyControls :user-id="userId" @clearing="emit('privacy-busy', $event)" @cleared="emit('privacy-cleared')" />
+          </template>
 
         </div>
 
         <div class="drawer-footer">
-          <span class="version">Companion AI v1.0</span>
+          <span class="version">Companion AI v0.2</span>
         </div>
       </div>
     </transition>
@@ -414,13 +486,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue';
 import { useApi } from '../composables/useApi';
+import { accessState, canManage, logoutAccess } from '../composables/accessSession';
+import ConversationSettings from './ConversationSettings.vue';
+import PrivacyControls from './PrivacyControls.vue';
+import AdminPanel from './AdminPanel.vue';
+import CareSettings from './CareSettings.vue';
 import { currentAudioFormat, currentRealtimeProvider, currentSampleRate } from '../composables/useRealtimeVoice';
 
 const props = defineProps<{
   visible: boolean;
   userName: string;
+  userId: string;
   sessionId: string;
   serverAvailable: boolean | null;
 }>();
@@ -429,9 +507,22 @@ const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'update:userName', name: string): void;
   (e: 'clear'): void;
+  (e: 'privacy-busy', value: boolean): void;
+  (e: 'privacy-cleared'): void;
 }>();
 
 const { getLlmConfig, saveLlmConfig, testLlmConfig, getVoiceConfig, saveVoiceConfig, testVoiceConfig } = useApi();
+type SettingsTab = 'personal' | 'model' | 'voice' | 'care' | 'extensions' | 'overview';
+const activeTab = ref<SettingsTab>('personal');
+const tabs = computed(() => [
+  { id: 'personal' as const, label: '我的设置' }, { id: 'care' as const, label: '主动陪伴' },
+  ...(canManage.value ? [
+    { id: 'model' as const, label: '模型服务' }, { id: 'voice' as const, label: '语音服务' },
+    { id: 'extensions' as const, label: '扩展' }, { id: 'overview' as const, label: '运行状态' },
+  ] : []),
+]);
+let viewGeneration = 0;
+const modelLoaded = ref(false), voiceLoaded = ref(false), configLoading = ref(false), configError = ref('');
 
 const audioFormat = computed(() => currentAudioFormat.value);
 const realtimeProvider = computed(() => currentRealtimeProvider.value);
@@ -453,7 +544,7 @@ const serverStatusText = computed(() => {
 });
 
 // ── LLM config ──
-const llm = reactive({ provider: '', api_key: '', base_url: '', model: '', api_key_set: false });
+const llm = reactive({ provider: 'volcengine', api_key: '', base_url: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-seed-2-0-mini-260428', api_key_set: false });
 const showKey = ref(false);
 const saving = ref(false);
 const llmMsg = ref('');
@@ -469,6 +560,7 @@ const llmTestResult = ref<null | {
 }>(null);
 
 const baseUrlPlaceholder = computed(() => {
+  if (llm.provider === 'volcengine') return 'https://ark.cn-beijing.volces.com/api/v3';
   if (llm.provider === 'openai') return 'https://api.openai.com/v1';
   if (llm.provider === 'anthropic') return 'https://api.anthropic.com/v1';
   if (llm.provider === 'openai_compatible') return 'https://api.moonshot.cn/v1';
@@ -476,15 +568,29 @@ const baseUrlPlaceholder = computed(() => {
 });
 
 const modelPlaceholder = computed(() => {
+  if (llm.provider === 'volcengine') return 'doubao-seed-2-0-mini-260428';
   if (llm.provider === 'openai') return 'gpt-4o-mini';
   if (llm.provider === 'anthropic') return 'claude-haiku-4-5-20251001';
   if (llm.provider === 'openai_compatible') return 'moonshot-v1-8k';
   return '';
 });
 
+function applyLlmPreset() {
+  llm.base_url = baseUrlPlaceholder.value;
+  llm.model = modelPlaceholder.value;
+  llm.api_key = '';
+  llm.api_key_set = false;
+}
+
 async function loadLlmConfig() {
+  const generation = viewGeneration;
+  configLoading.value = true; configError.value = '';
   const cfg = await getLlmConfig();
-  if (cfg) {
+  if (generation !== viewGeneration) return;
+  configLoading.value = false;
+  if (!cfg) configError.value = '无法加载模型配置，暂时不能保存。';
+  if (cfg && generation === viewGeneration && props.visible && canManage.value) {
+    modelLoaded.value = true;
     llm.provider = cfg.provider;
     llm.base_url = cfg.base_url;
     llm.model = cfg.model;
@@ -493,11 +599,20 @@ async function loadLlmConfig() {
   }
 }
 
-watch(() => props.visible, (v) => {
-  if (v) {
+watch(() => [props.visible, activeTab.value, accessState.role, props.userId], () => {
+  viewGeneration++;
+  modelLoaded.value = false; voiceLoaded.value = false; configLoading.value = false; configError.value = '';
+  llm.api_key = ''; voice.asr_api_key = ''; voice.tts_api_key = ''; voice.volc_api_key = '';
+  llm.api_key_set = false; voice.asr_api_key_set = false; voice.tts_api_key_set = false; voice.volc_api_key_set = false;
+  ttsAudioRef.value?.pause();
+  llmTestResult.value = null; voiceTestResult.value = null;
+  showKey.value = false; showAsrKey.value = false; showTtsKey.value = false;
+  saving.value = false; savingVoice.value = false; testingLlm.value = false; testingVoice.value = false;
+  if (!canManage.value && !['personal', 'care'].includes(activeTab.value)) activeTab.value = 'personal';
+  if (props.visible) {
     localUserName.value = props.userName;
-    loadLlmConfig();
-    loadVoiceConfig();
+    if (canManage.value && activeTab.value === 'model') void loadLlmConfig();
+    if (canManage.value && activeTab.value === 'voice') void loadVoiceConfig();
     llmMsg.value = '';
     voiceMsg.value = '';
     llmTestResult.value = null;
@@ -506,10 +621,12 @@ watch(() => props.visible, (v) => {
 });
 
 async function saveLlm() {
+  if (!canManage.value || !modelLoaded.value || saving.value) return;
   if (!llm.provider) { llmMsg.value = '请先选择 Provider'; llmMsgType.value = 'err'; return; }
   if (!llm.api_key && !llm.api_key_set) { llmMsg.value = '请输入 API Key'; llmMsgType.value = 'err'; return; }
   if (llm.provider === 'openai_compatible' && !llm.model) { llmMsg.value = '兼容接口必须填写模型名称（如 qwen-turbo）'; llmMsgType.value = 'err'; return; }
   saving.value = true;
+  const generation = viewGeneration;
   llmMsg.value = '';
   const result = await saveLlmConfig({
     provider: llm.provider,
@@ -517,6 +634,7 @@ async function saveLlm() {
     base_url: llm.base_url,
     model: llm.model,
   });
+  if (generation !== viewGeneration || !canManage.value) return;
   saving.value = false;
   if (result.ok) {
     llmMsg.value = '已保存，下一条消息开始使用真实 LLM';
@@ -534,23 +652,25 @@ async function saveLlm() {
 }
 
 async function clearLlm() {
+  if (!canManage.value || !modelLoaded.value) return;
+  const generation = viewGeneration;
   const cleared = await saveLlmConfig({ provider: '', api_key: '', base_url: '', model: '' });
+  if (generation !== viewGeneration || !canManage.value) return;
   if (!cleared.ok) {
     llmMsg.value = cleared.detail || '清除失败';
     llmMsgType.value = 'err';
     return;
   }
-  llm.provider = '';
-  llm.api_key = '';
-  llm.base_url = '';
-  llm.model = '';
-  llm.api_key_set = false;
-  llmMsg.value = '已清除，恢复规则回复';
+  await loadLlmConfig();
+  if (generation !== viewGeneration) return;
+  llmMsg.value = '已清除已保存配置；如已设置环境配置，将继续使用环境配置';
   llmMsgType.value = 'ok';
   llmTestResult.value = null;
 }
 
 async function testLlm() {
+  if (!canManage.value || testingLlm.value) return;
+  const generation = viewGeneration;
   if (!llm.api_key_set && !llm.api_key) {
     llmMsg.value = '请先保存 API Key 后再测试';
     llmMsgType.value = 'err';
@@ -559,6 +679,7 @@ async function testLlm() {
   testingLlm.value = true;
   llmTestResult.value = null;
   const result = await testLlmConfig();
+  if (generation !== viewGeneration || !canManage.value) return;
   testingLlm.value = false;
   if (result) {
     llmTestResult.value = result;
@@ -588,6 +709,11 @@ function latencyHint(ms: number): string {
 
 // ── voice config ──
 const voice = reactive({
+  realtime_voice_provider: 'volc_realtime',
+  volc_api_key: '',
+  volc_api_key_set: false,
+  volc_model: '1.2.1.1',
+  volc_voice_id: 'zh_female_xiaohe_jupiter_bigtts',
   asr_api_key: '',
   asr_base_url: '',
   asr_model: '',
@@ -623,6 +749,7 @@ const voiceTestResult = ref<null | {
 const ttsAudioRef = ref<HTMLAudioElement | null>(null);
 
 const ASR_PRESETS: Record<string, { base_url: string; model: string }> = {
+  volcengine: { base_url: 'https://openspeech.bytedance.com', model: 'volc.seedasr.sauc.duration' },
   dashscope: { base_url: 'https://dashscope.aliyuncs.com', model: 'paraformer-realtime-v2' },
   siliconflow: { base_url: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/SenseVoiceSmall' },
   groq: { base_url: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3' },
@@ -630,6 +757,7 @@ const ASR_PRESETS: Record<string, { base_url: string; model: string }> = {
 };
 
 const TTS_PRESETS: Record<string, { base_url: string; model: string; voice: string }> = {
+  volcengine: { base_url: 'https://openspeech.bytedance.com', model: 'seed-tts-2.0', voice: 'zh_female_xiaohe_uranus_bigtts' },
   xiaomi_mimo: { base_url: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.5-tts', voice: 'default_zh' },
   dashscope: { base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'cosyvoice-v1', voice: 'longxiaochun' },
   siliconflow: { base_url: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/CosyVoice2-0.5B', voice: 'FunAudioLLM/CosyVoice2-0.5B:alex' },
@@ -640,11 +768,11 @@ const TTS_PRESETS: Record<string, { base_url: string; model: string; voice: stri
 
 const asrBaseUrlPlaceholder = computed(() => {
   if (asrPreset.value && ASR_PRESETS[asrPreset.value]) return ASR_PRESETS[asrPreset.value].base_url;
-  return 'https://api.siliconflow.cn/v1';
+  return 'https://openspeech.bytedance.com';
 });
 const asrModelPlaceholder = computed(() => {
   if (asrPreset.value && ASR_PRESETS[asrPreset.value]) return ASR_PRESETS[asrPreset.value].model;
-  return 'FunAudioLLM/SenseVoiceSmall';
+  return 'volc.seedasr.sauc.duration';
 });
 const ttsBaseUrlPlaceholder = computed(() => {
   if (voice.tts_provider && TTS_PRESETS[voice.tts_provider]) return TTS_PRESETS[voice.tts_provider].base_url;
@@ -672,15 +800,23 @@ function applyTtsPreset() {
   if (!voice.tts_provider) return;
   const p = TTS_PRESETS[voice.tts_provider];
   if (p) {
-    if (!voice.tts_base_url) voice.tts_base_url = p.base_url;
-    if (!voice.tts_model) voice.tts_model = p.model;
-    if (!voice.tts_voice_id) voice.tts_voice_id = p.voice;
+    voice.tts_base_url = p.base_url;
+    voice.tts_model = p.model;
+    voice.tts_voice_id = p.voice;
+    voice.tts_api_key = '';
+    voice.tts_api_key_set = false;
   }
 }
 
 async function loadVoiceConfig() {
+  const generation = viewGeneration;
+  configLoading.value = true; configError.value = '';
   const cfg = await getVoiceConfig();
-  if (cfg) {
+  if (generation !== viewGeneration) return;
+  configLoading.value = false;
+  if (!cfg) configError.value = '无法加载语音配置，暂时不能保存。';
+  if (cfg && generation === viewGeneration && props.visible && canManage.value) {
+    voiceLoaded.value = true;
     voice.asr_base_url = cfg.asr_base_url || '';
     voice.asr_model = cfg.asr_model || '';
     voice.asr_api_key_set = cfg.asr_api_key_set;
@@ -691,6 +827,11 @@ async function loadVoiceConfig() {
     voice.tts_voice_id = cfg.tts_voice_id || '';
     voice.tts_api_key_set = cfg.tts_api_key_set;
     voice.tts_api_key = '';
+    voice.realtime_voice_provider = cfg.realtime_voice_provider || 'volc_realtime';
+    voice.volc_api_key_set = cfg.volc_api_key_set;
+    voice.volc_api_key = '';
+    voice.volc_model = cfg.volc_model || '1.2.1.1';
+    voice.volc_voice_id = cfg.volc_voice_id || 'zh_female_xiaohe_jupiter_bigtts';
     // Infer preset from base_url
     asrPreset.value = '';
     for (const [name, p] of Object.entries(ASR_PRESETS)) {
@@ -703,6 +844,8 @@ async function loadVoiceConfig() {
 }
 
 async function saveVoice() {
+  if (!canManage.value || !voiceLoaded.value || savingVoice.value) return;
+  const generation = viewGeneration;
   savingVoice.value = true;
   voiceMsg.value = '';
   const ok = await saveVoiceConfig({
@@ -714,7 +857,12 @@ async function saveVoice() {
     tts_base_url: voice.tts_base_url,
     tts_model: voice.tts_model,
     tts_voice_id: voice.tts_voice_id,
+    realtime_voice_provider: voice.realtime_voice_provider,
+    volc_api_key: voice.volc_api_key,
+    volc_model: voice.volc_model,
+    volc_voice_id: voice.volc_voice_id,
   });
+  if (generation !== viewGeneration || !canManage.value) return;
   savingVoice.value = false;
   if (ok) {
     voiceMsg.value = '语音配置已保存并生效';
@@ -723,6 +871,8 @@ async function saveVoice() {
     if (voice.tts_api_key) voice.tts_api_key_set = true;
     voice.asr_api_key = '';
     voice.tts_api_key = '';
+    if (voice.volc_api_key) voice.volc_api_key_set = true;
+    voice.volc_api_key = '';
   } else {
     voiceMsg.value = '保存失败，请检查后端';
     voiceMsgType.value = 'err';
@@ -730,43 +880,47 @@ async function saveVoice() {
 }
 
 async function clearVoice() {
-  await saveVoiceConfig({
+  if (!canManage.value || !voiceLoaded.value) return;
+  const generation = viewGeneration;
+  const ok = await saveVoiceConfig({
+    reset: true,
     asr_api_key: '', asr_base_url: '', asr_model: '',
     tts_provider: '', tts_api_key: '', tts_base_url: '',
     tts_model: '', tts_voice_id: '',
   });
-  voice.asr_api_key = '';
-  voice.asr_base_url = '';
-  voice.asr_model = '';
-  voice.asr_api_key_set = false;
-  voice.tts_provider = '';
-  voice.tts_api_key = '';
-  voice.tts_base_url = '';
-  voice.tts_model = '';
-  voice.tts_voice_id = '';
-  voice.tts_api_key_set = false;
-  asrPreset.value = '';
-  voiceMsg.value = '语音配置已清除';
+  if (generation !== viewGeneration || !canManage.value) return;
+  if (!ok) {
+    voiceMsg.value = '清除失败，请检查后端';
+    voiceMsgType.value = 'err';
+    return;
+  }
+  await loadVoiceConfig();
+  if (generation !== viewGeneration) return;
+  voiceMsg.value = '已清除已保存配置；环境配置仍会生效';
   voiceMsgType.value = 'ok';
   voiceTestResult.value = null;
 }
 
 async function testVoice() {
+  if (!canManage.value || testingVoice.value) return;
+  const generation = viewGeneration;
   testingVoice.value = true;
   voiceTestResult.value = null;
   const result = await testVoiceConfig();
+  if (generation !== viewGeneration || !canManage.value) return;
   testingVoice.value = false;
   if (result) {
     voiceTestResult.value = result;
     if (result.tts_ok && result.tts_audio_url) {
       // auto-play the synthesized sample
-      setTimeout(() => {
+      await nextTick();
+      if (generation === viewGeneration && props.visible && canManage.value) {
         const el = ttsAudioRef.value;
         if (el) {
           el.src = absoluteAudioUrl(result.tts_audio_url);
           el.play().catch(() => {/* user interaction needed */});
         }
-      }, 100);
+      }
     }
   } else {
     voiceTestResult.value = {
@@ -798,14 +952,20 @@ function copySessionId() {
 }
 
 function confirmClear() {
-  if (confirm('确定要清空所有对话记录吗？此操作不可恢复。')) {
+  if (confirm('清空这个浏览器中的聊天显示？服务端记忆和历史仍会保留。')) {
     emit('clear');
     emit('close');
   }
 }
+onUnmounted(() => { viewGeneration++; ttsAudioRef.value?.pause(); });
 </script>
 
 <style scoped>
+.config-fields { border: 0; margin: 0; padding: 0; min-width: 0; }
+.config-fields:disabled { opacity: .65; }
+.settings-tabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 20px; border-bottom: 1px solid #ffffff15; }
+.settings-tabs button { border: 1px solid #ffffff25; border-radius: 8px; background: transparent; color: #b8c4d8; padding: 8px 10px; cursor: pointer; }
+.settings-tabs button[aria-pressed=true] { background: #fb718522; border-color: #fb718588; color: #ffd1dd; }
 .drawer-overlay {
   position: fixed;
   inset: 0;

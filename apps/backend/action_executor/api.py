@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import structlog
@@ -27,6 +28,11 @@ from action_executor import handlers  # noqa: F401
 from action_executor.push_bus import get_proactive_push_bus
 from action_executor.registry import get_registry
 from action_executor.reminders import get_reminders_store
+from action_executor.proactive_preferences import CarePreferences, care_preferences_store
+from action_executor.task_agent import task_agent
+from action_executor.task_store import task_store
+from action_executor.tool_catalog import ToolContext
+from action_executor.task_policy import task_tool_scope
 
 logger = structlog.get_logger("action_executor.api")
 
@@ -48,6 +54,18 @@ class DispatchResponse(BaseModel):
     message: str
     data: Dict[str, Any] = Field(default_factory=dict)
     proactive_push: Optional[Dict[str, Any]] = None
+
+
+class TaskRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128)
+    request: str = Field(min_length=1, max_length=10000)
+    turn_id: str = Field(default_factory=lambda: str(uuid.uuid4()), min_length=1, max_length=128)
+
+
+class ResumeTaskRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    clarification: str = Field(min_length=1, max_length=2000)
 
 
 class CreateReminderRequest(BaseModel):
@@ -102,6 +120,97 @@ async def get_user_state(
 async def list_actions() -> List[Dict[str, Any]]:
     """List all registered action handlers and their metadata."""
     return get_registry().list_actions()
+
+
+@router.get("/plugins")
+async def list_plugins():
+    from action_executor.plugins import plugin_manager
+
+    return {"plugins": plugin_manager.status()}
+
+
+class CatalogInstallRequest(BaseModel):
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+@router.get("/plugins/catalog")
+async def get_plugin_catalog():
+    from action_executor.plugin_catalog import catalog_status
+    from action_executor.plugins import plugin_manager
+    from shared_runtime.config import get_settings
+
+    return catalog_status(plugin_manager, enabled=get_settings().plugin_install_enabled)
+
+
+@router.post("/plugins/catalog/{identifier}/install", status_code=201)
+async def install_plugin(identifier: str, request: CatalogInstallRequest):
+    from action_executor.plugin_catalog import CatalogError, install_catalog_plugin
+    from action_executor.plugins import plugin_manager
+    from shared_runtime.config import get_settings
+
+    try:
+        return await install_catalog_plugin(
+            plugin_manager, identifier, request.sha256, enabled=get_settings().plugin_install_enabled
+        )
+    except CatalogError as error:
+        raise HTTPException(error.status, detail=error.message) from None
+
+
+@router.get("/mcp/tools")
+async def list_mcp_tools():
+    return {"tools": get_registry().mcp_tools()}
+
+
+@router.get("/tasks")
+async def list_tasks(user_id: str = Query(min_length=1, max_length=128)):
+    return {"tasks": await task_store.list_for_user(user_id)}
+
+
+@router.get("/tasks/{task_id}")
+async def get_task(task_id: str, user_id: str = Query(min_length=1, max_length=128)):
+    run = await task_store.get(task_id, user_id)
+    if run is None:
+        raise HTTPException(404, detail="Task not found")
+    return run
+
+
+@router.post("/tasks")
+async def execute_task(req: TaskRequest):
+    context = ToolContext(req.user_id, req.session_id, req.turn_id, req.request)
+    tools = await task_agent.catalog.tools_for(context)
+    result = await task_agent.execute(context, allowed_tools=task_tool_scope(req.request, tools))
+    return {"ok": result.ok, "message": result.message, **result.data}
+
+
+@router.post("/tasks/{task_id}/resume")
+async def resume_task(task_id: str, req: ResumeTaskRequest):
+    run = await task_store.get(task_id, req.user_id)
+    if run is None:
+        raise HTTPException(404, detail="Task not found")
+    if run["status"] != "awaiting_input":
+        raise HTTPException(409, detail="Task is not awaiting input")
+    full_request = run["request"] + "\n用户补充：" + req.clarification
+    context = ToolContext(req.user_id, run["session_id"], run["turn_id"], req.clarification)
+    tools = await task_agent.catalog.tools_for(context)
+    result = await task_agent.execute(context, allowed_tools=task_tool_scope(full_request, tools), resume_run_id=task_id)
+    return {"ok": result.ok, "message": result.message, **result.data}
+
+
+@router.delete("/tasks/{task_id}")
+async def cancel_task(task_id: str, user_id: str = Query(min_length=1, max_length=128)):
+    if await task_store.get(task_id, user_id) is None:
+        raise HTTPException(404, detail="Task not found")
+    return {"cancelled": await task_agent.cancel(task_id, user_id)}
+
+
+@router.get("/proactive/preferences/{user_id}", response_model=CarePreferences)
+async def get_care_preferences(user_id: str) -> CarePreferences:
+    return await care_preferences_store.get(user_id)
+
+
+@router.put("/proactive/preferences/{user_id}", response_model=CarePreferences)
+async def save_care_preferences(user_id: str, preferences: CarePreferences) -> CarePreferences:
+    return await care_preferences_store.save(user_id, preferences)
 
 
 @router.post("/dispatch", response_model=DispatchResponse)
@@ -207,7 +316,8 @@ async def push_stream(
                     next_event_task = loop.create_task(subscriber.__anext__())
                     continue
                 payload = json.dumps(event.payload, ensure_ascii=False, default=str)
-                yield f"event: {event.kind}\ndata: {payload}\n\n".encode("utf-8")
+                event_id = f"id: {event.seq}\n" if event.seq is not None else ""
+                yield f"{event_id}event: {event.kind}\ndata: {payload}\n\n".encode("utf-8")
                 next_event_task = loop.create_task(subscriber.__anext__())
         except asyncio.CancelledError:
             raise

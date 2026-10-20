@@ -3,7 +3,7 @@
     <div class="identity-block">
       <div class="avatar-wrapper">
         <img
-          src="https://placehold.co/48x48/e94560/FFF?text=暖"
+          :src="`${baseUrl}xiaonuan-avatar.svg`"
           alt="小暖"
           class="avatar-img"
         />
@@ -56,6 +56,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { useVoice } from '../composables/useVoice';
+const baseUrl = import.meta.env.BASE_URL;
 
 defineEmits<{
   (e: 'open-settings'): void;
@@ -337,8 +338,9 @@ const emotionClass = computed(() => {
 
 @media (max-width: 640px) {
   .top-bar {
-    flex-direction: column;
-    align-items: stretch;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
     gap: 10px;
     padding: 14px 14px 12px;
   }
@@ -353,9 +355,11 @@ const emotionClass = computed(() => {
     transform: none;
     order: 2;
     pointer-events: auto;
+    flex: none;
   }
 
   .action-strip {
+    grid-column: 1 / -1;
     flex: none;
     justify-content: center;
     flex-wrap: wrap;

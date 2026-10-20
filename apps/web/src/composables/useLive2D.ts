@@ -1,5 +1,6 @@
 import { ref, onMounted, onUnmounted, type Ref } from 'vue';
 import * as PIXI from 'pixi.js';
+import type { AvatarFrame } from '../../../../packages/avatar-runtime/src';
 
 if (typeof window !== 'undefined') {
   (window as any).PIXI = PIXI;
@@ -27,7 +28,10 @@ function waitForCubism2Runtime(timeoutMs = 10_000): Promise<void> {
 
 async function loadLive2DModelClass(): Promise<Live2DModelCtor> {
   await waitForCubism2Runtime();
-  const { Live2DModel } = await import('pixi-live2d-display/cubism2');
+  const { Live2DModel, config } = await import('pixi-live2d-display/cubism2');
+  // Sample motions include Japanese voice clips. All speech comes from the
+  // application's voice player, including when model interactions start motions.
+  config.sound = false;
   return Live2DModel;
 }
 
@@ -48,6 +52,10 @@ export function useLive2D(
   const error = ref<string | null>(null);
 
   let resizeObserver: ResizeObserver | null = null;
+  let disposed = false;
+  let detachPresentation: (() => void) | null = null;
+  type Presentation = Pick<AvatarFrame, 'mouthOpen'> & { mouthForm: number; angleY?: number; angleZ?: number };
+  let presentation: Presentation = { mouthOpen: 0, mouthForm: 0 };
   // Live2DModel.width / .height return getBounds() which is affected by the
   // current scale. If we feed those back into the next layout pass, scale
   // compounds across ResizeObserver ticks (font load, flex settle, scrollbar
@@ -135,6 +143,7 @@ export function useLive2D(
         resolution: window.devicePixelRatio || 1,
         autoDensity: true,
       });
+      const renderingApp = app.value;
 
       const canvas = app.value.view as HTMLCanvasElement;
       canvas.style.width = '100%';
@@ -142,11 +151,36 @@ export function useLive2D(
       containerRef.value.appendChild(canvas);
 
       const Live2DModel = await loadLive2DModelClass();
+      if (disposed) return;
       const loadedModel = await Live2DModel.from(options.modelPath, {
         autoInteract: options.autoInteract ?? true,
       });
+      if (disposed || app.value !== renderingApp) {
+        loadedModel.destroy();
+        return;
+      }
 
       model.value = loadedModel;
+      let mouth = 0, form = 0, headY = 0, headZ = 0, previousTime = performance.now();
+      const updatePresentation = () => {
+        const now = performance.now();
+        const dt = Math.min(100, Math.max(0, now - previousTime));
+        previousTime = now;
+        mouth += (presentation.mouthOpen - mouth) * (1 - Math.exp(-dt / 45));
+        form += (presentation.mouthForm - form) * (1 - Math.exp(-dt / 220));
+        headY += ((presentation.angleY || 0) - headY) * (1 - Math.exp(-dt / 160));
+        headZ += ((presentation.angleZ || 0) - headZ) * (1 - Math.exp(-dt / 160));
+        const core = loadedModel.internalModel.coreModel as {
+          setParamFloat(id: string, value: number): void;
+          addToParamFloat(id: string, value: number): void;
+        };
+        core.setParamFloat('PARAM_MOUTH_OPEN_Y', mouth);
+        core.setParamFloat('PARAM_MOUTH_FORM', form);
+        core.addToParamFloat('PARAM_ANGLE_Y', headY);
+        core.addToParamFloat('PARAM_ANGLE_Z', headZ);
+      };
+      loadedModel.internalModel.on('beforeModelUpdate', updatePresentation);
+      detachPresentation = () => loadedModel.internalModel.off('beforeModelUpdate', updatePresentation);
       app.value.stage.addChild(loadedModel as any);
       layoutModel(loadedModel);
 
@@ -164,6 +198,7 @@ export function useLive2D(
       isLoading.value = false;
       console.log('Live2D model loaded successfully');
     } catch (err) {
+      if (disposed) return;
       error.value = `Failed to load Live2D model: ${err}`;
       isLoading.value = false;
       console.error('Live2D loading error:', err);
@@ -176,7 +211,8 @@ export function useLive2D(
     }
 
     try {
-      model.value.motion(group, index, priority);
+      if (!getMotionGroups().includes(group)) return;
+      void Promise.resolve(model.value.motion(group, index, priority)).catch(() => {});
     } catch (err) {
       console.warn(`Failed to play motion ${group}[${index}]:`, err);
     }
@@ -188,7 +224,8 @@ export function useLive2D(
     }
 
     try {
-      model.value.expression(name);
+      if (typeof name === 'string' && !getExpressions().includes(name)) return;
+      void Promise.resolve(model.value.expression(name)).catch(() => {});
     } catch (err) {
       console.warn(`Failed to set expression ${name}:`, err);
     }
@@ -212,11 +249,23 @@ export function useLive2D(
     return [];
   }
 
+  function setPresentation(frame: Presentation) {
+    presentation = {
+      mouthOpen: Number.isFinite(frame.mouthOpen) ? Math.max(0, Math.min(1, frame.mouthOpen)) : 0,
+      mouthForm: Number.isFinite(frame.mouthForm) ? Math.max(-1, Math.min(1, frame.mouthForm)) : 0,
+      angleY: Math.max(-8, Math.min(8, frame.angleY || 0)),
+      angleZ: Math.max(-8, Math.min(8, frame.angleZ || 0)),
+    };
+  }
+
   onMounted(() => {
     void initLive2D();
   });
 
   onUnmounted(() => {
+    disposed = true;
+    detachPresentation?.();
+    detachPresentation = null;
     if (resizeObserver) {
       resizeObserver.disconnect();
       resizeObserver = null;
@@ -224,6 +273,8 @@ export function useLive2D(
 
     if (app.value) {
       app.value.destroy(true, { children: true });
+      app.value = null;
+      model.value = null;
     }
   });
 
@@ -235,5 +286,6 @@ export function useLive2D(
     setExpression,
     getMotionGroups,
     getExpressions,
+    setPresentation,
   };
 }

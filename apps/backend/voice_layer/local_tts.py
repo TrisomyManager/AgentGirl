@@ -7,7 +7,9 @@ model is loaded once at module init.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import queue
 import threading
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -21,6 +23,7 @@ _DEFAULT_MODEL = os.getenv("COMPANION_PIPER_MODEL", "zh_CN-huayan-medium.onnx")
 
 _voice: object | None = None
 _voice_lock = threading.Lock()
+_synthesis_lock = threading.Lock()
 _sample_rate: int = 22050
 
 
@@ -36,8 +39,7 @@ def _get_voice() -> object:
         model_path = _MODEL_DIR / _DEFAULT_MODEL
         if not model_path.exists():
             raise FileNotFoundError(
-                f"Piper voice model not found at {model_path}. "
-                f"Download from https://hf-mirror.com/rhasspy/piper-voices"
+                f"Piper voice model not found at {model_path}. Download from https://hf-mirror.com/rhasspy/piper-voices"
             )
         logger.info("local_tts.loading", path=str(model_path))
         _voice = PiperVoice.load(str(model_path))
@@ -69,24 +71,61 @@ def synthesize_pcm_chunks_sync(text: str) -> Iterator[bytes]:
 
 
 async def synthesize_pcm_chunks(text: str) -> AsyncIterator[bytes]:
-    """Async generator wrapper. Runs synthesis in a worker thread, batches frames."""
-    queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=64)
-    loop = asyncio.get_running_loop()
+    """Bounded thread bridge; no event-loop callbacks survive cancellation.
 
-    def _producer() -> None:
+    Native inference may finish its current batch after interruption. Its output
+    is discarded, and the engine lock is released before another synthesis.
+    """
+    frames: queue.Queue = queue.Queue(maxsize=8)
+    stopped = threading.Event()
+
+    def put(item):
+        while not stopped.is_set():
+            try:
+                frames.put(item, timeout=0.05)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def produce():
+        acquired = False
         try:
-            for chunk in synthesize_pcm_chunks_sync(text):
-                asyncio.run_coroutine_threadsafe(queue.put(chunk), loop)
+            while not stopped.is_set():
+                acquired = _synthesis_lock.acquire(timeout=0.05)
+                if acquired:
+                    break
+            if not acquired or stopped.is_set():
+                return
+            with contextlib.closing(synthesize_pcm_chunks_sync(text)) as source:
+                for chunk in source:
+                    if not put(chunk):
+                        break
+        except Exception:
+            put(RuntimeError("本地语音合成失败。"))
         finally:
-            asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+            if acquired:
+                _synthesis_lock.release()
+            put(None)
 
-    threading.Thread(target=_producer, daemon=True).start()
-
-    while True:
-        item = await queue.get()
-        if item is None:
-            return
-        yield item
+    worker = threading.Thread(target=produce, daemon=True, name="companion-local-tts")
+    worker.start()
+    try:
+        while True:
+            try:
+                item = await asyncio.to_thread(frames.get, True, 0.1)
+            except queue.Empty:
+                continue
+            if item is None:
+                return
+            if isinstance(item, Exception):
+                raise item
+            yield item
+    finally:
+        stopped.set()
+        # A native inference call cannot be force-cancelled; never hold the
+        # interruption acknowledgement indefinitely waiting for it to return.
+        await asyncio.to_thread(worker.join, 0.25)
 
 
 def warmup() -> None:

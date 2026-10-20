@@ -1,23 +1,28 @@
 """FastAPI routers for the memory system."""
 
+from datetime import UTC, date, datetime
 from typing import Any, Dict, List, Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared_contracts.events import MemoryRecallEvent, MemorySyncEvent
-from shared_contracts.models import MemoryCategory, MemoryEntry, MemoryRecallResult
-
 from memory_system.db import get_db
+from memory_system.dream import DailySummaryORM, dream_consolidator
+from memory_system.graph_lifecycle import GraphCleanupORM, cleanup_locked, cleanup_pending, graph_lock
 from memory_system.graph_store import graph_store
+from memory_system.lifecycle import (
+    StaleMemoryWriteError,
+    capture_memory_epoch,
+    lock_memory_epoch,
+    restore_memory,
+    run_forgetting,
+)
 from memory_system.pipeline import run_memory_pipeline
 from memory_system.recall import recall_memory
-from memory_system.short_term import short_term_memory
 from memory_system.vector_store import (
-    decay_low_importance,
-    delete_expired,
     delete_memory_by_id,
     delete_user_memories,
     get_user_memory_summary,
@@ -25,6 +30,7 @@ from memory_system.vector_store import (
     store_memory,
 )
 from memory_system.working import get_working_memory
+from shared_contracts.models import MemoryCategory, MemoryEntry, MemoryRecallResult
 
 logger = structlog.get_logger(__name__)
 
@@ -34,6 +40,7 @@ router = APIRouter(prefix="/memory", tags=["memory"])
 # ---------------------------------------------------------------------------
 # Request / Response models
 # ---------------------------------------------------------------------------
+
 
 class StoreMemoryRequest(BaseModel):
     user_id: str
@@ -53,6 +60,7 @@ class RecallRequest(BaseModel):
     include_graph: bool = True
     category: Optional[MemoryCategory] = None
     min_importance: Optional[float] = None
+    include_dormant: bool = False
 
 
 class GraphQueryRequest(BaseModel):
@@ -75,11 +83,17 @@ class UserSummaryResponse(BaseModel):
     avg_importance: float
     last_memory: Optional[str] = None
     by_category: Dict[str, int]
+    external_graph_cleanup_pending: bool = False
+
+
+class ConsolidateRequest(BaseModel):
+    day: date | None = None
 
 
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.post("/store", response_model=MemoryEntry)
 async def store_memory_endpoint(
@@ -97,7 +111,10 @@ async def store_memory_endpoint(
         source_turn_id=req.source_turn_id,
         embedding=req.embedding,
     )
-    result = await store_memory(session, entry)
+    try:
+        result = await store_memory(session, entry)
+    except StaleMemoryWriteError as exc:
+        raise HTTPException(409, detail="用户已清空记忆，本次旧写入已取消。") from exc
     logger.info("api.memory_stored", entry_id=result.entry_id, user_id=req.user_id)
     return result
 
@@ -117,6 +134,7 @@ async def recall_memory_endpoint(
         include_graph=req.include_graph,
         category=req.category,
         min_importance=req.min_importance,
+        include_dormant=req.include_dormant,
     )
     logger.info(
         "api.memory_recalled",
@@ -149,6 +167,7 @@ async def trigger_pipeline_endpoint(req: PipelineTriggerRequest) -> Dict[str, An
         "assistant_message": req.assistant_message,
         "emotion": req.emotion,
         "metadata": req.metadata,
+        "source_epoch": await capture_memory_epoch(req.user_id),
     }
     # Run asynchronously via Celery
     task = run_memory_pipeline.delay(turn_data)
@@ -182,11 +201,32 @@ async def list_memories_endpoint(
 async def delete_all_user_memories(
     user_id: str,
     session: AsyncSession = Depends(get_db),
-) -> Dict[str, int]:
+) -> Dict[str, Any]:
     """Wipe all memories for a user."""
-    n = await delete_user_memories(session, user_id)
+    from sqlalchemy import delete
+
+    from memory_system.session_store import PersistentSessionMemory
+    from shared_runtime.config import get_settings
+
+    settings = get_settings()
+    history = PersistentSessionMemory()
+    await history._ensure_schema()
+    async with graph_lock(user_id):
+        await lock_memory_epoch(session, user_id, bump=True)
+        n = await delete_user_memories(session, user_id, commit=False)
+        cleared_sessions = await history.clear_user(user_id, session=session)
+        await session.execute(delete(DailySummaryORM).where(DailySummaryORM.user_id == user_id))
+        if not settings.lite_mode and settings.enable_knowledge_graph:
+            from memory_system.lifecycle import memory_epoch
+
+            epoch = await memory_epoch(session, user_id)
+            await session.merge(GraphCleanupORM(user_id=user_id, epoch=epoch))
+        await session.commit()
+        external_done = await cleanup_locked(user_id)
+    for session_id in cleared_sessions:
+        await get_working_memory().invalidate(session_id)
     logger.info("api.user_memories_deleted", user_id=user_id, count=n)
-    return {"deleted": n}
+    return {"deleted": n, "external_graph": "completed" if external_done else "pending"}
 
 
 @router.delete("/{memory_id}")
@@ -207,6 +247,7 @@ async def run_pipeline_sync_endpoint(
 ) -> Dict[str, Any]:
     """Run the 5-stage pipeline in-process (no Celery). Used in lite/monolithic mode."""
     from memory_system.pipeline import run_pipeline_async
+
     turn_data = {
         "turn_id": req.turn_id,
         "user_id": req.user_id,
@@ -240,22 +281,76 @@ async def get_user_summary(
         last_str = last.isoformat()
     else:
         last_str = str(last)
+    if last_str:
+        try:
+            timestamp = datetime.fromisoformat(last_str)
+            last_str = (
+                timestamp.replace(tzinfo=UTC) if timestamp.tzinfo is None else timestamp.astimezone(UTC)
+            ).isoformat()
+        except ValueError:
+            pass
     return UserSummaryResponse(
         user_id=user_id,
         total_memories=summary.get("total_memories", 0),
         avg_importance=float(summary.get("avg_importance") or 0.0),
         last_memory=last_str,
         by_category=summary.get("by_category", {}),
+        external_graph_cleanup_pending=await cleanup_pending(user_id, session=session),
     )
+
+
+@router.get("/user/{user_id}/graph")
+async def get_user_memory_graph(
+    user_id: str,
+    limit: int = Query(40, ge=1, le=80),
+    query: str = Query("", max_length=120),
+    include_dormant: bool = False,
+    include_keywords: bool = False,
+    session: AsyncSession = Depends(get_db),
+):
+    from memory_system.graph_view import memory_graph
+
+    return await memory_graph(session, user_id, limit=limit, query=query,
+                              include_dormant=include_dormant, include_keywords=include_keywords)
 
 
 @router.post("/maintenance/decay")
 async def run_decay_maintenance(session: AsyncSession = Depends(get_db)) -> Dict[str, int]:
-    """Run memory decay and expiration cleanup."""
-    expired = await delete_expired(session)
-    decayed = await decay_low_importance(session)
-    logger.info("api.maintenance_run", expired=expired, decayed=decayed)
-    return {"expired_deleted": expired, "decayed": decayed}
+    """Apply reversible forgetting; automatic maintenance never erases user content."""
+    return await run_forgetting(session)
+
+
+@router.post("/user/{user_id}/restore/{memory_id}")
+async def restore_user_memory(user_id: str, memory_id: str, session: AsyncSession = Depends(get_db)):
+    if not await restore_memory(session, user_id, memory_id):
+        raise HTTPException(status_code=404, detail="memory not found")
+    return {"restored": True}
+
+
+@router.post("/user/{user_id}/consolidate")
+async def consolidate_user_memories(user_id: str, req: ConsolidateRequest | None = None):
+    return await dream_consolidator.consolidate(user_id, req.day if req else None)
+
+
+@router.get("/user/{user_id}/daily_summaries")
+async def list_daily_summaries(
+    user_id: str, limit: int = Query(14, ge=1, le=90), session: AsyncSession = Depends(get_db)
+):
+    rows = (
+        (
+            await session.execute(
+                select(DailySummaryORM)
+                .where(
+                    DailySummaryORM.user_id == user_id,
+                )
+                .order_by(DailySummaryORM.day.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [dream_consolidator.as_dict(row) for row in rows]
 
 
 # ---------------------------------------------------------------------------

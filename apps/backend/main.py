@@ -13,10 +13,10 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 from contextlib import asynccontextmanager
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict
@@ -33,9 +33,10 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from core_orchestrator.http_client import attach_monolithic_app
 from shared_runtime.config import get_settings
 from shared_runtime.database import close_database, init_database_schema
-from core_orchestrator.http_client import attach_monolithic_app
+from shared_contracts.protocols import SpeechRecognizer
 
 settings = get_settings()
 logger = structlog.get_logger("companion.main")
@@ -65,122 +66,72 @@ logger.info("monolithic_modules", modules={k: v for k, v in _ENABLED_MODULES.ite
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Startup and shutdown all enabled modules."""
-    logger.info("monolithic_startup_begin", lite_mode=settings.lite_mode)
+    """Own successfully started resources, fail startup on required module errors."""
+    from contextlib import AsyncExitStack
+    from importlib import import_module
 
-    # 1. Initialize shared database
+    from core_orchestrator.privacy import no_pending_erasure
+    from core_orchestrator.platforms import platform_lifespan
+    from shared_runtime.user_lifecycle import set_user_admission_check
+    from user_profile import get_default_store
+
+    app.state.ready = False
+    app.state.startup_modules = {"database": "starting"}
+    access = app.state.access_controller
+    if access.mode == "key":
+        access._reload()
+        if not access._valid:
+            raise RuntimeError("Host access configuration is invalid")
+    modules = [
+        ("persona_engine", "persona_engine.main"),
+        ("memory_system", "memory_system.main"),
+        ("voice_layer", "voice_layer.main"),
+        ("action_layer", "action_executor.action2d.main"),
+        ("action_executor", "action_executor.main"),
+        ("device_coordination", "device_coordination.main"),
+        ("core_orchestrator", "core_orchestrator.main"),
+        ("gateway_adapter", "gateway_adapter.main"),
+    ]
     try:
-        # Eagerly register module ORMs onto shared.database.Base before schema init.
-        try:
-            from user_profile import SQLiteUserProfileStore
-            SQLiteUserProfileStore()  # registers UserProfileORM via _build_orm
-        except Exception as exc:
-            logger.warning("user_profile_orm_register_failed", error=str(exc))
-
+        get_default_store()
         await init_database_schema()
-        logger.info("database_ready")
-    except Exception as exc:
-        logger.warning("database_init_failed", error=str(exc))
-
-    # 2. Start each module
-    if _ENABLED_MODULES.get("persona_engine"):
-        try:
-            from persona_engine.main import lifespan as persona_lifespan
-            app.state.persona_ctx = persona_lifespan(app)
-            await app.state.persona_ctx.__aenter__()
-            logger.info("persona_engine_ready")
-        except Exception as exc:
-            logger.warning("persona_engine_startup_failed", error=str(exc))
-
-    if _ENABLED_MODULES.get("memory_system"):
-        try:
-            from memory_system.main import lifespan as memory_lifespan
-            app.state.memory_ctx = memory_lifespan(app)
-            await app.state.memory_ctx.__aenter__()
-            logger.info("memory_system_ready")
-        except Exception as exc:
-            logger.warning("memory_system_startup_failed", error=str(exc))
-
-    if _ENABLED_MODULES.get("voice_layer"):
-        try:
-            from voice_layer.main import lifespan as voice_lifespan
-            app.state.voice_ctx = voice_lifespan(app)
-            await app.state.voice_ctx.__aenter__()
-            logger.info("voice_layer_ready")
-        except Exception as exc:
-            logger.warning("voice_layer_startup_failed", error=str(exc))
-
-    if _ENABLED_MODULES.get("action_layer"):
-        try:
-            from action_executor.action2d.main import lifespan as action_lifespan
-            app.state.action_ctx = action_lifespan(app)
-            await app.state.action_ctx.__aenter__()
-            logger.info("action_layer_ready")
-        except Exception as exc:
-            logger.warning("action_layer_startup_failed", error=str(exc))
-
-    if _ENABLED_MODULES.get("action_executor"):
-        try:
-            from action_executor.main import lifespan as action_executor_lifespan
-            app.state.action_executor_ctx = action_executor_lifespan(app)
-            await app.state.action_executor_ctx.__aenter__()
-            logger.info("action_executor_ready")
-        except Exception as exc:
-            logger.warning("action_executor_startup_failed", error=str(exc))
-
-    if _ENABLED_MODULES.get("device_coordination"):
-        try:
-            from device_coordination.main import lifespan as device_lifespan
-            app.state.device_ctx = device_lifespan(app)
-            await app.state.device_ctx.__aenter__()
-            logger.info("device_coordination_ready")
-        except Exception as exc:
-            logger.warning("device_coordination_startup_failed", error=str(exc))
-
-    if _ENABLED_MODULES.get("core_orchestrator"):
-        try:
-            from core_orchestrator.main import lifespan as orchestrator_lifespan
-            app.state.orch_ctx = orchestrator_lifespan(app)
-            await app.state.orch_ctx.__aenter__()
-            logger.info("core_orchestrator_ready")
-        except Exception as exc:
-            logger.warning("core_orchestrator_startup_failed", error=str(exc))
-
-    if _ENABLED_MODULES.get("gateway_adapter"):
-        try:
-            from gateway_adapter.main import lifespan as gateway_lifespan
-            app.state.gateway_ctx = gateway_lifespan(app)
-            await app.state.gateway_ctx.__aenter__()
-            logger.info("gateway_adapter_ready")
-        except Exception as exc:
-            logger.warning("gateway_adapter_startup_failed", error=str(exc))
-
-    logger.info("monolithic_startup_complete")
-    yield
-
-    # Shutdown in reverse order
-    logger.info("monolithic_shutdown_begin")
-
-    for module_name, ctx_attr in [
-        ("gateway_adapter", "gateway_ctx"),
-        ("core_orchestrator", "orch_ctx"),
-        ("device_coordination", "device_ctx"),
-        ("action_executor", "action_executor_ctx"),
-        ("action_layer", "action_ctx"),
-        ("voice_layer", "voice_ctx"),
-        ("memory_system", "memory_ctx"),
-        ("persona_engine", "persona_ctx"),
-    ]:
-        if hasattr(app.state, ctx_attr):
+        app.state.startup_modules["database"] = "ready"
+        set_user_admission_check(no_pending_erasure)
+        async with AsyncExitStack() as resources:
+            for name, module_path in modules:
+                if not _ENABLED_MODULES.get(name):
+                    continue
+                app.state.startup_modules[name] = "starting"
+                try:
+                    factory = import_module(module_path).lifespan
+                    await resources.enter_async_context(factory(app))
+                except Exception as error:
+                    app.state.startup_modules[name] = "failed"
+                    logger.error("module_startup_failed", module=name, reason=type(error).__name__)
+                    raise
+                app.state.startup_modules[name] = "ready"
+            if _ENABLED_MODULES.get("gateway_adapter") and _ENABLED_MODULES.get("core_orchestrator"):
+                await resources.enter_async_context(platform_lifespan(app))
+            app.state.ready = True
+            logger.info("monolithic_startup_complete")
             try:
-                ctx = getattr(app.state, ctx_attr)
-                await ctx.__aexit__(None, None, None)
-                logger.info(f"{module_name}_shutdown")
-            except Exception as exc:
-                logger.warning(f"{module_name}_shutdown_failed", error=str(exc))
+                yield
+            finally:
+                app.state.ready = False
+    finally:
+        app.state.ready = False
+        from voice_layer.text_policy import set_text_policy
+        from action_executor.task_agent import task_agent
 
-    await close_database()
-    logger.info("monolithic_shutdown_complete")
+        set_text_policy()
+        task_agent.request_filter = None
+        task_agent.response_filter = None
+        from action_executor.memory_port import set_memory_reader
+
+        set_memory_reader(None)
+        set_user_admission_check(None)
+        await close_database()
+        logger.info("monolithic_shutdown_complete")
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +139,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 # ---------------------------------------------------------------------------
 
 
-def create_app() -> FastAPI:
+def create_app(*, asr_factory: Callable[[], SpeechRecognizer] | None = None) -> FastAPI:
     app = FastAPI(
         title="Companion AI — Unified",
         description="All companion-ai modules running in a single process.",
@@ -196,7 +147,26 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    app.state.ready = False
+    app.state.voice_asr_factory = asr_factory
+    app.state.startup_modules = {}
     attach_monolithic_app(app)
+    from core_orchestrator.access_policy import HostAccessPolicy
+    from shared_runtime.access import AccessController, AccessMiddleware, access_router, attach_reference_app
+
+    access_path = Path(settings.access_config_file) if settings.access_config_file else None
+    if access_path and not access_path.is_absolute():
+        access_path = _PROJECT_ROOT / access_path
+    access = AccessController(access_path, origins=[value.strip() for value in settings.cors_origins.split(",")])
+    app.state.access_controller = access
+    app.include_router(access_router(access))
+    from core_orchestrator.privacy import router as privacy_router
+    from gateway_adapter import store as _platform_store  # noqa: F401 -- register before schema startup
+    app.include_router(privacy_router)
+    from core_orchestrator.admin import router as admin_router
+    app.include_router(admin_router)
+    attach_reference_app(app)
+    app.add_middleware(AccessMiddleware, controller=access, authorize=HostAccessPolicy(app, access))
 
     # Parse CORS origins from settings (comma-separated)
     _raw_cors = settings.cors_origins.strip()
@@ -310,9 +280,12 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["health"])
     async def health() -> Dict[str, Any]:
+        from starlette.responses import JSONResponse
+
         voice_on = bool(_ENABLED_MODULES.get("voice_layer"))
-        return {
-            "status": "healthy",
+        payload = {
+            "status": "healthy" if app.state.ready else "starting",
+            "startup": dict(app.state.startup_modules),
             "service": "companion-ai-unified",
             "timestamp": datetime.utcnow().isoformat(),
             "modules": {k: v for k, v in _ENABLED_MODULES.items()},
@@ -326,6 +299,7 @@ def create_app() -> FastAPI:
                 ),
             },
         }
+        return JSONResponse(payload, status_code=200 if app.state.ready else 503)
 
     return app
 

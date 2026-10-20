@@ -2,6 +2,16 @@
 
 > 语音层 · ASR + TTS + 实时语音通道，多 Provider 可热切换。
 
+2026-10-20 · V2.21：5.1、8.1–8.5 已验收，持续全部剩余计划。实时音频增加可协商的 framed-v1 版本、长度、段号与顺序校验；旧客户端保留裸二进制。真实默认 O2 打断恢复、新旧协议与合成麦克风的浏览器收音/实际播放通过；鉴权握手选择公开子协议名，错误/挂断清理录音轨。详见 [音频协议](../docs/audio-transport.md)；8.6 3D/外部形象服务仍待完成。
+
+此前 8.1/8.2 验收记录（2026-10-19）：默认豆包原生 ASR/TTS 与 volc_realtime/O2 不变。`streaming_pipeline.py` 将 token 消费、下一句预合成与有序 PCM 输出分开，cloud 并发 2、本地 Piper 并发 1；句子/帧队列、句长/等待有界，打断等待子任务与迭代器退出。本地线程用有界队列和停止标志，原生推理可完成当前批次，取消后丢弃输出。
+
+主聊天的 SSE 分段适配器在宿主 `core_orchestrator/streaming_voice.py`，客户端声明 `supports_segmented_voice=true` 后启用；原客户端保持全文语音。实时录音上限 60 秒，reset/interrupt 清除溢出；原生豆包打断屏蔽旧帧直到下一次 ASR 结束。前端按播放代次丢弃迟到解码、按序播放，启动缓冲 40–250ms，待播含新块最多 30 秒、解码最多 16、单帧最多 2 MiB。音频/表情时间轴聚合（8.4）与完整实时人格链路（5.1）已在后续迭代验收，详见根目录执行表。
+
+当时后端 603 passed（线程警告视为错误），Web 42 passed，Web/PC builds passed。真实 20 组固定文本对比首音中位 6.703s → 4.234s（36.8%），40/40 成功；真实 TTS/ASR 回识别及原生实时打断/下一轮恢复通过。该指标是固定样例测量，不代表所有环境或主观听感评分。报告见根目录忽略输出 `output/playwright/streaming-latency.json`。
+
+回归：`pytest -q voice_layer/tests --ignore=voice_layer/tests/test_voice.py shared_runtime/tests/test_text_segmenter.py core_orchestrator/tests/test_streaming_voice.py`。可复跑真实对比：`python tools/benchmark_streaming_voice.py --base-url http://127.0.0.1:8000 --samples 20 --output ../../output/playwright/streaming-latency.json`；需要已配置服务与隔离数据库。
+
 ## 我是什么
 
 `voice_layer` 把语音相关能力封装为统一接入层：
@@ -47,25 +57,30 @@ COMPANION_LITE_MODE=true python -m voice_layer
 ```python
 import asyncio
 from voice_layer import ASRClient, TTSClient
-from shared.models import EmotionTag, VoiceSynthesisRequest
+from shared_contracts import EmotionTag, VoiceSynthesisRequest
+from shared_runtime.voice_runtime_config import load_voice_config_from_disk
 
 async def demo():
+    load_voice_config_from_disk()
     asr = ASRClient(); tts = TTSClient()
-    with open("clip.wav", "rb") as f:
-        result = await asr.transcribe(f.read(), language="zh")
-    print(result.transcript, result.emotion)
-
-    req = VoiceSynthesisRequest(text="你好呀", emotion=EmotionTag.HAPPY)
-    audio = await tts.synthesize(req)
-    print(f"audio bytes: {len(audio)}")
-    await asr.close(); await tts.close()
+    try:
+        with open("clip.wav", "rb") as f:
+            result = await asr.transcribe(f.read(), language="zh")
+        print(result.text, result.detected_emotion)
+        req = VoiceSynthesisRequest(text="你好呀", emotion=EmotionTag.HAPPY)
+        audio = await tts.synthesize(req)
+        print(audio["audio_url"])
+    finally:
+        await asr.close(); await tts.close()
 
 # asyncio.run(demo())  # 需要 ASR/TTS provider 的 API key
 ```
 
 ## 第三方宿主接入提示
 
-`ASRClient` / `TTSClient` 都遵循 `shared_contracts.protocols.ASRProvider` / `TTSProvider`，宿主可以替换实现并通过 `voice_runtime_config` 热切换。
+`ASRClient` 实现高层 `shared_contracts.SpeechRecognizer`：上传音频返回真实 `VoiceTranscriptionResult`，PCM 识别返回字符串。低层 `ASRProvider` 与 `TTSProvider` 是另一组协议；`TTSClient.synthesize()` 返回包含 `audio_url` 的字典，不是音频字节。
+
+V2.22 支持 `voice_layer.main.create_app(asr_factory=...)` 和参考宿主 `main.create_app(asr_factory=...)`。工厂保存在各 app 的 state，REST 每次创建/关闭识别器，旧 stream/cloud 通话按连接持有。宿主负责实现高层协议，模块负责等待关闭；默认原生 O2 路径不受影响。TTS HTTP 客户端仍是参考宿主单例，尚未实现同样的多 app 注入。迁移及资源所有权见 [模块注入](../docs/module-injection.md)。
 
 ## 火山引擎实时语音接入策略
 

@@ -7,6 +7,7 @@ import re
 import pytest
 
 from safety_guard import (
+    SafetyCategory,
     SafetyGuard,
     SafetyLevel,
     SafetyRule,
@@ -58,17 +59,32 @@ def test_check_output_uses_output_source() -> None:
 
 
 def test_custom_rule_block() -> None:
-    guard = SafetyGuard(custom_rules=[
-        SafetyRule(name="forbidden_brand", pattern=re.compile(r"BadCorp", re.IGNORECASE)),
-    ])
+    guard = SafetyGuard(
+        custom_rules=[
+            SafetyRule(name="forbidden_brand", pattern=re.compile(r"BadCorp", re.IGNORECASE)),
+        ]
+    )
     v = guard.check_input("BadCorp 的产品")
     assert v.blocked
     assert "forbidden_brand" in v.matched_terms
 
 
 def test_safe_fallback_reply_self_harm_specialized() -> None:
-    text = safe_fallback_reply("input_blocked")
-    assert "400-161-9995" in text or "陪着你" in text
+    verdict = default_guard.check_input("我想自杀")
+    assert verdict.category == SafetyCategory.SELF_HARM
+    text = safe_fallback_reply(verdict)
+    assert "陪着你" in text and "现在安全吗" in text
+    assert not re.search(r"\d{3}[-\d]{5,}", text)
+
+
+@pytest.mark.parametrize("text", ["炸药配方", "制毒"])
+def test_general_block_is_not_misreported_as_a_self_harm_crisis(text):
+    verdict = default_guard.check_input(text)
+    assert verdict.blocked and verdict.category == SafetyCategory.GENERAL
+    reply = safe_fallback_reply(verdict)
+    assert "现在安全吗" not in reply and "伤害自己" not in reply
+    assert "伤害行为" in reply
+    assert safe_fallback_reply("input_blocked") == reply
 
 
 def test_empty_text_allows() -> None:

@@ -9,17 +9,16 @@
 
 [importlinter]
 root_packages =
-    shared
     shared_contracts
     shared_runtime
     core_orchestrator
     persona_engine
     memory_system
     voice_layer
-    action_layer
     action_executor
     device_coordination
     gateway_adapter
+    avatar_runtime
 include_external_packages = True
 
 
@@ -31,18 +30,35 @@ include_external_packages = True
 name = 禁止反向 import core_orchestrator
 type = forbidden
 source_modules =
-    shared
     shared_contracts
     shared_runtime
     persona_engine
     memory_system
     voice_layer
-    action_layer
     action_executor
     device_coordination
     gateway_adapter
+    avatar_runtime
 forbidden_modules =
     core_orchestrator
+
+[importlinter:contract:avatar-independent]
+name = avatar_runtime independent of host, speech, business storage and vendors
+type = forbidden
+source_modules =
+    avatar_runtime
+forbidden_modules =
+    core_orchestrator
+    persona_engine
+    memory_system
+    voice_layer
+    action_executor
+    device_coordination
+    gateway_adapter
+    shared_runtime
+    openai
+    anthropic
+    dashscope
 
 
 ; ----------------------------------------------------------------------------
@@ -54,10 +70,10 @@ forbidden_modules =
 [importlinter:contract:no-direct-llm-sdk]
 name = 业务模块禁止直连 LLM 厂商 SDK
 type = forbidden
+allow_indirect_imports = True
 source_modules =
     persona_engine
     memory_system
-    action_layer
     action_executor
     device_coordination
     gateway_adapter
@@ -67,14 +83,6 @@ forbidden_modules =
     anthropic
     litellm
     dashscope
-ignore_imports =
-    ; core_orchestrator → voice_layer → dashscope 传递链 (波次 3-4 解耦)
-    ; L416: core_orchestrator.api → voice_layer.api → voice_layer.asr → dashscope
-    ; L417: core_orchestrator.api → voice_layer.asr → dashscope
-    core_orchestrator.api -> voice_layer.api
-    core_orchestrator.api -> voice_layer.asr
-
-
 ; ----------------------------------------------------------------------------
 ; 契约 3: shared_contracts 零业务依赖 + 零 shared_runtime 依赖 (核心约束)
 ; shared_contracts 是纯数据契约层, 只能依赖 pydantic + stdlib
@@ -89,7 +97,6 @@ forbidden_modules =
     persona_engine
     memory_system
     voice_layer
-    action_layer
     action_executor
     device_coordination
     gateway_adapter
@@ -109,7 +116,6 @@ forbidden_modules =
     persona_engine
     memory_system
     voice_layer
-    action_layer
     action_executor
     device_coordination
     gateway_adapter
@@ -119,7 +125,7 @@ forbidden_modules =
 ; ----------------------------------------------------------------------------
 ; 契约 5: 业务模块之间禁止横向 import (按"独立可拆"原则)
 ; 横向通信通过 shared_contracts 的事件/数据模型 或 HTTP API
-; 注意: action_layer → action_executor 是已知技术债, 通过 ignore_imports 管理
+; 动作实现位于 action_executor.action2d；旧 action_layer/shared 兼容包已移除
 ; ----------------------------------------------------------------------------
 [importlinter:contract:no-cross-module-import]
 name = 业务模块之间禁止横向 import
@@ -128,33 +134,6 @@ modules =
     persona_engine
     memory_system
     voice_layer
-    action_layer
     action_executor
     device_coordination
     gateway_adapter
-ignore_imports =
-    ; 已知: action_layer → action_executor (波次 3 待合并/解耦)
-    action_layer -> action_executor.action2d.lip_sync
-    action_layer -> action_executor.action2d.generator_2d
-    action_layer -> action_executor.action2d.sequencer
-    action_layer -> action_executor.action2d.router
-    action_layer.main -> action_executor.action2d.main
-    action_layer.api -> action_executor.action2d.api
-    action_layer.generator_2d -> action_executor.action2d.generator_2d
-    action_layer.lip_sync -> action_executor.action2d.lip_sync
-    action_layer.router -> action_executor.action2d.router
-    action_layer.sequencer -> action_executor.action2d.sequencer
-
-
-; ----------------------------------------------------------------------------
-; 契约 6: shared (已废弃 shim) 不得被 shared_runtime 反向 import
-; 依赖方向: shared_contracts ← shared_runtime ← shared (shim re-export)
-; shared_runtime 不得反向 import shared (会形成循环)
-; ----------------------------------------------------------------------------
-[importlinter:contract:no-runtime-to-shared]
-name = shared_runtime 禁止 import shared (废弃 shim)
-type = forbidden
-source_modules =
-    shared_runtime
-forbidden_modules =
-    shared

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import aclosing
 from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -18,22 +19,22 @@ from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from core_orchestrator.orchestrator import get_orchestrator
+from core_orchestrator.project_status import ProjectStatusData, get_project_status
 from shared_contracts.models import (
     DeviceInfo,
-    EmotionTag,
     Platform,
     TurnContext,
     UserProfile,
 )
-
-from core_orchestrator.orchestrator import get_orchestrator
-from core_orchestrator.project_status import get_project_status, ProjectStatusData
+from shared_contracts.avatar import AvatarTimeline
 from shared_runtime.config import get_settings
-from shared_runtime.llm_client import get_runtime_llm_config, update_runtime_llm_config, save_llm_config_to_disk
+from shared_runtime.llm_client import get_runtime_llm_config, save_llm_config_to_disk, update_runtime_llm_config
 from shared_runtime.voice_runtime_config import (
-    get_runtime_voice_config,
-    update_runtime_voice_config,
+    clear_runtime_voice_config,
+    get_effective_voice_config,
     save_voice_config_to_disk,
+    update_runtime_voice_config,
 )
 
 logger = structlog.get_logger()
@@ -55,6 +56,7 @@ class TurnRequest(BaseModel):
     platform: Platform = Platform.APP
     has_voice: bool = False
     request_voice_reply: bool = False
+    supports_segmented_voice: bool = False
     voice_duration_ms: Optional[int] = None
     has_image: bool = False
     image_urls: List[str] = []
@@ -69,14 +71,24 @@ class TurnResponse(BaseModel):
     user_id: str
     assistant_message: str
     emotion: Optional[Dict[str, Any]] = None
+    expression_emoji: Optional[str] = None
+    reply_suppressed: bool = False
+    content_filtered: bool = False
+    talk_value: float = 1.0
+    reply_reason: Optional[str] = None
     voice_url: Optional[str] = None
     voice_duration_ms: Optional[int] = None
     voice_error: Optional[str] = None
+    voice_mode: Optional[str] = None
+    voice_segments: List[Dict[str, Any]] = []
+    avatar_timeline: AvatarTimeline | None = None
     action_sequence: Optional[Dict[str, Any]] = None
     intent: Optional[str] = None
     intent_confidence: Optional[float] = None
     memory_entries_count: int = 0
     error: Optional[str] = None
+    specialist: str = "chat"
+    task: Optional[Dict[str, Any]] = None
 
 
 class HealthResponse(BaseModel):
@@ -134,6 +146,7 @@ async def process_turn(request: TurnRequest) -> TurnResponse:
         platform=request.platform,
         has_voice=request.has_voice,
         request_voice_reply=request.request_voice_reply,
+        supports_segmented_voice=request.supports_segmented_voice,
         voice_duration_ms=request.voice_duration_ms,
         has_image=request.has_image,
         image_urls=request.image_urls,
@@ -197,6 +210,7 @@ async def process_turn_stream(request: TurnRequest) -> StreamingResponse:
         platform=request.platform,
         has_voice=request.has_voice,
         request_voice_reply=request.request_voice_reply,
+        supports_segmented_voice=request.supports_segmented_voice,
         voice_duration_ms=request.voice_duration_ms,
         has_image=request.has_image,
         image_urls=request.image_urls,
@@ -214,10 +228,11 @@ async def process_turn_stream(request: TurnRequest) -> StreamingResponse:
             return
 
         try:
-            async for event in orch.process_turn_stream(turn_context):
-                event_name = event.pop("event", "message")
-                payload = json.dumps(event, ensure_ascii=False, default=str)
-                yield f"event: {event_name}\ndata: {payload}\n\n".encode("utf-8")
+            async with aclosing(orch.process_turn_stream(turn_context)) as stream:
+                async for event in stream:
+                    event_name = event.pop("event", "message")
+                    payload = json.dumps(event, ensure_ascii=False, default=str)
+                    yield f"event: {event_name}\ndata: {payload}\n\n".encode("utf-8")
         except Exception as exc:
             log.exception("api_turn_stream_error", error=str(exc))
             payload = json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -283,7 +298,7 @@ async def module_status() -> StatusResponse:
 
 
 class LlmConfigRequest(BaseModel):
-    provider: str = ""          # "openai" | "anthropic" | ""
+    provider: str = ""          # volcengine | openai | anthropic | openai_compatible
     api_key: str = ""
     base_url: str = ""
     model: str = ""
@@ -303,15 +318,18 @@ class LlmConfigResponse(BaseModel):
     summary="Get current LLM config",
 )
 async def get_llm_settings() -> LlmConfigResponse:
+    from shared_runtime.llm_client import LLMClient
+
     rt = get_runtime_llm_config()
-    has_openai = bool(rt.get("openai_api_key"))
-    has_anthropic = bool(rt.get("anthropic_api_key"))
-    provider = rt.get("provider") or ("openai" if has_openai else ("anthropic" if has_anthropic else ""))
+    client = LLMClient()
+    provider = rt.get("provider") or (
+        "anthropic" if client.anthropic_api_key and not client.openai_api_key else "volcengine"
+    )
     return LlmConfigResponse(
         provider=provider,
-        api_key_set=has_openai or has_anthropic,
-        base_url=rt.get("openai_base_url") or rt.get("anthropic_base_url") or "",
-        model=rt.get("default_model") or "",
+        api_key_set=client.has_configured_provider(),
+        base_url=client.anthropic_base_url if provider == "anthropic" else client.openai_base_url,
+        model=client.default_model,
     )
 
 
@@ -328,58 +346,34 @@ async def save_llm_settings(req: LlmConfigRequest) -> LlmConfigResponse:
     the UI can save model/base_url changes without forcing users to re-paste
     secrets (the settings form clears the key field after load).
     """
-    rt_before = dict(get_runtime_llm_config())
-    prev_openai_key = (rt_before.get("openai_api_key") or "").strip()
-    prev_anthropic_key = (rt_before.get("anthropic_api_key") or "").strip()
-    prev_default_model = (rt_before.get("default_model") or "").strip()
+    from shared_runtime.model_presets import ARK_BASE_URL, CHAT_MODEL
 
-    # Clear both providers first, then set the chosen one
-    update_runtime_llm_config(
-        openai_api_key="",
-        anthropic_api_key="",
-        openai_base_url="",
-        anthropic_base_url="",
-        provider="",
-    )
-    if req.provider == "openai":
-        api_key = (req.api_key or "").strip() or prev_openai_key
+    if req.provider not in {"", "volcengine", "openai", "openai_compatible", "anthropic"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="不支持的模型服务商")
+    rt_before = get_runtime_llm_config()
+    settings = get_settings()
+    selected = req.provider
+    values = {"provider": selected, "openai_api_key": "", "anthropic_api_key": "",
+              "openai_base_url": "", "anthropic_base_url": "", "default_model": ""}
+    if selected:
+        key_field = "anthropic_api_key" if selected == "anthropic" else "openai_api_key"
+        same_provider = rt_before.get("provider") == selected
+        # Never carry another vendor's secret into a newly selected provider.
+        previous_key = rt_before.get(key_field, "") if same_provider else ""
+        env_key = settings.ark_api_key if selected == "volcengine" else getattr(settings, key_field)
+        api_key = req.api_key.strip() or previous_key or env_key or ""
         if not api_key:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                detail="需要 OpenAI API Key。仅改模型或地址时可以不重新粘贴 Key（将沿用已保存的 Key）。",
-            )
-        update_runtime_llm_config(
-            provider="openai",
-            openai_api_key=api_key,
-            openai_base_url=req.base_url,
-            default_model=(req.model or "").strip() or prev_default_model or "gpt-4o-mini",
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="请填写 API Key；同一服务商可保留已保存的 Key。")
+        default_model = {"volcengine": CHAT_MODEL, "openai": "gpt-4o-mini",
+                         "anthropic": "claude-haiku-4-5-20251001"}.get(selected, "")
+        model = req.model.strip() or (rt_before.get("default_model", "") if same_provider else "") or default_model
+        if not model:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="请填写模型 ID 或推理接入点 ID。")
+        values.update({key_field: api_key, "default_model": model})
+        values["anthropic_base_url" if selected == "anthropic" else "openai_base_url"] = (
+            req.base_url.strip() or (ARK_BASE_URL if selected == "volcengine" else "")
         )
-    elif req.provider == "anthropic":
-        api_key = (req.api_key or "").strip() or prev_anthropic_key
-        if not api_key:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                detail="需要 Anthropic API Key。仅改模型或地址时可以不重新粘贴 Key（将沿用已保存的 Key）。",
-            )
-        update_runtime_llm_config(
-            provider="anthropic",
-            anthropic_api_key=api_key,
-            anthropic_base_url=req.base_url,
-            default_model=(req.model or "").strip() or prev_default_model or "claude-haiku-4-5-20251001",
-        )
-    elif req.provider == "openai_compatible":
-        api_key = (req.api_key or "").strip() or prev_openai_key
-        if not api_key:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                detail="需要 API Key。仅改模型或地址时可以不重新粘贴 Key（将沿用已保存的 Key）。",
-            )
-        update_runtime_llm_config(
-            provider="openai_compatible",
-            openai_api_key=api_key,
-            openai_base_url=req.base_url,
-            default_model=(req.model or "").strip() or prev_default_model or "gpt-4o-mini",
-        )
+    update_runtime_llm_config(**values)
 
     save_llm_config_to_disk()
     logger.info("llm_config_updated", provider=req.provider, base_url=req.base_url or "(default)")
@@ -414,11 +408,9 @@ async def test_llm_settings() -> LlmTestResponse:
 
     from shared_runtime.llm_client import LLMClient
 
-    rt = get_runtime_llm_config()
-    provider = (rt.get("provider") or "").strip()
-    model = (rt.get("default_model") or "").strip() or "gpt-4o-mini"
-    base_url = (rt.get("openai_base_url") or rt.get("anthropic_base_url") or "").strip()
-    has_key = bool(rt.get("openai_api_key") or rt.get("anthropic_api_key"))
+    effective = await get_llm_settings()
+    provider, model, base_url = effective.provider, effective.model, effective.base_url
+    has_key = effective.api_key_set
 
     if not has_key or not provider:
         return LlmTestResponse(
@@ -502,12 +494,13 @@ async def test_voice_settings() -> VoiceTestResponse:
     """
     import time
 
-    from shared_runtime.voice_runtime_config import get_runtime_voice_config
     from shared_contracts.models import EmotionTag, VoiceSynthesisRequest
 
-    rt = get_runtime_voice_config()
+    rt = get_effective_voice_config()
 
-    asr_provider = "dashscope" if "dashscope" in (rt.get("asr_base_url") or "").lower() else "openai_compat"
+    from voice_layer.asr import ASRClient
+
+    asr_provider = ASRClient._infer_provider(rt.get("asr_base_url") or "")
     asr_ok = bool(rt.get("asr_api_key") and rt.get("asr_base_url") and rt.get("asr_model"))
     asr_msg = (
         "ASR 配置完整，将在下一次通话使用"
@@ -599,6 +592,7 @@ async def test_voice_settings() -> VoiceTestResponse:
 
 
 class VoiceConfigRequest(BaseModel):
+    reset: bool = False
     asr_api_key: str = ""
     asr_base_url: str = ""
     asr_model: str = ""
@@ -607,6 +601,10 @@ class VoiceConfigRequest(BaseModel):
     tts_base_url: str = ""
     tts_model: str = ""
     tts_voice_id: str = ""
+    realtime_voice_provider: str = "volc_realtime"
+    volc_api_key: str = ""
+    volc_model: str = "1.2.1.1"
+    volc_voice_id: str = "zh_female_xiaohe_jupiter_bigtts"
 
 
 class VoiceConfigResponse(BaseModel):
@@ -618,16 +616,18 @@ class VoiceConfigResponse(BaseModel):
     tts_base_url: str
     tts_model: str
     tts_voice_id: str
+    realtime_voice_provider: str
+    volc_api_key_set: bool
+    volc_model: str
+    volc_voice_id: str
 
 
 def _reload_voice_clients() -> None:
-    """Re-create ASR/TTS clients so the new runtime config takes effect."""
+    """Reload TTS; ASR is factory-owned per operation and never replaced here."""
     try:
         import voice_layer.api as api_mod
-        from voice_layer.asr import ASRClient
         from voice_layer.tts import TTSClient
 
-        api_mod.asr_client = ASRClient()
         api_mod.tts_client = TTSClient()
         logger.info("voice_clients_reloaded")
     except Exception as exc:
@@ -652,37 +652,20 @@ def _infer_effective_tts_provider(base_url: str, provider_hint: str = "") -> str
     summary="Get current voice (ASR/TTS) config",
 )
 async def get_voice_settings() -> VoiceConfigResponse:
-    rt = get_runtime_voice_config()
-    settings = get_settings()
-    llm_rt = get_runtime_llm_config()
-
-    tts_provider = rt.get("tts_provider") or settings.tts_provider or ""
-    tts_api_key = rt.get("tts_api_key") or settings.tts_api_key or settings.openai_api_key or ""
-    tts_base_url = rt.get("tts_base_url") or settings.tts_base_url or settings.openai_base_url or ""
-    tts_model = rt.get("tts_model") or ""
-
-    if not rt.get("tts_provider") and not tts_api_key and llm_rt.get("openai_api_key"):
-        tts_base_url = (llm_rt.get("openai_base_url") or tts_base_url or "").rstrip("/")
-        if "/compatible-mode/" in tts_base_url:
-            tts_base_url = tts_base_url.replace("/compatible-mode/v1", "/api/v1")
-        tts_provider = _infer_effective_tts_provider(tts_base_url, llm_rt.get("provider") or "")
-        tts_api_key = llm_rt.get("openai_api_key") or ""
-        if not tts_model and tts_provider == "dashscope":
-            tts_model = "cosyvoice-v3-flash"
-
-    tts_voice_id = rt.get("tts_voice_id") or settings.default_voice_id or ""
-    if tts_provider == "dashscope" and not rt.get("tts_voice_id") and tts_voice_id == settings.default_voice_id:
-        tts_voice_id = "longxiaochun"
-
+    rt = get_effective_voice_config()
     return VoiceConfigResponse(
         asr_api_key_set=bool(rt.get("asr_api_key")),
         asr_base_url=rt.get("asr_base_url") or "",
         asr_model=rt.get("asr_model") or "",
-        tts_provider=tts_provider,
-        tts_api_key_set=bool(tts_api_key),
-        tts_base_url=tts_base_url,
-        tts_model=tts_model,
-        tts_voice_id=tts_voice_id,
+        tts_provider=rt.get("tts_provider") or "",
+        tts_api_key_set=bool(rt.get("tts_api_key")),
+        tts_base_url=rt.get("tts_base_url") or "",
+        tts_model=rt.get("tts_model") or "",
+        tts_voice_id=rt.get("tts_voice_id") or "",
+        realtime_voice_provider=rt.get("realtime_voice_provider") or "volc_realtime",
+        volc_api_key_set=bool(rt.get("volc_api_key")),
+        volc_model=rt.get("volc_model") or "",
+        volc_voice_id=rt.get("volc_voice_id") or "",
     )
 
 
@@ -696,21 +679,39 @@ async def save_voice_settings(req: VoiceConfigRequest) -> VoiceConfigResponse:
     # Preserve existing API keys when the request leaves them blank
     # (the UI clears the input fields after load so users don't have to
     # re-paste secrets just to change a model name or base url).
-    rt_before = get_runtime_voice_config()
-    asr_api_key = req.asr_api_key.strip() if req.asr_api_key else (rt_before.get("asr_api_key") or "")
-    tts_api_key = req.tts_api_key.strip() if req.tts_api_key else (rt_before.get("tts_api_key") or "")
-    update_runtime_voice_config(
-        asr_api_key=asr_api_key,
-        asr_base_url=req.asr_base_url,
-        asr_model=req.asr_model,
-        tts_provider=req.tts_provider,
-        tts_api_key=tts_api_key,
-        tts_base_url=req.tts_base_url,
-        tts_model=req.tts_model,
-        tts_voice_id=req.tts_voice_id,
-    )
+    if req.reset:
+        clear_runtime_voice_config()
+    else:
+        if req.realtime_voice_provider not in {"local", "cloud", "volc_realtime"}:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="不支持的实时语音服务商")
+        from urllib.parse import urlparse
+
+        rt_before = get_effective_voice_config()
+        same_asr = urlparse(req.asr_base_url).netloc == urlparse(rt_before.get("asr_base_url") or "").netloc
+        same_tts = (req.tts_provider == rt_before.get("tts_provider") and
+                    urlparse(req.tts_base_url).netloc == urlparse(rt_before.get("tts_base_url") or "").netloc)
+        asr_api_key = req.asr_api_key.strip() or (rt_before.get("asr_api_key", "") if same_asr else "")
+        tts_api_key = req.tts_api_key.strip() or (rt_before.get("tts_api_key", "") if same_tts else "")
+        update_runtime_voice_config(
+            asr_api_key=asr_api_key,
+            asr_base_url=req.asr_base_url,
+            asr_model=req.asr_model,
+            tts_provider=req.tts_provider,
+            tts_api_key=tts_api_key,
+            tts_base_url=req.tts_base_url,
+            tts_model=req.tts_model,
+            tts_voice_id=req.tts_voice_id,
+            realtime_voice_provider=req.realtime_voice_provider,
+            volc_api_key=req.volc_api_key.strip() or rt_before.get("volc_api_key", ""),
+            volc_model=req.volc_model,
+            volc_voice_id=req.volc_voice_id,
+        )
     save_voice_config_to_disk()
     _reload_voice_clients()
+    from voice_layer.providers.realtime import init_registry, reset_realtime_registry
+
+    reset_realtime_registry()
+    init_registry()
     logger.info("voice_config_updated", asr_base_url=req.asr_base_url or "(default)", tts_provider=req.tts_provider or "(default)")
     return await get_voice_settings()
 
@@ -985,7 +986,7 @@ async def debug_state(session_id: str, user_id: str = "") -> Dict[str, Any]:
 async def list_personas() -> Dict[str, Any]:
     """Return all available persona role_ids and their display names."""
     try:
-        from persona_engine.persona_store import list_available_personas, get_persona_profile
+        from persona_engine.persona_store import get_persona_profile, list_available_personas
 
         role_ids = list_available_personas()
         personas = []
