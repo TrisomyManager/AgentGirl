@@ -231,6 +231,7 @@ async def _recall_memory_monolithic(tc: TurnContext, state: OrchestratorState, l
 
     # Read user_profile (if any) to honor role_id preference set by onboarding
     role_id = "default"
+    snapshot = None
     try:
         from user_profile import get_default_store
 
@@ -310,6 +311,15 @@ async def _recall_memory_monolithic(tc: TurnContext, state: OrchestratorState, l
     except Exception as exc:
         log.warning("monolithic_memory_recall_failed", error=str(exc))
         state["memory_result"] = _default_memory_result()
+
+    # Stable preferences are separate from query-dependent episodic recall.
+    # Keep this available across sessions even when embeddings are offline.
+    from shared_runtime.prompt_engine import format_user_profile_memory
+
+    stable_profile = format_user_profile_memory(snapshot)
+    if stable_profile:
+        previous = state["memory_result"].user_profile_summary or ""
+        state["memory_result"].user_profile_summary = (stable_profile + "\n" + previous)[:600]
 
     log.info(
         "monolithic_memory_recalled",

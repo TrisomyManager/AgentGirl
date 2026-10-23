@@ -88,6 +88,7 @@
 
     <SettingsDrawer
       :visible="settingsVisible"
+      :user-id="userId"
       :user-name="userName"
       :session-id="sessionId"
       :server-available="serverAvailable"
@@ -148,6 +149,8 @@ import CapabilityStatus from './components/CapabilityStatus.vue';
 import ReminderToast from './components/ReminderToast.vue';
 import { useChat } from './composables/useChat';
 import { useProactivePush } from './composables/useProactivePush';
+import { useCompanionContext } from './composables/useCompanionContext';
+import { desktopBridge } from './composables/desktopBridge';
 import type { ToolExecutionState } from './composables/useToolStatus';
 
 const {
@@ -181,6 +184,7 @@ const {
 const { lastReminder, dismissLastReminder } = useProactivePush(userId, {
   onProactiveMessage: (payload) => {
     injectAssistantMessage(payload.message, { emotion: payload.emotion ?? undefined });
+    void desktopBridge()?.petBubble(payload.message, payload.emotion ?? undefined);
   },
 });
 
@@ -206,6 +210,7 @@ const hasStreamingContent = computed(() => {
 const settingsVisible = ref(false);
 const statusVisible = ref(false);
 const callVisible = ref(false);
+useCompanionContext(userId, computed(() => isLoading.value || isTyping.value || callVisible.value));
 const memoryVisible = ref(false);
 const capabilityVisible = ref(false);
 const capabilityStatusVisible = ref(false);

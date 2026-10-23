@@ -1,7 +1,7 @@
 ---
 name: cloud-agents-starter
 description: "Cloud-agent starter runbook for companion-ai. Read this first when joining the repo."
-version: 2.1.0
+version: 2.2.0
 metadata:
   cursor:
     audience: cloud-agents
@@ -16,7 +16,7 @@ This repository uses a **monorepo** for 小暖 Companion AI:
 |------|------|
 | Backend | `apps/backend/` |
 | Web | `apps/web/` |
-| PC simulator | `apps/pc-client/` |
+| Electron PC client | `apps/pc-client/` |
 | Contracts (draft) | `packages/contracts/` |
 | Integration scripts | `integration/` |
 
@@ -121,7 +121,7 @@ Run `npm install` when changing `apps/web/` or verifying UI.
 
 With backend on port 8000:
 
-1. Optional: `cd apps/pc-client && pip install httpx && python sim_client.py` (set `XIAONUAN_API_BASE_URL` if needed).
+1. Optional: `cd apps/pc-client/legacy_python && pip install httpx && python sim_client.py` (set `XIAONUAN_API_BASE_URL` if needed).
 2. UI: capabilities → **我的设备**, or `POST /device/send_command` with `{"user_id":"…","command":"ping"}` and confirm the sim logs execution + `command_result`.
 
 On Windows, `integration/scripts/smoke-device-flow.ps1` covers register → heartbeat → send → claim → mark_running → result → audit.
@@ -139,3 +139,22 @@ On Windows, `integration/scripts/smoke-device-flow.ps1` covers register → hear
 - `integration/README.md` — triage IDs + smoke scripts
 
 When adding a workflow, update this skill and `AGENTS.md`.
+
+## 5. Desktop companionship workflow
+
+Read [`apps/backend/docs/dsh-pet-adoption.md`](../../../apps/backend/docs/dsh-pet-adoption.md) from the repository root. Electron/Vue now provides the optional transparent pet window; the Python simulator remains in `apps/pc-client/legacy_python/`.
+
+```bash
+cd apps/pc-client
+npm ci
+npm run build
+npm run test:pet
+```
+
+Node 22.23 and 24.19 were verified. Web builds separately with `cd apps/web && npm ci && npm run build`. Native desktop UI and Windows helper behavior require a real Windows session; do not equate headless compilation with desktop acceptance.
+
+Run the fast clean backend suite in section 2, which includes the new context, policy persistence, deferred memory, lexical recall, prompt budget and feature registry regression tests. Do not copy upstream Qt sources, OCR models or character assets into this repository. The new pet adapter accepts user-selected WebM/GIF source packs and must remain presentation-only.
+
+Use `COMPANION_FEATURE_CONFIG_PATH` for isolated test settings. Global feature updates are frozen for the running process and apply on restart. Desktop metadata sampling also needs explicit per-user consent; keep it disabled by default. The Windows helper is a private fixed IPC invocation, not a remotely callable tool.
+
+If full-repository lint/architecture checks fail, compare unchanged base violations and record the delta without changing baseline policy. In the current headless environment Vitest may report passing assertions then stall at teardown; report that limitation without calling the entire suite green.

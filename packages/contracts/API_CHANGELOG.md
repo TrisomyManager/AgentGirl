@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `GET/PUT /settings/features`：全局可选功能的本次启用/待启用列表及依赖；保存整值、重启生效；非法 ID/依赖 422、写盘失败 503。
+- `GET/PUT /actions/proactive/preferences?user_id=…`：用户级主动关怀与桌面情境授权、进程白名单、停留/闲置阈值。
+- `POST /actions/proactive/context`：进程名/闲置/忙碌元数据，返回门禁结果；需功能与用户双重启用，额外字段 422。无截图或窗口标题字段。
+- `proactive_message.trigger_type` 增加 `desktop_context`；既有事件形状保持不变。Web 按用户与消息 ID 对 SSE/轮询去重。
+- 详见 [接入说明与请求字段](../../apps/backend/docs/dsh-pet-adoption.md)。
+
 ### 文档
 
 - 初始化 monorepo `packages/contracts` 骨架与 Device Gateway JSON Schema 草案（与当前后端行为对齐，非代码生成）。

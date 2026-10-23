@@ -2,6 +2,7 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, globalShortcut, N
 import { join } from 'path';
 import Store from 'electron-store';
 import { startDeviceClient, stopDeviceClient, getDeviceStatus } from './device-client';
+import { setupDesktopPet } from './desktop-pet';
 
 const store = new Store({
   defaults: {
@@ -13,10 +14,11 @@ const store = new Store({
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+let desktopPet: ReturnType<typeof setupDesktopPet> | null = null;
 
 // ── Tray icon (programmatic 16x16 PNG) ────────────────────────────────
 
-function createTrayIcon(): nativeImage {
+function createTrayIcon(): ReturnType<typeof nativeImage.createFromBuffer> {
   // 16x16 RGBA favicon: warm coral circle with a heart center
   const size = 16;
   const buf = Buffer.alloc(size * size * 4);
@@ -102,6 +104,7 @@ function createTray() {
 
   const contextMenu = Menu.buildFromTemplate([
     { label: '打开小暖', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
+    { label: '显示桌宠并恢复鼠标交互', click: () => desktopPet?.recover() },
     {
       label: '开机自启',
       type: 'checkbox',
@@ -158,8 +161,10 @@ function setupIPC() {
 
 app.whenReady().then(() => {
   setupIPC();
+  desktopPet = setupDesktopPet(store, () => mainWindow);
   createWindow();
   createTray();
+  void desktopPet.restore().catch(error => console.warn('[pet] Restore failed:', error));
 
   // Apply saved auto-launch preference
   if (store.get('autoLaunch')) {

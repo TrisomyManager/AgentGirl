@@ -4,7 +4,7 @@ import hashlib
 import json
 import struct
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import List, Optional, Tuple
 
 import httpx
@@ -211,11 +211,17 @@ async def search_similar(
     min_importance: Optional[float] = None,
 ) -> List[MemoryEntry]:
     """Vector similarity search using cosine distance (pgvector) or Python fallback (SQLite)."""
-    embedding = await _get_embedding(query)
+    if top_k <= 0:
+        return []
+    # A SHA-derived development vector has no semantic meaning. Use actual
+    # content matching whenever the embedding service is absent or fails.
+    api_key = _resolve_embedding_config()[0]
+    embedding = await _get_embedding(query) if api_key else None
+    lexical = embedding is None or embedding == _local_fallback_embedding(query)
 
-    if settings.lite_mode:
+    if settings.lite_mode or lexical:
         # SQLite: fetch all user memories and compute similarity in Python
-        filters = ["user_id = :user_id"]
+        filters = ["user_id = :user_id", "(expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)"]
         params: dict = {"user_id": user_id}
 
         if category:
@@ -243,7 +249,7 @@ async def search_similar(
 
         rows = result.mappings().all()
         scored = []
-        for row in rows:
+        for row in rows if not lexical else []:
             # Parse JSON embedding from SQLite Text column
             row_embedding = row["embedding"]
             if row_embedding is None:
@@ -255,12 +261,19 @@ async def search_similar(
                     continue
             if not isinstance(row_embedding, list):
                 continue
+            if len(row_embedding) != len(embedding):
+                continue
             similarity = _cosine_similarity(embedding, row_embedding)
             scored.append((similarity, row))
 
         # Sort by similarity descending, take top_k
         scored.sort(key=lambda x: x[0], reverse=True)
-        top_rows = [row for _, row in scored[:top_k]]
+        if lexical:
+            from memory_system.lexical import rank_rows
+
+            top_rows = rank_rows(rows, query, top_k, datetime.now(UTC))
+        else:
+            top_rows = [row for _, row in scored[:top_k]]
 
         entries: List[MemoryEntry] = []
         for row in top_rows:
@@ -295,7 +308,7 @@ async def search_similar(
     # PostgreSQL + pgvector: use native vector operators
     embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
 
-    filters = ["user_id = :user_id"]
+    filters = ["user_id = :user_id", "(expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)"]
     params = {
         "user_id": user_id,
         "embedding": embedding_str,

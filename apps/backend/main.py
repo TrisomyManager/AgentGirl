@@ -27,6 +27,7 @@ os.environ["COMPANION_MONOLITHIC"] = "true"
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 # Ensure project root is in path
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -34,10 +35,12 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from shared_runtime.config import get_settings
+from shared_runtime.features import get_feature_manager
 from shared_runtime.database import close_database, init_database_schema
 from core_orchestrator.http_client import attach_monolithic_app
 
 settings = get_settings()
+features = get_feature_manager()
 logger = structlog.get_logger("companion.main")
 
 # ---------------------------------------------------------------------------
@@ -49,13 +52,17 @@ _ENABLED_MODULES: Dict[str, bool] = {
     "core_orchestrator": True,    # LangGraph state machine
     "persona_engine": True,       # Personality + emotion
     "memory_system": True,        # Vector memory
-    "voice_layer": settings.enable_voice,
-    "action_layer": settings.enable_action_2d,
+    "voice_layer": features.is_active("voice_layer"),
+    "action_layer": features.is_active("action_layer"),
     "action_executor": True,      # Reminders / time / weather (pluggable handlers)
     "device_coordination": True,  # always on; Lite Mode uses in-memory store
 }
 
 logger.info("monolithic_modules", modules={k: v for k, v in _ENABLED_MODULES.items()})
+
+
+class FeatureUpdate(BaseModel):
+    enabled: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +204,21 @@ def create_app() -> FastAPI:
     )
 
     attach_monolithic_app(app)
+
+    from fastapi import HTTPException
+    @app.get("/settings/features")
+    async def feature_status():
+        return features.status()
+
+    @app.put("/settings/features")
+    async def update_features(req: FeatureUpdate):
+        try:
+            features.write_enabled(req.enabled)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="功能配置保存失败，请检查数据目录") from exc
+        return features.status()
 
     # Parse CORS origins from settings (comma-separated)
     _raw_cors = settings.cors_origins.strip()

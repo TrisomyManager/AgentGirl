@@ -35,6 +35,11 @@ export default defineConfig({
           },
         },
       },
+      {
+        entry: 'electron/pet-preload.ts',
+        onstart(options) { options.reload(); },
+        vite: { build: { outDir: 'dist-electron' } },
+      },
     ]),
   ],
   resolve: {

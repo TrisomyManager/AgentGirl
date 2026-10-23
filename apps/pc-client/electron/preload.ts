@@ -1,6 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  petStatus: () => ipcRenderer.invoke('pet:status'),
+  petChoosePack: () => ipcRenderer.invoke('pet:choose-pack'),
+  petSetEnabled: (enabled: boolean) => ipcRenderer.invoke('pet:enabled', enabled),
+  petSetClickThrough: (enabled: boolean) => ipcRenderer.invoke('pet:click-through', enabled),
+  petBubble: (text: string, emotion?: string) => ipcRenderer.invoke('pet:bubble', text, emotion),
+  companionContext: () => ipcRenderer.invoke('companion:context'),
   getStoreValue: (key: string) => ipcRenderer.invoke('store:get', key),
   setStoreValue: (key: string, value: any) => ipcRenderer.invoke('store:set', key, value),
 

@@ -79,6 +79,10 @@ async def build_user_state(user_id: str) -> dict[str, Any]:
 def _get_proactive_rules(user_id: str) -> list[dict[str, Any]]:
     """Return proactive care rules for the frontend capability panel."""
     try:
+        from shared_runtime.features import get_feature_manager
+
+        if not get_feature_manager().is_active("proactive_care"):
+            return []
         from action_executor.proactive_care import get_proactive_care_scheduler
 
         scheduler = get_proactive_care_scheduler()

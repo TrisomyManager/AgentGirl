@@ -16,8 +16,10 @@ from fastapi import FastAPI
 from action_executor import handlers  # noqa: F401 — register builtins
 from action_executor.api import router
 from action_executor.proactive_care import ProactiveLogORM  # noqa: F401 — register ORM table
+from action_executor.desktop_context import ProactivePreferencesORM  # noqa: F401 — register ORM table
 from action_executor.reminders import get_reminder_scheduler
 from shared_runtime.config import get_settings
+from shared_runtime.features import get_feature_manager
 from shared_runtime.database import init_database_schema
 
 logger = structlog.get_logger("action_executor.main")
@@ -38,7 +40,7 @@ async def lifespan(app: FastAPI):
 
     # Proactive care scheduler (V2.5)
     proactive_scheduler = None
-    if settings.proactive_enabled:
+    if settings.proactive_enabled and get_feature_manager().is_active("proactive_care"):
         from action_executor.proactive_care import get_proactive_care_scheduler
 
         proactive_scheduler = get_proactive_care_scheduler(
