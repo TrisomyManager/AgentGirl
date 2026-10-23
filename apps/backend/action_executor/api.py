@@ -27,10 +27,43 @@ from action_executor import handlers  # noqa: F401
 from action_executor.push_bus import get_proactive_push_bus
 from action_executor.registry import get_registry
 from action_executor.reminders import get_reminders_store
+from action_executor.desktop_context import DesktopObservation, ProactivePolicy, read_policy, write_policy
+from shared_runtime.features import get_feature_manager
 
 logger = structlog.get_logger("action_executor.api")
 
 router = APIRouter(prefix="/actions", tags=["actions"])
+
+
+@router.get("/proactive/preferences")
+async def proactive_preferences(user_id: str = Query(min_length=1, max_length=64)):
+    return {"policy": (await read_policy(user_id)).model_dump(),
+            "desktop_context_active": get_feature_manager().is_active("desktop_context")}
+
+
+@router.put("/proactive/preferences")
+async def update_proactive_preferences(policy: ProactivePolicy, user_id: str = Query(min_length=1, max_length=64)):
+    await write_policy(user_id, policy)
+    if not policy.enabled or not policy.desktop_enabled:
+        from action_executor.proactive_care import get_proactive_care_scheduler
+
+        get_proactive_care_scheduler().context_gate.clear(user_id)
+    return {"policy": policy.model_dump()}
+
+
+@router.post("/proactive/context")
+async def record_desktop_context(observation: DesktopObservation):
+    if not get_feature_manager().is_active("desktop_context"):
+        raise HTTPException(status_code=409, detail="桌面情境陪伴尚未启用，请在功能管理中开启并重启服务")
+    policy = await read_policy(observation.user_id)
+    if not policy.enabled or not policy.desktop_enabled:
+        raise HTTPException(status_code=409, detail="此用户尚未开启桌面情境陪伴")
+    from action_executor.proactive_care import get_proactive_care_scheduler
+
+    gate = get_proactive_care_scheduler().context_gate
+    gate.update(observation)
+    decision = gate.evaluate(observation.user_id, policy)
+    return {"accepted": True, "eligible": decision.allowed, "reason": decision.reason}
 
 
 # ---------------------------------------------------------------------------

@@ -102,6 +102,7 @@ temp/
 companion_lite.db
 companion_lite.db-journal
 companion_llm_config.json
+companion_features.json
 mvp.env
 
 # Local packaged test apps (build outputs, 500MB+)

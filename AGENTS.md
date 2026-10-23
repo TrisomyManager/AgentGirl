@@ -6,7 +6,7 @@ This repository uses a **monorepo layout** for the 小暖 Companion AI product:
 |------|------|------|
 | Backend | `apps/backend/` | FastAPI monolith + Python modules (`main.py`, `pyproject.toml`) |
 | Web | `apps/web/` | Vue 3 + Vite reference UI |
-| PC sim | `apps/pc-client/` | Device gateway simulator (HTTP polling) |
+| PC client | `apps/pc-client/` | Electron/Vue, device bridge, optional desktop pet |
 | Contracts | `packages/contracts/` | Cross-end schema / API changelog (non-runtime) |
 | Integration | `integration/` | PowerShell dev/smoke scripts |
 
@@ -47,10 +47,10 @@ Cloud Agents joining this repo should read [`.cursor/skills/cloud-agents/SKILL.m
 
 ### Gotchas
 
-- `COMPANION_LITE_MODE=true` disables Docker dependencies and uses SQLite + in-memory alternatives. `device_coordination` stays enabled; smoke with `apps/pc-client/sim_client.py` (requires `httpx`) or `integration/scripts/smoke-device-flow.ps1` on Windows.
+- `COMPANION_LITE_MODE=true` disables Docker dependencies and uses SQLite + in-memory alternatives. `device_coordination` stays enabled; smoke with `apps/pc-client/legacy_python/sim_client.py` (requires `httpx`) or `integration/scripts/smoke-device-flow.ps1` on Windows.
 - Internal HTTP clients use `COMPANION_SELF_BASE_URL` when set; otherwise `http://127.0.0.1:{COMPANION_SERVICE_PORT}` (default `8000`).
 - Orchestrator conversation endpoints need an LLM API key; health/persona/memory endpoints work without one.
-- **Device Gateway** is a backend capability; the PC folder is only a simulator client.
+- **Device Gateway** is a backend capability; the Electron PC client contains its existing device bridge. Legacy Python simulators live in `apps/pc-client/legacy_python/`.
 
 ### Web (`apps/web`)
 
@@ -63,3 +63,13 @@ VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 ### Integration
 
 See [`integration/README.md`](integration/README.md).
+
+### Desktop pet and proactive context
+
+- Read [`apps/backend/docs/dsh-pet-adoption.md`](apps/backend/docs/dsh-pet-adoption.md) for setup, consent, feature activation and compatibility limits.
+- PC build: `cd apps/pc-client && npm ci && npm run build`; pack tests: `npm run test:pet` (Node 22.23/24.19 verified). Native Electron UI requires a desktop session; headless builds do not validate Windows transparency, DPI or packaging.
+- Web build: `cd apps/web && npm ci && npm run build`.
+- New backend regression tests live in `action_executor/tests/test_desktop_companion.py`, `action_executor/tests/test_companion_integration.py`, `memory_system/tests/test_lexical_recall.py` and `shared_runtime/tests/test_{features,memory_prompt_budget}.py`. Include them in the fast clean suite above.
+- Feature selection is a startup snapshot in `shared_runtime/features.py`. Saves are pending until restart; desktop context additionally requires per-user consent and a process allowlist. Keep optional core/Qt trees and upstream character assets out of the repository.
+- Proactive desktop observations are process metadata only, not screenshots/titles. The local helper is private IPC, never a registered device tool. Pet rendering cannot own persona, memory, LLM or tool decisions.
+- Architecture/lint failures must be compared against the unchanged base; do not silently reset baselines. Vitest currently can stall during teardown after reporting assertions in this headless environment; report this separately from passing builds.

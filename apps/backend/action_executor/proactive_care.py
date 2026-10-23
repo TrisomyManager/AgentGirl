@@ -32,7 +32,9 @@ from sqlalchemy import Column, DateTime, Integer, String, Text, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from action_executor.push_bus import PushEvent, get_proactive_push_bus
+from action_executor.desktop_context import DesktopContextGate, read_policy
 from shared_runtime.config import get_settings
+from shared_runtime.features import get_feature_manager
 from shared_runtime.database import AsyncSessionLocal, Base
 
 logger = structlog.get_logger("action_executor.proactive_care")
@@ -265,6 +267,7 @@ class ProactiveCareScheduler:
         self._store = get_proactive_log_store()
         self._bus = get_proactive_push_bus()
         self._settings = get_settings()
+        self.context_gate = DesktopContextGate()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -313,7 +316,7 @@ class ProactiveCareScheduler:
         Returns the number of proactive messages generated this tick.
         """
         settings = self._settings
-        if not settings.proactive_enabled:
+        if not settings.proactive_enabled or not get_feature_manager().is_active("proactive_care"):
             return 0
 
         # --- Do-not-disturb window ---
@@ -353,11 +356,20 @@ class ProactiveCareScheduler:
         """Evaluate all trigger conditions for a single user.
 
         Evaluation order matters: cooldown + daily cap are gating checks;
-        individual triggers run in priority order (idle > greeting > memory).
+        individual triggers run in priority order (desktop > memory > idle > greeting).
         """
         settings = self._settings
 
         # --- Gating: cooldown ---
+        policy = await read_policy(user_id)
+        if not policy.enabled:
+            return 0
+        decision = None
+        if policy.desktop_enabled and get_feature_manager().is_active("desktop_context"):
+            decision = self.context_gate.evaluate(user_id, policy)
+            if decision.reason in {"busy", "fullscreen", "locked", "interacting"}:
+                return 0
+
         last_sent = await self._store.last_sent_for_user(user_id)
         cooldown_seconds = settings.proactive_cooldown_minutes * 60
         if last_sent and (now - last_sent).total_seconds() < cooldown_seconds:
@@ -367,6 +379,13 @@ class ProactiveCareScheduler:
         count_today = await self._store.count_today(user_id)
         if count_today >= settings.proactive_max_per_day:
             return 0
+
+        if decision and decision.allowed:
+            sent = await self._fire_proactive(
+                user_id, "desktop_context",
+                {"foreground_app": decision.foreground_app, "_signature": decision.signature}, now,
+            )
+            return int(sent)
 
         # --- User activity: last_seen ---
         last_seen = await self._get_user_last_seen(user_id)
@@ -385,43 +404,7 @@ class ProactiveCareScheduler:
 
         generated = 0
 
-        # 1. Idle check-in (highest priority — don't stack with greetings)
-        if hours_inactive * 60 >= settings.proactive_idle_checkin_minutes:
-            if await self._try_trigger(user_id, "idle_checkin", now):
-                await self._fire_proactive(
-                    user_id=user_id,
-                    trigger_type="idle_checkin",
-                    context={"hours_inactive": round(hours_inactive, 1)},
-                    now=now,
-                )
-                generated += 1
-                return generated  # only one trigger per tick per user
-
-        # 2. Time-of-day greetings (only if user was recently active or it's the right hour)
-        local_hour = now.astimezone().hour
-        if settings.proactive_morning_greeting_enabled and 6 <= local_hour <= 9:
-            if await self._try_trigger(user_id, "morning_greeting", now):
-                await self._fire_proactive(
-                    user_id=user_id,
-                    trigger_type="morning_greeting",
-                    context={"local_hour": local_hour},
-                    now=now,
-                )
-                generated += 1
-                return generated
-
-        if settings.proactive_evening_greeting_enabled and 17 <= local_hour <= 20:
-            if await self._try_trigger(user_id, "evening_greeting", now):
-                await self._fire_proactive(
-                    user_id=user_id,
-                    trigger_type="evening_greeting",
-                    context={"local_hour": local_hour},
-                    now=now,
-                )
-                generated += 1
-                return generated
-
-        # 3. Memory follow-up (only if user has been inactive a while)
+        # A specific remembered concern takes priority over a generic idle greeting.
         if (
             settings.proactive_memory_followup_enabled
             and hours_inactive >= 120  # 5 days minimum for memory follow-up
@@ -430,13 +413,51 @@ class ProactiveCareScheduler:
             if memory_context and await self._try_trigger(
                 user_id, "memory_followup", now
             ):
-                await self._fire_proactive(
+                sent = await self._fire_proactive(
                     user_id=user_id,
                     trigger_type="memory_followup",
                     context=memory_context,
                     now=now,
                 )
-                generated += 1
+                return int(sent)
+
+
+        # 1. Idle check-in (do not stack with greetings)
+        if hours_inactive * 60 >= settings.proactive_idle_checkin_minutes:
+            if await self._try_trigger(user_id, "idle_checkin", now):
+                sent = await self._fire_proactive(
+                    user_id=user_id,
+                    trigger_type="idle_checkin",
+                    context={"hours_inactive": round(hours_inactive, 1)},
+                    now=now,
+                )
+                generated += int(sent)
+                return generated  # only one trigger per tick per user
+
+        # 2. Time-of-day greetings (only if user was recently active or it's the right hour)
+        local_hour = now.astimezone().hour
+        if settings.proactive_morning_greeting_enabled and 6 <= local_hour <= 9:
+            if await self._try_trigger(user_id, "morning_greeting", now):
+                sent = await self._fire_proactive(
+                    user_id=user_id,
+                    trigger_type="morning_greeting",
+                    context={"local_hour": local_hour},
+                    now=now,
+                )
+                generated += int(sent)
+                return generated
+
+        if settings.proactive_evening_greeting_enabled and 17 <= local_hour <= 20:
+            if await self._try_trigger(user_id, "evening_greeting", now):
+                sent = await self._fire_proactive(
+                    user_id=user_id,
+                    trigger_type="evening_greeting",
+                    context={"local_hour": local_hour},
+                    now=now,
+                )
+                generated += int(sent)
+                return generated
+
 
         return generated
 
@@ -465,7 +486,7 @@ class ProactiveCareScheduler:
             return False
 
         # Greetings: only once per day
-        if trigger_type in ("morning_greeting", "evening_greeting"):
+        if trigger_type in ("morning_greeting", "evening_greeting", "memory_followup"):
             today_count = await self._store.count_trigger_today(
                 user_id, trigger_type
             )
@@ -480,13 +501,13 @@ class ProactiveCareScheduler:
         trigger_type: str,
         context: Dict[str, Any],
         now: datetime,
-    ) -> None:
+    ) -> bool:
         """Generate a proactive message, log it, and push to the frontend."""
         try:
             result = await self._call_orchestrator(
                 user_id=user_id,
                 trigger_type=trigger_type,
-                context=context,
+                context={key: value for key, value in context.items() if not key.startswith("_")},
             )
         except Exception as exc:
             logger.warning(
@@ -495,11 +516,25 @@ class ProactiveCareScheduler:
                 trigger_type=trigger_type,
                 error=str(exc),
             )
-            return
+            return False
 
         message = result.get("assistant_message", "")
-        if not message.strip():
-            return
+        if result.get("error") or not message.strip():
+            return False
+
+        policy = await read_policy(user_id)
+        if not policy.enabled:
+            return False
+        if trigger_type == "desktop_context" and not policy.desktop_enabled:
+            return False
+        if policy.desktop_enabled:
+            decision = self.context_gate.evaluate(user_id, policy)
+            if decision.reason in {"busy", "fullscreen", "locked", "interacting"}:
+                return False
+            if trigger_type == "desktop_context" and (
+                not decision.allowed or decision.signature != context.get("_signature")
+            ):
+                return False
 
         emotion = result.get("emotion", {})
 
@@ -527,6 +562,14 @@ class ProactiveCareScheduler:
             )
         )
 
+        # A discarded generation must never appear as an experienced event in memory.
+        commit_memory = result.get("_commit_memory")
+        if commit_memory:
+            try:
+                await commit_memory()
+            except Exception as exc:
+                logger.warning("proactive_memory_commit_failed", error=str(exc))
+
         logger.info(
             "proactive_care_scheduler.message_fired",
             id=entry.id,
@@ -534,6 +577,9 @@ class ProactiveCareScheduler:
             trigger_type=trigger_type,
             message_preview=message[:80],
         )
+        if trigger_type == "desktop_context":
+            self.context_gate.mark_delivered(user_id, context.get("_signature"))
+        return True
 
     # ------------------------------------------------------------------
     # Orchestrator bridge
@@ -559,6 +605,7 @@ class ProactiveCareScheduler:
             session_id=session_id,
             trigger_type=trigger_type,
             trigger_context=context,
+            defer_memory=True,
         )
 
     async def _resolve_session_id(self, user_id: str) -> str:
@@ -581,6 +628,9 @@ class ProactiveCareScheduler:
         ids: List[str] = []
         # Always include the default user
         ids.append(DEFAULT_USER_ID)
+        for uid in self.context_gate.user_ids():
+            if uid not in ids:
+                ids.append(uid)
 
         # Add users from proactive_log
         try:
@@ -623,21 +673,15 @@ class ProactiveCareScheduler:
     ) -> Optional[Dict[str, Any]]:
         """Find a high-importance memory entry suitable for follow-up."""
         try:
-            from memory_system.recall import recall_memory
+            from memory_system.vector_store import list_user_memories
 
-            result = await recall_memory(
-                query="recent important memories",
-                user_id=user_id,
-                session_id=None,
-                top_k=5,
-                include_graph=False,
-            )
-            for entry in result.entries:
-                if getattr(entry, "importance", 0) >= 0.7:
-                    return {
-                        "memory_content": getattr(entry, "content", str(entry)),
-                        "memory_category": getattr(entry, "category", ""),
-                    }
+            async with AsyncSessionLocal() as session:
+                entries = await list_user_memories(session, user_id, limit=30)
+            now = datetime.now(timezone.utc)
+            for entry in entries:
+                expiry = _ensure_aware(entry.expires_at)
+                if entry.importance >= 0.7 and (expiry is None or expiry > now):
+                    return {"memory_content": entry.content[:600], "memory_category": entry.category.value}
         except Exception as exc:
             logger.debug(
                 "proactive_care.memory_context_failed",

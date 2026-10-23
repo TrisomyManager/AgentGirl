@@ -7,6 +7,7 @@ const API_BASE_URL =
 const PUSH_SINCE_KEY_PREFIX = 'companion_push_since_';
 const SEEN_REMINDERS_KEY_PREFIX = 'companion_seen_reminders_';
 const MAX_SEEN_REMINDERS = 50;
+const SEEN_PROACTIVE_PREFIX = 'companion_seen_proactive_';
 
 export interface ReminderFiredPayload {
   id: string;
@@ -63,6 +64,7 @@ export function useProactivePush(userId: string, options?: ProactivePushOptions)
   let sinceSeq = 0;
   let hasPersistedSeq = false;
   let seenReminderIds = new Set<string>();
+  let seenProactiveIds = new Set<string>();
 
   try {
     const storedSince = localStorage.getItem(sinceStorageKey);
@@ -74,6 +76,8 @@ export function useProactivePush(userId: string, options?: ProactivePushOptions)
     if (storedSeen) {
       seenReminderIds = new Set(JSON.parse(storedSeen));
     }
+    const proactive = localStorage.getItem(`${SEEN_PROACTIVE_PREFIX}${userId}`);
+    if (proactive) seenProactiveIds = new Set(JSON.parse(proactive));
   } catch { /* localStorage unavailable */ }
 
   function _persistSince() {
@@ -94,6 +98,15 @@ export function useProactivePush(userId: string, options?: ProactivePushOptions)
     if (id) seenReminderIds.add(id);
     _persistSeen();
     lastReminder.value = payload;
+  }
+
+  function deliverProactive(payload: ProactiveMessagePayload) {
+    if (!payload?.id || payload.user_id !== userId || seenProactiveIds.has(payload.id)) return;
+    seenProactiveIds.add(payload.id);
+    seenProactiveIds = new Set(Array.from(seenProactiveIds).slice(-100));
+    try { localStorage.setItem(`${SEEN_PROACTIVE_PREFIX}${userId}`, JSON.stringify([...seenProactiveIds])); }
+    catch { /* Session-level dedup still works without storage. */ }
+    options?.onProactiveMessage?.(payload);
   }
 
   // ── SSE stream ───────────────────────────────────────────────────
@@ -152,7 +165,7 @@ export function useProactivePush(userId: string, options?: ProactivePushOptions)
             showReminderToast(parsed as ReminderFiredPayload);
           }
           if (eventName === 'proactive_message') {
-            options?.onProactiveMessage?.(parsed as ProactiveMessagePayload);
+            deliverProactive(parsed as ProactiveMessagePayload);
           }
         }
       }
@@ -191,7 +204,7 @@ export function useProactivePush(userId: string, options?: ProactivePushOptions)
         if (ev.kind === 'reminder_fired') {
           showReminderToast(ev.payload as ReminderFiredPayload);
         } else if (ev.kind === 'proactive_message') {
-          options?.onProactiveMessage?.(ev.payload as ProactiveMessagePayload);
+          deliverProactive(ev.payload as ProactiveMessagePayload);
         }
       }
 

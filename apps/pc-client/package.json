@@ -6,7 +6,8 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "set ELECTRON_RUN_AS_NODE=&& vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "vue-tsc --noEmit && tsc --noEmit -p tsconfig.node.json && vite build",
+    "test:pet": "node --experimental-strip-types --test electron/pet-pack.test.ts",
     "build:electron": "npm run build && electron-builder",
     "preview": "vite preview",
     "test": "vitest run",

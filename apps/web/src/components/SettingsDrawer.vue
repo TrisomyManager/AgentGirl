@@ -34,6 +34,7 @@
           </div>
 
           <!-- LLM 配置 -->
+          <CompanionSettings v-if="visible" :user-id="userId" />
           <div class="setting-section">
             <div class="section-title">LLM 配置</div>
 
@@ -416,10 +417,12 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
 import { useApi } from '../composables/useApi';
+import CompanionSettings from './CompanionSettings.vue';
 import { currentAudioFormat, currentRealtimeProvider, currentSampleRate } from '../composables/useRealtimeVoice';
 
 const props = defineProps<{
   visible: boolean;
+  userId: string;
   userName: string;
   sessionId: string;
   serverAvailable: boolean | null;

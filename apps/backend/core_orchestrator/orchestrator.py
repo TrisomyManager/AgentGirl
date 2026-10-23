@@ -40,6 +40,11 @@ _PROACTIVE_SYSTEM_INSTRUCTIONS = """【主动发起对话】
 - 不要用疑问句堆砌——可以分享你的感受，也可以温和地陈述"""
 
 _TRIGGER_USER_PROMPTS = {
+    "desktop_context": (
+        "用户主动允许根据应用进程名提供陪伴，并已在 {foreground_app} 停留一段时间。"
+        "你不知道屏幕、窗口标题或文件中的任何内容，不要假装看到了它们。"
+        "用一两句自然的关心或简短建议陪伴对方，不打断、不责备、不替用户操作。"
+    ),
     "idle_checkin": (
         "用户已经 {hours_inactive:.1f} 小时没有联系你了。"
         "请主动问候，表达你的关心和想念。语气温柔，不要责备。"
@@ -284,6 +289,7 @@ class Orchestrator:
         session_id: str,
         trigger_type: str,
         trigger_context: Dict[str, Any],
+        defer_memory: bool = False,
     ) -> Dict[str, Any]:
         """Generate a proactive AI-initiated message without a real user turn.
 
@@ -384,18 +390,23 @@ class Orchestrator:
 
         state["assistant_message"] = assistant_msg
 
-        # 5. Sync memory (so proactive messages are part of conversation history)
-        try:
+        # Commit only after delivery when the scheduler may still discard a
+        # result because consent, foreground activity or lock state changed.
+        async def commit_memory():
             await sync_completed_turn_to_memory(
                 turn_context=tc,
                 orchestration_state=state,
             )
-        except Exception as exc:
-            _log.warning("proactive_sync_memory_failed", error=str(exc))
+        if not defer_memory:
+            try:
+                await commit_memory()
+            except Exception as exc:
+                _log.warning("proactive_sync_memory_failed", error=str(exc))
 
         emotion = state.get("emotion_state")
         return {
             "assistant_message": assistant_msg,
+            **({"_commit_memory": commit_memory} if defer_memory else {}),
             "emotion": emotion.model_dump() if emotion else None,
             "trigger_type": trigger_type,
             "session_id": session_id,

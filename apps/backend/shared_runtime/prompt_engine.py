@@ -40,6 +40,39 @@ def _emotion_zh(tag: str) -> str:
     return _EMOTION_ZH.get(tag, tag)
 
 
+def _bounded_unique_lines(values, limit: int) -> list[str]:
+    lines = []
+    seen = set()
+    for value in values:
+        value = str(value).strip()
+        if not value or value.casefold() in seen:
+            continue
+        seen.add(value.casefold())
+        piece = value[:min(600, limit)]
+        lines.append(piece)
+        limit -= len(piece)
+        if limit <= 0 or len(lines) >= 3:
+            break
+    return lines
+
+
+def format_user_profile_memory(snapshot) -> str:
+    """Always-on, bounded stable preferences; never serialize arbitrary config/secrets."""
+    if snapshot is None:
+        return ""
+    preferences = snapshot.preferences if isinstance(snapshot.preferences, dict) else {}
+    name = snapshot.display_name or preferences.get("nickname")
+    lines = [f"称呼：{str(name)[:80]}"] if name else []
+    for key, label in (("latest_like", "最近明确的喜好"), ("preferred_tone", "交流偏好"),
+                       ("interests", "兴趣"), ("dislikes", "不喜欢")):
+        value = preferences.get(key)
+        if isinstance(value, list):
+            value = "、".join(str(item)[:80] for item in value[:5] if isinstance(item, str))
+        if isinstance(value, str) and value.strip():
+            lines.append(f"{label}：{value.strip()[:200]}")
+    return "\n".join(lines)[:600]
+
+
 def build_conversation_system_prompt(
     persona: Optional[PersonaProfile],
     emotion: Optional[EmotionState] = None,
@@ -85,14 +118,14 @@ def build_conversation_system_prompt(
         )
 
     if memory and memory.user_profile_summary:
-        parts.append(f"【用户概况】{memory.user_profile_summary}")
+        parts.append(f"【用户概况】{memory.user_profile_summary[:600]}")
 
     if memory and memory.entries:
-        memory_lines = [entry.content for entry in memory.entries[:3]]
+        memory_lines = _bounded_unique_lines((entry.content for entry in memory.entries), 1200)
         parts.append("【记忆片段】\n- " + "\n- ".join(memory_lines))
 
     if memory and memory.graph_facts:
-        parts.append("【已知事实】\n- " + "\n- ".join(memory.graph_facts[:3]))
+        parts.append("【已知事实】\n- " + "\n- ".join(_bounded_unique_lines(memory.graph_facts, 600)))
 
     if memory and memory.working_memory:
         wm = memory.working_memory

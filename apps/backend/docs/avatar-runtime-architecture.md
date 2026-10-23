@@ -167,7 +167,7 @@ Lite Mode fallback:
 
 ### Phase 0: Documentation Only
 
-Document the boundary and prevent accidental coupling. This is the current phase.
+Document the boundary and prevent accidental coupling. A minimal Electron desktop-pet presentation adapter is now implemented; the generalized backend `avatar_runtime` API remains a proposal.
 
 ### Phase 1: Event Contract
 
@@ -193,3 +193,9 @@ Support one or more optional high-quality avatar backends with clear deployment 
 - No replacement of `core_orchestrator`.
 - No avatar-driven memory writes.
 - No avatar backend allowed to execute tools or device operations directly.
+
+## Implemented Desktop Pet Adapter
+
+`apps/pc-client/electron/desktop-pet.ts` owns the transparent local window and a narrow media/preload bridge; `apps/web/src/components/DesktopPet.vue` renders user-selected dsh-pet source WebM/GIF packs. Existing proactive push events supply text bubbles. It does not start a new backend avatar service or change memory/tool ownership.
+
+Consent-based desktop metadata gates stay in `action_executor`; generation stays in `core_orchestrator`. The adapter never executes tools or writes conversation memory. See [the adoption report](dsh-pet-adoption.md) for compatibility limits, setup and validation. The future generalized avatar contracts above remain unimplemented.
